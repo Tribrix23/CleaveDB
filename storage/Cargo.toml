@@ -1,0 +1,59 @@
+[package]
+name = "cleavedb3-storage"
+version = "0.1.0"
+edition = "2021"
+description = "CleaveDB3 storage engine: B+Tree, WAL, buffer pool, inverted index"
+authors = ["CleaveDB Team"]
+
+[lib]
+name = "cleavedb3_storage"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Concurrent hash map (lock-free reads, sharded writes)
+dashmap = "6"
+
+# Lock-free data structures (SegQueue for WAL group commit)
+crossbeam = "0.8"
+
+# Fast hashing (XXH3 — SIMD-accelerated)
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+# LZ4 compression for pages
+lz4_flex = "0.11"
+
+# CRC32 for page checksums (hardware-accelerated on x86)
+crc32fast = "1"
+
+# Parking lot: faster Mutex/RwLock than std
+parking_lot = "0.12"
+
+# Byte order encoding
+byteorder = "1"
+
+# MessagePack serialization
+rmp-serde = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+log = "0.4"
+pyo3 = { version = "0.29.2", features = ["extension-module"] }
+
+[dev-dependencies]
+# Property-based testing
+proptest = "1"
+
+# Benchmarks
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Temp directories for tests
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[build-dependencies]
+cc = "1.5.1"

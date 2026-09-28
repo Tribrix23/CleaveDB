@@ -1,0 +1,27 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "cleavedb3"
+version = "0.1.0"
+description = "CleaveDB3: A novel polyglot database with buckets, bonds, and attention"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "CleaveDB Team"}
+]
+dependencies = []
+
+[tool.maturin]
+module-name = "cleavedb3._storage"
+manifest-path = "storage/Cargo.toml"
+python-source = "."
+features = ["pyo3/extension-module"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
