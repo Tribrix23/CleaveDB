@@ -33,6 +33,54 @@ def verify_password(stored_hash: str, stored_salt_hex: str, provided_password: s
 
 engine = None
 
+
+import time
+
+async def cron_worker():
+    print("[Server] Cron Worker started.")
+    while True:
+        await asyncio.sleep(5)  # Check every 5 seconds
+        if not engine:
+            continue
+            
+        try:
+            # Scan the hidden _cron bucket
+            cron_data = engine.scan_bucket("_cron")
+            if not cron_data:
+                continue
+                
+            jobs = json.loads(cron_data)
+            current_time = int(time.time())
+            
+            for job in jobs:
+                job_id = job.get("id")
+                body = job.get("body", {})
+                interval = body.get("interval", 0)
+                last_run = body.get("last_run", 0)
+                command = body.get("command", "")
+                
+                if current_time - last_run >= interval:
+                    print(f"[Cron] Executing job {job_id}: {command}")
+                    # Update last_run first to avoid duplicate runs
+                    body["last_run"] = current_time
+                    engine.pour("_cron", job_id, json.dumps(body))
+                    
+                    # Execute the command
+                    try:
+                        lexer = Lexer(command)
+                        parser = Parser(lexer.tokenize())
+                        stmts = parser.parse()
+                        interp = Interpreter(engine)
+                        # Assume cron runs as admin
+                        interp.context = {"user": "cron", "role": "admin"}
+                        results = interp.execute(stmts)
+                        print(f"[Cron] Result: {results}")
+                    except Exception as e:
+                        print(f"[Cron] Error executing job {job_id}: {e}")
+                        
+        except Exception as e:
+            print(f"[Cron] Worker loop error: {e}")
+
 async def handle_client(reader, writer):
     addr = writer.get_extra_info('peername')
     print(f"[Server] Connection established from {addr}")
@@ -186,7 +234,8 @@ async def main():
     print(f"   CleaveDB Server listening on {PORT}")
     print(f"=========================================")
     async with server:
-        await server.serve_forever()
+        asyncio.create_task(cron_worker())
+    await server.serve_forever()
 
 if __name__ == '__main__':
     try:

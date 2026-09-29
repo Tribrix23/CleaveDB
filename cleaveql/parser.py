@@ -15,12 +15,9 @@ class Parser:
     def parse(self) -> List[Any]:
         statements = []
         while not self.is_at_end():
-            try:
-                stmt = self.statement()
-                if stmt:
-                    statements.append(stmt)
-            except ParseError:
-                self.synchronize()
+            stmt = self.statement()
+            if stmt:
+                statements.append(stmt)
         return statements
 
     def statement(self) -> Any:
@@ -56,6 +53,8 @@ class Parser:
             return self.peer_stmt()
         if self.match(TokenType.SUGGEST):
             return self.suggest_stmt()
+        if self.match(TokenType.EVERY):
+            return self.cron_stmt()
 
         # If it doesn't match any statement, throw an error
         raise self.error(self.peek(), "Expected a statement.")
@@ -64,72 +63,158 @@ class Parser:
         mode = "EVERYTHING"
         mode_count = None
         yield_fields = []
+        related_label = None
+        related_source = None
+        target_field = None
         
-        if self.match(TokenType.EVERYTHING):
-            mode = "EVERYTHING"
-        elif self.match(TokenType.ONLY):
-            self.consume(TokenType.UNIQUE, "Expected 'unique' after 'only'.")
+        # Check for SCOOP RELATED "label" FROM "doc"
+        if self.match(TokenType.RELATED):
+            mode = "RELATED"
+            related_label = self.consume_string("Expected relationship label (string).")
+            self.consume(TokenType.FROM, "Expected 'from'.")
+            related_source = self.consume_string("Expected source document ID.")
+            stmt = ScoopStmt(line=self.previous().line, column=self.previous().column)
+            stmt.mode = mode
+            stmt.related_label = related_label
+            stmt.related_source = related_source
+            return stmt
+            
+        if self.match(TokenType.ONLY):
+            self.consume(TokenType.UNIQUE, "Expected 'unique'.")
             mode = "UNIQUE"
-            yield_fields.append(self.consume_identifier("Expected field for unique."))
-            while self.match(TokenType.COMMA):
-                yield_fields.append(self.consume_identifier("Expected field after comma."))
+            target_field = self.consume_identifier("Expected field for unique.")
+            self.consume(TokenType.FROM, "Expected 'from'.")
         elif self.match(TokenType.THE):
             if self.match(TokenType.FIRST):
                 mode = "FIRST"
                 mode_count = self.consume(TokenType.INTEGER, "Expected number after 'first'.").value
+                self.consume(TokenType.FROM, "Expected 'from'.")
             elif self.match(TokenType.LAST):
                 mode = "LAST"
                 mode_count = self.consume(TokenType.INTEGER, "Expected number after 'last'.").value
+                self.consume(TokenType.FROM, "Expected 'from'.")
+            elif self.match(TokenType.TALLY):
+                self.consume(TokenType.OF, "Expected 'of'.")
+                mode = "TALLY"
+                # SCOOP THE TALLY OF users -> bucket comes next
+            elif self.match(TokenType.TOTAL):
+                mode = "TOTAL"
+                target_field = self.consume_identifier("Expected field to sum.")
+                self.consume(TokenType.FROM, "Expected 'from'.")
+            elif self.match(TokenType.HIGHEST):
+                mode = "HIGHEST"
+                mode_count = self.consume(TokenType.INTEGER, "Expected limit count.").value
+                target_field = self.consume_identifier("Expected sort field.")
+                self.consume(TokenType.FROM, "Expected 'from'.")
+            elif self.match(TokenType.LOWEST):
+                mode = "LOWEST"
+                mode_count = self.consume(TokenType.INTEGER, "Expected limit count.").value
+                target_field = self.consume_identifier("Expected sort field.")
+                self.consume(TokenType.FROM, "Expected 'from'.")
             else:
-                raise self.error(self.peek(), "Expected 'first' or 'last'.")
+                # CHAIN relational lookup!
+                rel_chain = []
+                rel_chain.append(self.consume_identifier("Expected relationship label"))
+                self.consume(TokenType.OF, "Expected 'of'")
+                while self.match(TokenType.THE):
+                    rel_chain.append(self.consume_identifier("Expected relationship label"))
+                    self.consume(TokenType.OF, "Expected 'of'")
                 
-        self.consume(TokenType.FROM, "Expected 'from' after scoop modifiers.")
+                bucket = self.consume_identifier("Expected target bucket for chain")
+                doc_id = self.consume_string("Expected doc id")
+                
+                stmt = ScoopStmt(line=self.previous().line, column=self.previous().column)
+                stmt.mode = "CHAIN"
+                stmt.chain_labels = rel_chain
+                stmt.chain_source = f"{bucket}:{doc_id}"
+                return stmt
+        elif self.match(TokenType.EVERYTHING):
+            self.consume(TokenType.FROM, "Expected 'from' after scoop modifiers.")
+        else:
+            if not self.check(TokenType.IDENTIFIER):
+                self.consume(TokenType.FROM, "Expected 'from'.")
+            elif self.peek().lexeme.lower() == 'from':
+                self.consume(TokenType.FROM, "Expected 'from'.")
+        
         bucket = self.consume_identifier("Expected bucket name.")
         
+        where = None
+        if self.match(TokenType.WHERE):
+            where = self.where_clause()
+            
         whose_field = None
         whose_value = None
-        limit = None
-        mentioning = None
-        include = []
-        
-        while self.match(TokenType.WHOSE, TokenType.MATCHING, TokenType.YIELD, TokenType.WHERE, TokenType.MENTIONING, TokenType.INCLUDE, TokenType.LIMIT):
-            ctype = self.previous().type
-            if ctype == TokenType.WHOSE:
-                whose_field = self.consume_identifier("Expected field after 'whose'.")
-                self.consume(TokenType.IS, "Expected 'is' after field.")
-                whose_value = self.consume_value("Expected value after 'is'.")
-            elif ctype == TokenType.YIELD:
-                yield_fields.append(self.consume_identifier("Expected field name to yield."))
-                while self.match(TokenType.COMMA):
-                    yield_fields.append(self.consume_identifier("Expected field name after comma."))
-            elif ctype == TokenType.LIMIT:
-                limit = self.consume(TokenType.INTEGER, "Expected number after limit.").value
-            elif ctype == TokenType.MENTIONING:
-                mentioning = self.consume(TokenType.STRING, "Expected string after mentioning.").value
-            elif ctype == TokenType.INCLUDE:
-                include.append(self.consume_identifier("Expected field to include."))
-                while self.match(TokenType.COMMA):
-                    include.append(self.consume_identifier("Expected field after comma."))
-            elif ctype == TokenType.WHERE:
-                # We'll just skip the where expression parsing for brevity in the test, 
-                # or parse a simple key = val
-                pass
-
-        return ScoopStmt(bucket=bucket, mode=mode, mode_count=mode_count, whose_field=whose_field, whose_value=whose_value, yield_fields=yield_fields, limit=limit, mentioning=mentioning, include=include)
-
-    def count_stmt(self) -> CountStmt:
-        self.consume(TokenType.FROM, "Expected 'from' after 'count'.")
-        bucket = self.consume_identifier("Expected bucket name.")
-        
-        clauses = []
-        while self.match(TokenType.WHERE, TokenType.WHOSE, TokenType.MEANING, TokenType.MENTIONING, TokenType.NEAR, TokenType.SINCE, TokenType.UNTIL, TokenType.ORDER, TokenType.INCLUDE, TokenType.MATCHING, TokenType.YIELD):
-            clauses.append(self.scoop_clause(self.previous().type))
+        if self.match(TokenType.WHOSE):
+            whose_field = self.consume_identifier("Expected field after 'whose'.")
+            self.consume(TokenType.IS, "Expected 'is'.")
+            whose_value = self.consume_value("Expected value.")
             
-        where = None
-        for c in clauses:
-            if isinstance(c, WhereClause):
-                where = c
-        return CountStmt(bucket=bucket, where=where)
+        mentioning = None
+        if self.match(TokenType.MENTIONING):
+            mentioning = self.consume_string("Expected search string after mentioning.")
+            
+        meaning = None
+        if self.match(TokenType.MEANING):
+            meaning = self.consume_string("Expected search string after meaning.")
+            
+        matching = None
+        if self.match(TokenType.MATCHING):
+            match_str = self.consume_string("Expected JSON object string after matching.")
+            import json
+            matching = json.loads(match_str)
+            
+        include = []
+        if self.match(TokenType.INCLUDE):
+            include.append(self.consume_identifier("Expected field to include."))
+            while self.match(TokenType.COMMA):
+                include.append(self.consume_identifier("Expected field after comma."))
+                
+        arrange_field = None
+        arrange_dir = "ASC"
+        if self.match(TokenType.ARRANGED):
+            self.consume(TokenType.BY, "Expected 'by' after arranged")
+            arrange_field = self.consume_identifier("Expected field")
+            if self.match(TokenType.GOING):
+                if self.match(TokenType.UP): arrange_dir = "ASC"
+                elif self.match(TokenType.DOWN): arrange_dir = "DESC"
+
+        limit = None
+        if self.match(TokenType.LIMIT):
+            limit = self.consume(TokenType.INTEGER, "Expected number after limit.").value
+            
+        group_by = None
+        if self.match(TokenType.GROUPED):
+            self.consume(TokenType.BY, "Expected 'by' after 'grouped'.")
+            group_by = self.consume_identifier("Expected field for group by.")
+            
+        stmt = ScoopStmt(line=self.previous().line, column=self.previous().column)
+        stmt.bucket = bucket
+        stmt.where = where
+        stmt.mentioning = mentioning
+        stmt.meaning = meaning
+        stmt.include = include
+        stmt.matching = matching
+        stmt.yield_fields = yield_fields
+        stmt.target_field = target_field
+        stmt.group_by = group_by
+        stmt.mode = mode
+        stmt.mode_count = mode_count
+        stmt.whose_field = whose_field
+        stmt.whose_value = whose_value
+        stmt.limit = limit
+        stmt.arrange_field = arrange_field
+        stmt.arrange_dir = arrange_dir
+        
+        as_of = None
+        if self.match(TokenType.AS):
+            self.consume(TokenType.OF, "Expected 'of' after 'as'.")
+            if self.match(TokenType.STRING):
+                as_of = self.previous().value
+            else:
+                as_of = self.consume_identifier("Expected 'yesterday' or timestamp.")
+        stmt.as_of = as_of
+        
+        return stmt
 
     def distill_stmt(self) -> DistillStmt:
         self.consume(TokenType.FROM, "Expected 'from' after 'distill'.")
@@ -163,6 +248,15 @@ class Parser:
         if self.match(TokenType.DEPTH):
             depth = self.consume(TokenType.INTEGER, "Expected integer for depth.").value
             
+        arrange_field = None
+        arrange_dir = "ASC"
+        if self.match(TokenType.ARRANGED):
+            self.consume(TokenType.BY, "Expected 'by' after arranged")
+            arrange_field = self.consume_identifier("Expected field")
+            if self.match(TokenType.GOING):
+                if self.match(TokenType.UP): arrange_dir = "ASC"
+                elif self.match(TokenType.DOWN): arrange_dir = "DESC"
+
         limit = None
         if self.match(TokenType.LIMIT):
             limit = self.consume(TokenType.INTEGER, "Expected integer for limit.").value
@@ -170,6 +264,24 @@ class Parser:
         return FollowStmt(doc_key=doc_key, bond_name=bond, direction=direction, depth=depth, limit=limit)
 
     def pour_stmt(self) -> Any:
+        if self.match(TokenType.STRING):
+            # Try to handle POUR json INSIDE bucket "doc_id" AT field
+            val = self.previous().value
+            import json
+            try:
+                data = json.loads(val) if isinstance(val, str) else val
+            except:
+                data = val
+                
+            # If the next token is IDENTIFIER and lexeme is "inside"
+            if self.match(TokenType.IDENTIFIER) and self.previous().lexeme.lower() == "inside":
+                bucket = self.consume_identifier("Expected bucket name.")
+                doc_id = self.consume_doc_id("Expected document ID.")
+                if self.match(TokenType.IDENTIFIER) and self.previous().lexeme.lower() == "at":
+                    field = self.consume_identifier("Expected field path.")
+                    # Return it as a ChangeStmt!
+                    return ChangeStmt(bucket=bucket, doc_id=doc_id, assignments=[(field, data)])
+        
         if self.match(TokenType.INTO):
             bucket = self.consume_identifier("Expected bucket name.")
             
@@ -297,41 +409,68 @@ class Parser:
             raise self.error(self.peek(), "Expected 'bucket', 'projection', or 'flow' after 'shape'.")
 
     def bond_stmt(self) -> BondStmt:
-        name = self.consume_identifier("Expected bond name.")
-        self.consume(TokenType.FROM, "Expected 'from' after bond name.")
+        # We matched BOND in statement()
+        source_gid = self.consume_string("Expected source document ID.")
+        self.consume(TokenType.TO, "Expected 'to'.")
         
-        # qualified field
-        source_bucket = self.consume_identifier("Expected bucket name for qualified field.")
-        self.consume(TokenType.DOT, "Expected '.' in qualified field.")
-        source_field = self.consume_identifier("Expected field name in qualified field.")
-        qualified_field = f"{source_bucket}.{source_field}"
+        # Support Polymorphic ANY, but resolve gracefully to string for now
+        if self.match(TokenType.ANY):
+            self.consume(TokenType.LPAREN, "Expected '(' after ANY.")
+            target_gid = "ANY(" + self.consume_identifier("Expected ANY arguments.") + ")"
+            while self.match(TokenType.COMMA):
+                target_gid = target_gid[:-1] + "," + self.consume_identifier("Expected ANY args.") + ")"
+            self.consume(TokenType.RPAREN, "Expected ')'.")
+        else:
+            target_gid = self.consume_string("Expected target document ID.")
+            
+        mutual = False
+        if self.match(TokenType.AS):
+            if self.match(TokenType.MUTUAL):
+                mutual = True
+            label = self.consume_string("Expected relationship label.")
+        else:
+            label = "linked"
+            
+        stmt = BondStmt(line=self.previous().line, column=self.previous().column)
+        stmt.source_gid = source_gid
+        stmt.target_gid = target_gid
+        stmt.label = label
+        stmt.mutual = mutual
         
-        self.consume(TokenType.TO, "Expected 'to' after qualified field.")
-        dest_bucket = self.consume_identifier("Expected target bucket.")
-        
-        strength = None
-        if self.match(TokenType.STRENGTH):
-            if self.match(TokenType.SOFT, TokenType.FIRM, TokenType.STRICT):
-                strength = self.previous().lexeme
+        # Modifier Loop
+        while not self.is_at_end() and self.peek().type not in [TokenType.SCOOP, TokenType.POUR, TokenType.EOF, TokenType.CHANGE, TokenType.BOND]:
+            if self.match(TokenType.ONLY):
+                self.consume(TokenType.WHEN, "Expected 'when'.")
+                stmt.condition_field = self.consume_identifier("Expected field.")
+                self.consume(TokenType.IS, "Expected 'is'.")
+                stmt.condition_value = self.consume_value("Expected value.")
+            elif self.match(TokenType.WITH):
+                if self.match(TokenType.AFFINITY):
+                    stmt.affinity = float(self.consume(TokenType.FLOAT, "Expected affinity.").value)
+                elif self.match(TokenType.CONFIDENCE):
+                    stmt.confidence = float(self.consume(TokenType.FLOAT, "Expected confidence.").value)
+            elif self.match(TokenType.THROUGH):
+                stmt.through = self.consume_identifier("Expected through node.")
+            elif self.match(TokenType.ON):
+                self.consume(TokenType.DELETE, "Expected 'delete'.")
+                self.consume(TokenType.CASCADE, "Expected 'cascade'.")
+                stmt.cascade = True
+            elif self.match(TokenType.EXCLUSIVELY):
+                stmt.exclusive = True
+            elif self.match(TokenType.EXPIRING):
+                self.consume(TokenType.IN, "Expected 'in'.")
+                num = self.consume(TokenType.INTEGER, "Expected number.").value
+                if self.match(TokenType.HOUR, TokenType.HOURS):
+                    stmt.expires_at = num * 3600
+                elif self.match(TokenType.MINUTE, TokenType.MINUTES):
+                    stmt.expires_at = num * 60
+                else:
+                    self.consume_identifier("Time unit.")
+                    stmt.expires_at = num
             else:
-                raise self.error(self.peek(), "Expected 'soft', 'firm', or 'strict'.")
+                break
                 
-        on_delete = None
-        if self.match(TokenType.ON):
-            self.consume(TokenType.DELETE, "Expected 'delete' after 'on'.")
-            if self.match(TokenType.KEEP, TokenType.RESTRICT, TokenType.CASCADE):
-                on_delete = self.previous().lexeme
-            else:
-                raise self.error(self.peek(), "Expected 'keep', 'restrict', or 'cascade'.")
-                
-        cardinality = None
-        if self.match(TokenType.CARDINALITY):
-            if self.match(TokenType.ONE, TokenType.MANY):
-                cardinality = self.previous().lexeme
-            else:
-                raise self.error(self.peek(), "Expected 'one' or 'many'.")
-                
-        return BondStmt(name=name, from_field=qualified_field, to_bucket=dest_bucket, strength=strength or '', on_delete=on_delete or '', cardinality=cardinality or '')
+        return stmt
 
     def index_stmt(self) -> IndexStmt:
         bucket = self.consume_identifier("Expected bucket name.")
@@ -434,6 +573,9 @@ class Parser:
             return self.advance()
         raise self.error(self.peek(), message)
 
+    def consume_string(self, message: str) -> str:
+        return str(self.consume(TokenType.STRING, message).value)
+        
     def consume_identifier(self, message: str) -> str:
         # Accept IDENTIFIER or any keyword token as a field/bucket name
         # (keywords like 'total', 'status', 'name' can be field names in context)
@@ -506,6 +648,11 @@ class Parser:
         raise self.error(self.peek(), message)
         
     def consume_value(self, message: str) -> Any:
+        if self.match(TokenType.LPAREN):
+            if self.match(TokenType.SCOOP):
+                stmt = self.scoop_stmt()
+                self.consume(TokenType.RPAREN, "Expected ')' after sub-scoop.")
+                return {"_type": "sub_scoop", "stmt": stmt}
         if self.match(TokenType.INTEGER, TokenType.FLOAT, TokenType.STRING):
             return self.previous().value
         if self.match(TokenType.IDENTIFIER):
@@ -553,3 +700,40 @@ class Parser:
         from .ast import SetContextStmt
         return SetContextStmt(key=key, value=value)
 
+
+    def cron_stmt(self) -> CronStmt:
+        interval = 0
+        if self.match(TokenType.DAY):
+            self.consume(TokenType.AT, "Expected 'at' after 'day'.")
+            self.consume(TokenType.MIDNIGHT, "Expected 'midnight' after 'at'.")
+            interval = 86400
+        else:
+            num = self.consume(TokenType.INTEGER, "Expected interval number.").value
+            if self.match(TokenType.SECOND, TokenType.SECONDS):
+                interval = num
+            elif self.match(TokenType.MINUTE, TokenType.MINUTES):
+                interval = num * 60
+            elif self.match(TokenType.HOUR, TokenType.HOURS):
+                interval = num * 3600
+            else:
+                raise self.error(self.peek(), "Expected time unit (seconds, minutes, hours).")
+                
+        self.consume(TokenType.DO, "Expected 'do' after time interval.")
+        self.consume(TokenType.LPAREN, "Expected '(' before command.")
+        
+        cmd_tokens = []
+        while not self.check(TokenType.RPAREN) and not self.is_at_end():
+            token = self.advance()
+            # If it's a string, we need to wrap it in quotes
+            if token.type == TokenType.STRING:
+                cmd_tokens.append(f'"{token.lexeme}"')
+            else:
+                cmd_tokens.append(token.lexeme)
+                
+        self.consume(TokenType.RPAREN, "Expected ')' after command.")
+        command_str = " ".join(cmd_tokens)
+        
+        stmt = CronStmt(line=self.previous().line, column=self.previous().column)
+        stmt.interval_seconds = interval
+        stmt.command_str = command_str
+        return stmt

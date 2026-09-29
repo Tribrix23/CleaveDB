@@ -39,6 +39,12 @@ class ScoopStmt(ASTNode):
     limit: Optional[int] = None
     order_by: Optional[str] = None
     order_dir: Optional[str] = None
+    related_label: Optional[str] = None
+    related_source: Optional[str] = None
+    target_field: Optional[str] = None
+    group_by: Optional[str] = None
+    order_field: Optional[str] = None
+    as_of: Optional[Any] = None
 
 @dataclass 
 class CountStmt(ASTNode):
@@ -162,3 +168,8 @@ class MaskStmt(ASTNode):
     bucket: str = ''
     condition: Any = None
 
+
+@dataclass
+class CronStmt(ASTNode):
+    interval_seconds: int = 0
+    command_str: str = ''

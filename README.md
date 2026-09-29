@@ -29,25 +29,7 @@ Unlike traditional databases, CleaveDB is built from the ground up to support mo
 - **Cost-Based Optimizer:** Automatically rewrites queries to push down predicates and collapse bond traversals.
 - **Polyglot PyO3 Bridge:** The Python frontend talks directly to the Rust memory space, bypassing expensive serialization overheads.
 
-```mermaid
-flowchart TD
-    subgraph Frontend [Python Frontend]
-        REPL[CleaveQL REPL] --> Lexer
-        Lexer --> Parser
-        Parser --> AST
-        AST --> Optimizer[Query Optimizer]
-        Optimizer --> Interpreter[Volcano Executor]
-    end
-
-    subgraph Backend [Rust Storage Engine]
-        Interpreter -- "PyO3 FFI" --> Core[CleaveDB Core]
-        Core --> Index[Inverted Index / SIMD]
-        Core --> Shards[B+Tree Shard Manager]
-        Shards --> BP[Buffer Pool]
-        BP --> WAL[Write-Ahead Log]
-        BP --> Disk[(Disk IO)]
-    end
-```
+``![CleaveDB Architecture](assets/architecture.png)``
 
 ---
 
@@ -234,6 +216,7 @@ python test_security.py
 
 ## 📄 License
 MIT License
+
 
 
 

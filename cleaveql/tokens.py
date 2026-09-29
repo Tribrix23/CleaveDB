@@ -24,6 +24,10 @@ class TokenType(Enum):
     # Clauses
     FROM = auto()
     INTO = auto()
+    AS = auto()
+    AS_OF = auto()
+    RELATED = auto()
+    LABEL = auto()
     WHERE = auto()
     WHOSE = auto()      # bond traversal predicate
     MEANING = auto()    # semantic search
@@ -37,6 +41,11 @@ class TokenType(Enum):
     LIMIT = auto()
     INCLUDE = auto()    # join related documents
     MANY = auto()       # POUR MANY
+    DOWN = auto()
+    UP = auto()
+    GOING = auto()
+    ARRANGED = auto()
+    ANY = auto()
     SET = auto()        # CHANGE
     TO = auto()
     BEFORE = auto()     # DRAIN...BEFORE
@@ -71,6 +80,16 @@ class TokenType(Enum):
     LAST = auto()
     FIRST = auto()
     THE = auto()
+    TALLY = auto()
+    LOWEST = auto()
+    EXPIRING = auto()
+    MUTUAL = auto()
+    EXCLUSIVELY = auto()
+    CONFIDENCE = auto()
+    AFFINITY = auto()
+    WITH = auto()
+    HIGHEST = auto()
+    GROUPED = auto()
     UNIQUE = auto()
     ONLY = auto()
     EVERYTHING = auto()
@@ -150,9 +169,29 @@ class TokenType(Enum):
     # Special
     NEWLINE = auto()
     EOF = auto()
+    EVERY = auto()
+    DAY = auto()
+    MIDNIGHT = auto()
+    DO = auto()
+    MINUTE = auto()
+    MINUTES = auto()
+    HOUR = auto()
+    HOURS = auto()
+    SECOND = auto()
+    SECONDS = auto()
     UNKNOWN = auto()
 
 KEYWORDS = {
+    'seconds': TokenType.SECONDS,
+    'second': TokenType.SECOND,
+    'hours': TokenType.HOURS,
+    'hour': TokenType.HOUR,
+    'minutes': TokenType.MINUTES,
+    'minute': TokenType.MINUTE,
+    'do': TokenType.DO,
+    'midnight': TokenType.MIDNIGHT,
+    'day': TokenType.DAY,
+    'every': TokenType.EVERY,
     'policy': TokenType.POLICY,
     'mask': TokenType.MASK,
     'for': TokenType.FOR,
@@ -192,8 +231,16 @@ KEYWORDS = {
     'limit': TokenType.LIMIT,
     'include': TokenType.INCLUDE,
     'many': TokenType.MANY,
+    'down': TokenType.DOWN,
+    'up': TokenType.UP,
+    'going': TokenType.GOING,
+    'arranged': TokenType.ARRANGED,
+    'any': TokenType.ANY,
     'set': TokenType.SET,
     'to': TokenType.TO,
+    'as': TokenType.AS,
+    'related': TokenType.RELATED,
+    'label': TokenType.LABEL,
     'before': TokenType.BEFORE,
     'on': TokenType.ON,
     'delete': TokenType.DELETE,
@@ -226,6 +273,16 @@ KEYWORDS = {
     'last': TokenType.LAST,
     'first': TokenType.FIRST,
     'the': TokenType.THE,
+    'tally': TokenType.TALLY,
+    'lowest': TokenType.LOWEST,
+    'expiring': TokenType.EXPIRING,
+    'mutual': TokenType.MUTUAL,
+    'exclusively': TokenType.EXCLUSIVELY,
+    'confidence': TokenType.CONFIDENCE,
+    'affinity': TokenType.AFFINITY,
+    'with': TokenType.WITH,
+    'highest': TokenType.HIGHEST,
+    'grouped': TokenType.GROUPED,
     'unique': TokenType.UNIQUE,
     'only': TokenType.ONLY,
     'everything': TokenType.EVERYTHING,
@@ -262,10 +319,3 @@ class Token:
     value: Optional[Any] = None
 
     # Security Features
-    POLICY = auto()
-    MASK = auto()
-    FOR = auto()
-    USING = auto()
-    READ = auto()
-    WRITE = auto()
-    CONTEXT = auto()
