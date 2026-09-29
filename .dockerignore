@@ -1,0 +1,11 @@
+**/target/
+__pycache__/
+*.pyc
+*.pyo
+cleavedb_data/
+*_test_db/
+.venv/
+data/
+.git/
+.github/
+.vscode/

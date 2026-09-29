@@ -30,13 +30,13 @@ impl Document {
             .as_millis() as u64;
 
         let gid = match provided_gid {
-            Some(id) => id.to_string(),
+            Some(id) => format!("{}:{}", bucket, id),
             None => {
                 let mut data = bucket.as_bytes().to_vec();
                 let body_str = serde_json::to_string(&body).unwrap_or_default();
                 data.extend_from_slice(body_str.as_bytes());
                 let hash = xxh3_64(&data);
-                format!("{:016x}", hash)
+                format!("{}:{:016x}", bucket, hash)
             }
         };
 
@@ -122,3 +122,4 @@ mod tests {
         assert!(doc.updated_at >= old_updated_at);
     }
 }
+

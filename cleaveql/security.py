@@ -59,6 +59,8 @@ class PolicyEngine:
         })
 
     def apply_masks(self, bucket: str, document: dict, context: dict) -> dict:
+        if str(context.get("bypass_dls", "false")).lower() == "true":
+            return document
         if not hasattr(self, 'masks') or bucket not in self.masks:
             return document
             
@@ -100,6 +102,8 @@ class PolicyEngine:
             if self._evaluate_condition(policy['condition'], document, context):
                 return True
         return False
+
+
 
 
 

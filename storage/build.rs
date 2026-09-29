@@ -16,9 +16,11 @@ fn main() {
         .flag_if_supported("/arch:AVX512") // MSVC
         .flag_if_supported("/O2")
         .flag_if_supported("/std:c++17")
-        .flag_if_supported("-mavx512f")    // GCC/Clang
+        .flag_if_supported("-mavx512f")
+        .flag_if_supported("-mfma")    // GCC/Clang
         .flag_if_supported("-mavx2")
         .flag_if_supported("-O3")
         .flag_if_supported("-std=c++17")
         .compile("cleavedb_simd");
 }
+

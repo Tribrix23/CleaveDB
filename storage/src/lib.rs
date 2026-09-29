@@ -18,6 +18,7 @@
 pub mod error;
 pub mod page;
 pub mod buffer_pool;
+pub mod crypto;
 pub mod wal;
 pub mod btree;
 pub mod bloom;
@@ -34,3 +35,4 @@ pub use wal::{WriteAheadLog, WalConfig, SyncMode};
 pub use btree::BTree;
 pub use btree::cursor::Cursor;
 pub use simd_ffi::{dot_product, softmax, gelu, layer_norm, matmul};
+

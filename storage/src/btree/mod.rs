@@ -87,9 +87,12 @@ impl BTree {
 
     /// Inserts a key-value pair into the BTree.
     pub fn insert(&self, key: &[u8], value: &[u8]) -> StorageResult<()> {
-        self.wal.log_put(&self.tree_name, key, value)?;
-        
-        let root_id = self.root_page_id.load(Ordering::SeqCst);
+    self.wal.log_put(&self.tree_name, key, value)?;
+    self.insert_unlogged(key, value)
+}
+
+pub fn insert_unlogged(&self, key: &[u8], value: &[u8]) -> StorageResult<()> {
+    let root_id = self.root_page_id.load(Ordering::SeqCst);
         
         // 1. Traverse down and keep track of path for bottom-up split
         let mut path = Vec::new();
@@ -211,9 +214,12 @@ impl BTree {
 
     /// Point delete
     pub fn delete(&self, key: &[u8]) -> StorageResult<bool> {
-        self.wal.log_delete(&self.tree_name, key)?;
-        
-        let mut curr_id = self.root_page_id.load(Ordering::SeqCst);
+    self.wal.log_delete(&self.tree_name, key)?;
+    self.delete_unlogged(key)
+}
+
+pub fn delete_unlogged(&self, key: &[u8]) -> StorageResult<bool> {
+    let mut curr_id = self.root_page_id.load(Ordering::SeqCst);
         let mut depth = 0;
         
         loop {
@@ -238,3 +244,6 @@ impl BTree {
         }
     }
 }
+
+
+

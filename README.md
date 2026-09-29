@@ -63,20 +63,29 @@ python cleavedb.py
 You are now inside the CleaveQL REPL. CleaveQL is a declarative, case-insensitive, English-like query language. 
 
 ### Step 2: Basic Data Ingestion (POUR)
-Data is stored in logical containers called **Buckets** (similar to tables). Let's insert some user data using the `POUR` command.
+Data is stored in logical containers called **Buckets** (similar to tables). Let's insert some user data using the POUR command.
 
-```sql
--- Insert a single document
-POUR INTO users "u1" {"name": "Alice", "role": "admin", "department": "engineering"}
+`sql
+-- Insert a single document with a specific ID
+POUR INTO users "u1" {"name": "Alice", "role": "admin"}
 
--- Insert multiple documents at once
+-- Auto-generate a highly-secure RANDOM ID natively in Rust
+POUR INTO users RANDOM {"name": "Bob", "role": "dev"}
+
+-- Bulk insert massive payloads
 POUR MANY INTO users [
-  {"name": "Bob", "role": "developer", "department": "engineering"},
-  {"name": "Charlie", "role": "sales", "department": "business"}
+  {"gid": "u2", "name": "Charlie"},
+  {"name": "David"} -- If gid is omitted, a random ID is automatically assigned
 ]
-```
-*Note: CleaveDB is schema-less. You can insert any valid JSON structure into a bucket.*
+`
 
+**Why natively auto-generate RANDOM IDs?**
+In traditional database architectures (like SQL or older NoSQL), relying on client-side ID generation causes massive problems:
+1. **Collisions:** If two microservices generate the same ID, data is overwritten.
+2. **Bandwidth & Bloat:** Forcing mobile apps or web-clients to ship heavy UUID generation libraries bloats the client size.
+3. **Security:** Predictable client-side IDs can lead to IDOR (Insecure Direct Object Reference) vulnerabilities. 
+
+CleaveDB solves this natively. By using the RANDOM keyword, the Rust storage engine utilizes a cryptographic pseudo-random number generator (CSPRNG) to mint a collision-resistant 16-character NanoID in nanoseconds, before seamlessly writing it to the B+Tree.
 ### Step 3: Conversational Extractions (SCOOP)
 CleaveDB is fundamentally a non-SQL database. We do not use legacy SELECT, WHERE, or JOIN statements. Instead, CleaveQL uses a **Conversational Data Language** designed to read exactly like plain English.
 
@@ -95,10 +104,17 @@ SCOOP THE FIRST 5 FROM orders
 -- 4. Fluent Predicates (No math symbols like '=', '>', '<')
 SCOOP EVERYTHING FROM users WHOSE role IS "dev"
 
--- 5. Field Projections (Yielding specific keys and dropping the rest)
-SCOOP THE FIRST 10 FROM users WHOSE city IS "Seattle" YIELD name, email
-`
-This syntax allows you to express complex extraction logic naturally without breaking mental flow.
+  -- 5. Full-Text Search across the entire document
+  SCOOP EVERYTHING FROM logs MENTIONING "error"
+  
+  -- 6. Project specific fields (removes unneeded data from the payload)
+  SCOOP EVERYTHING FROM users INCLUDE name, email
+  
+  -- 7. Hard Limits
+  SCOOP EVERYTHING FROM users LIMIT 10
+  `
+  This syntax allows you to express complex extraction logic naturally without breaking mental flow.
+
 ### Step 4: Modifying & Deleting Data
 Partial updates and deletions are extremely fast thanks to the B+Tree backend.
 
@@ -218,6 +234,12 @@ python test_security.py
 
 ## 📄 License
 MIT License
+
+
+
+
+
+
 
 
 

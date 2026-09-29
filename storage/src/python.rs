@@ -76,6 +76,40 @@ impl CleaveDB {
             inverted,
         };
 
+        if let Ok(entries) = wal.recover() {
+            for entry in entries {
+                match entry {
+                    crate::wal::WalEntry::Put { tree_name, key, value, .. } => {
+                        if tree_name == "inverted_index" {
+                            let _ = db.inverted.tree().insert_unlogged(&key, &value);
+                        } else if tree_name.starts_with("shard_") {
+                            if let Ok(idx) = tree_name.trim_start_matches("shard_").parse::<usize>() {
+                                let all = db.shards.all_shards();
+                                if idx < all.len() {
+                                    let _ = all[idx].insert_unlogged(&key, &value);
+                                }
+                            }
+                        }
+                    }
+                    crate::wal::WalEntry::Delete { tree_name, key, .. } => {
+                        if tree_name == "inverted_index" {
+                            let _ = db.inverted.tree().delete_unlogged(&key);
+                        } else if tree_name.starts_with("shard_") {
+                            if let Ok(idx) = tree_name.trim_start_matches("shard_").parse::<usize>() {
+                                let all = db.shards.all_shards();
+                                if idx < all.len() {
+                                    let _ = all[idx].delete_unlogged(&key);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        
+
         Ok(Self { db, data_dir })
     }
 
@@ -105,6 +139,29 @@ impl CleaveDB {
     }
 
     /// Delete a document by GID. Returns true if it existed.
+        /// Scan all documents in a specific bucket
+    pub fn scan_bucket(&self, bucket: &str) -> PyResult<String> {
+        let prefix = format!("{}:", bucket);
+        let prefix_bytes = prefix.as_bytes();
+        let mut results = Vec::new();
+        
+        for shard in self.db.shards.all_shards() {
+            if let Ok(mut cursor) = crate::btree::cursor::Cursor::new(shard) {
+                while let Ok(Some((key, value))) = cursor.next() {
+                    if key.starts_with(prefix_bytes) {
+                        if let Ok(doc) = Document::from_msgpack(&value) {
+                            results.push(doc);
+                        }
+                    }
+                }
+            }
+        }
+        
+        let json = serde_json::to_string(&results)
+            .map_err(|e| PyRuntimeError::new_err(format!("serialize error: {}", e)))?;
+        Ok(json)
+    }
+
     pub fn delete(&self, gid: &str) -> PyResult<bool> {
         self.db.delete(gid)
             .map_err(|e| PyRuntimeError::new_err(format!("delete failed: {}", e)))
@@ -212,3 +269,8 @@ fn cleavedb3_storage(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CleaveDB>()?;
     Ok(())
 }
+
+
+
+
+

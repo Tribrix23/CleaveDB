@@ -1,0 +1,7 @@
+services:
+  db:
+    build: .
+    volumes:
+      - ./data:/app/cleavedb_data
+    stdin_open: true
+    tty: true

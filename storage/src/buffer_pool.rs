@@ -318,14 +318,18 @@ fn read_page_from_file(file_path: &Path, page_id: PageId) -> StorageResult<Page>
         .open(file_path)
         .map_err(|e| StorageError::Io(e))?;
 
-    let offset = (page_id as u64) * (PAGE_SIZE as u64);
+    let enc_size = PAGE_SIZE + crate::crypto::OVERHEAD;
+    let offset = (page_id as u64) * (enc_size as u64);
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| StorageError::Io(e))?;
 
-    // Read page bytes from file and construct a Page via from_bytes
-    let mut buf = [0u8; PAGE_SIZE];
-    file.read_exact(&mut buf)
+    let mut enc_buf = vec![0u8; enc_size];
+    file.read_exact(&mut enc_buf)
         .map_err(|e| StorageError::Io(e))?;
+
+    let decrypted = crate::crypto::decrypt_data(&enc_buf);
+    let mut buf = [0u8; PAGE_SIZE];
+    buf.copy_from_slice(&decrypted);
 
     Page::from_bytes(buf)
 }
@@ -337,11 +341,13 @@ fn write_page_to_file(file_path: &Path, page_id: PageId, page: &Page) -> Storage
         .open(file_path)
         .map_err(|e| StorageError::Io(e))?;
 
-    let offset = (page_id as u64) * (PAGE_SIZE as u64);
+    let enc_size = PAGE_SIZE + crate::crypto::OVERHEAD;
+    let offset = (page_id as u64) * (enc_size as u64);
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| StorageError::Io(e))?;
 
-    file.write_all(page.to_bytes())
+    let encrypted = crate::crypto::encrypt_data(page.to_bytes());
+    file.write_all(&encrypted)
         .map_err(|e| StorageError::Io(e))?;
 
     Ok(())
