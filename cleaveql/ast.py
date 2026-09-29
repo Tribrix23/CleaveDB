@@ -137,3 +137,15 @@ class PeerStmt(ASTNode):
 @dataclass
 class SuggestStmt(ASTNode):
     target: str = "" # bonds
+
+@dataclass
+class PolicyStmt(ASTNode):
+    bucket: str = ""
+    name: str = ""
+    action: str = ""
+    condition: Any = None
+
+@dataclass
+class SetContextStmt(ASTNode):
+    key: str = ""
+    value: Any = None

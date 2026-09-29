@@ -65,6 +65,13 @@ class TokenType(Enum):
     AND = auto()
     OR = auto()
     NOT = auto()
+    POLICY = auto()
+    FOR = auto()
+    USING = auto()
+    READ = auto()
+    WRITE = auto()
+    CONTEXT = auto()
+
 
     # Sort keywords
     NEWEST = auto()
@@ -135,6 +142,13 @@ class TokenType(Enum):
     UNKNOWN = auto()
 
 KEYWORDS = {
+    'policy': TokenType.POLICY,
+    'for': TokenType.FOR,
+    'using': TokenType.USING,
+    'read': TokenType.READ,
+    'write': TokenType.WRITE,
+    'context': TokenType.CONTEXT,
+
     'scoop': TokenType.SCOOP,
     'pour': TokenType.POUR,
     'drain': TokenType.DRAIN,
@@ -224,3 +238,11 @@ class Token:
     line: int
     column: int
     value: Optional[Any] = None
+
+    # Security Features
+    POLICY = auto()
+    FOR = auto()
+    USING = auto()
+    READ = auto()
+    WRITE = auto()
+    CONTEXT = auto()

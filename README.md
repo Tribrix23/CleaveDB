@@ -1,29 +1,33 @@
 <div align="center">
   <h1>🗡️ CleaveDB 3.0</h1>
-  <p><strong>A high-performance, polyglot NoSQL document database with deep graph traversal capabilities.</strong></p>
+  <p><strong>The polyglot, AVX-512 accelerated, non-relational database with Transformer attention layers.</strong></p>
   
   [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
-  [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)]()
+  [![Python](https://img.shields.io/badge/Python-3.13+-blue.svg)]()
   [![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)]()
   [![License](https://img.shields.io/badge/license-MIT-green.svg)]()
 </div>
 
 <br/>
 
-**CleaveDB 3.0** is an experimental, hybrid NoSQL database built for extreme performance and expressive relationship traversal. It bridges the gap between document flexibility and graph connectivity. The engine is written in **Rust** (with C++ SIMD extensions) for zero-cost abstractions, bounded by a **Python** frontend (PyO3) that powers the heavily optimized **CleaveQL** query language.
+**CleaveDB 3.0** is an experimental, hybrid NoSQL database built for extreme performance and expressive relationship traversal. It bridges the gap between document flexibility and graph connectivity. The engine is written in **Rust** (with C++ AVX-512 extensions) for zero-cost abstractions, bounded by a **Python** frontend (PyO3) that powers the heavily optimized **CleaveQL** query language, with a **Go** coordinator for distributed scatter-gather routing.
 
 ---
 
-## ✨ Key Features
+## 🧠 Core Architecture & Internals
 
-- **Blazing Fast Storage Engine:** Custom B+Tree implementation, asynchronous Write-Ahead Logging (WAL) for durability, and a highly concurrent buffer pool memory manager.
-- **SIMD-Accelerated Text Search:** Hardware-accelerated term extraction and inverted indexing for lightning-fast full-text search.
-- **Graph Relationships (Bonds):** First-class support for linking documents and traversing deep relationships without the expensive overhead of traditional SQL `JOIN`s.
-- **CleaveQL:** A completely custom, human-readable, and fully case-insensitive query language built specifically for documents and graphs.
-- **Data Pipelines:** Native `FLOW` rules for automated, event-driven data movement across buckets.
-- **Polyglot Architecture:** Front-end parser/optimizer in Python, backend storage in Rust, bound tightly via PyO3 for maximum throughput.
+Unlike traditional databases, CleaveDB is built from the ground up to support modern AI, semantic search, and complex graph traversal without compromising on raw ACID transactional speed.
 
-## 🏗️ Architecture
+### The Storage Engine (Rust)
+- **B+Tree Sharding:** Data is organized in 16KB slotted pages for optimal NVMe disk alignment. 
+- **CLOCK-Sweep Buffer Pool:** A highly concurrent memory manager ensures hot pages stay in memory while background threads flush dirty pages to disk.
+- **Asynchronous WAL:** Write-Ahead Logging guarantees durability without blocking the main execution threads.
+- **SIMD Neural Engine:** Hardware-accelerated term extraction (AVX-512) and native multi-head attention capabilities allow for lightning-fast inverted indexing and semantic routing.
+
+### The Query Engine (Python / CleaveQL)
+- **Volcano Execution Model:** Queries are parsed into an AST and executed via a streaming Volcano model.
+- **Cost-Based Optimizer:** Automatically rewrites queries to push down predicates and collapse bond traversals.
+- **Polyglot PyO3 Bridge:** The Python frontend talks directly to the Rust memory space, bypassing expensive serialization overheads.
 
 ```mermaid
 flowchart TD
@@ -37,7 +41,7 @@ flowchart TD
 
     subgraph Backend [Rust Storage Engine]
         Interpreter -- "PyO3 FFI" --> Core[CleaveDB Core]
-        Core --> Index[Inverted Index]
+        Core --> Index[Inverted Index / SIMD]
         Core --> Shards[B+Tree Shard Manager]
         Shards --> BP[Buffer Pool]
         BP --> WAL[Write-Ahead Log]
@@ -45,95 +49,130 @@ flowchart TD
     end
 ```
 
-## 🚀 Getting Started
+---
 
-### Prerequisites
-- **Python 3.8+**
-- **Rust** (cargo)
-- **maturin** (for building the Python/Rust bindings)
+## 📚 Complete Tutorial: How to Use CleaveDB
 
-### Installation
+Welcome to the CleaveDB ecosystem! This tutorial will take you from booting the engine to building complex, secured graph queries.
 
-Clone the repository and build the native extensions:
-
-```bash
-git clone https://github.com/cleavedb/cleavedb.git
-cd cleavedb
-
-# Install build tools
-pip install maturin
-
-# Build and install the Rust engine wheel
-cd storage
-maturin build --release
-pip install target/wheels/cleavedb3*.whl --force-reinstall
-cd ..
-```
-
-### Starting the REPL
-
-Launch the interactive CleaveQL shell:
-
+### Step 1: Starting the Database
+Once you have built the native extensions (via `python build.py`), you can start the interactive shell:
 ```bash
 python cleavedb.py
 ```
+You are now inside the CleaveQL REPL. CleaveQL is a declarative, case-insensitive, English-like query language. 
 
-## 📖 CleaveQL Cheat Sheet
+### Step 2: Basic Data Ingestion (POUR)
+Data is stored in logical containers called **Buckets** (similar to tables). Let's insert some user data using the `POUR` command.
 
-CleaveQL is a powerful, completely case-insensitive query language. Here is a quick reference to its core capabilities.
-
-### Document Operations
-
-**Insert Data (Single or Bulk):**
 ```sql
-POUR INTO developers "dev_1" {"name": "Alice", "role": "backend"}
+-- Insert a single document
+POUR INTO users "u1" {"name": "Alice", "role": "admin", "department": "engineering"}
 
-POUR MANY INTO developers [
-  {"name": "Bob", "role": "frontend"},
-  {"name": "Charlie", "role": "fullstack"}
+-- Insert multiple documents at once
+POUR MANY INTO users [
+  {"name": "Bob", "role": "developer", "department": "engineering"},
+  {"name": "Charlie", "role": "sales", "department": "business"}
 ]
 ```
+*Note: CleaveDB is schema-less. You can insert any valid JSON structure into a bucket.*
 
-**Query / Text Search:**
+### Step 3: Querying Data (SCOOP)
+To read data, we use the `SCOOP` command. CleaveDB features a native inverted index for high-speed text search.
+
 ```sql
-SCOOP FROM developers MENTIONING "backend"
+-- Fetch all users in engineering via fast text extraction
+SCOOP FROM users MENTIONING "engineering"
+
+-- Fetch with a limit
+SCOOP FROM users MENTIONING "sales" LIMIT 1
 ```
 
-**Update Data:**
+### Step 4: Modifying & Deleting Data
+Partial updates and deletions are extremely fast thanks to the B+Tree backend.
+
 ```sql
-CHANGE developers "dev_2" SET role TO "lead"
+-- Update Bob's role
+CHANGE users "u2" SET role TO "lead_developer"
+
+-- Delete Charlie's record completely
+DRAIN users "u3"
 ```
 
-**Delete Data:**
-```sql
-DRAIN developers "dev_3"
-```
+### Step 5: Graph Relationships (BONDS & FOLLOW)
+Unlike relational databases that require slow `JOIN` operations, CleaveDB uses **Bonds** to create strict, native graph edges between documents.
 
-### Advanced Graph & Structural Operations
-
-**Create an Index:**
+Let's insert some orders and bind them to our users:
 ```sql
-INDEX developers ON (role, status)
-```
+POUR MANY INTO orders [
+  {"id": "ord_1", "user_id": "u1", "item": "Laptop"},
+  {"id": "ord_2", "user_id": "u2", "item": "Monitor"}
+]
 
-**Declare a Relationship (Bond):**
-```sql
+-- Declare a relationship from Users to Orders
 BOND user_orders FROM users.id TO orders.user_id STRICT
 ```
 
-**Traverse a Graph (Follow):**
+Now, instead of joining, we traverse the graph using `FOLLOW`:
 ```sql
-FOLLOW "user_123" THROUGH user_orders DIRECTION BOTH DEPTH 3
+-- Find everything connected to Alice (u1) up to 3 hops away!
+FOLLOW "u1" THROUGH user_orders DIRECTION OUT DEPTH 3
 ```
 
-**Automated Data Pipelines (Flow):**
+### Step 6: Document-Level Security (DLS)
+
+**Definition:** Document-Level Security (DLS) is CleaveDB's native policy engine. Because CleaveDB is a non-relational database, traditional Row-Level Security (RLS) terminology does not apply. Instead, DLS allows you to define declarative logic gates (`SHAPE POLICY`) that dynamically intercept and filter raw JSON documents *inside the execution pipeline* before they are ever returned to the client or written to disk.
+
+By leveraging session contexts variables (prefixed with `@`), you can create multi-tenant architectures, strictly enforce ownership constraints, and establish precise role-based access controls without writing complex application-layer middleware.
+
+**Detailed Example:**
+
+Let's assume we have a `medical_records` bucket. We want to ensure that:
+1. Patients can only read their own records.
+2. Doctors can read and write records where they are listed as the attending physician.
+
 ```sql
-SHAPE FLOW FROM users TO active_users WHEN status = "active" ACTION COPY
+-- 1. Define a READ policy for Patients
+SHAPE POLICY patient_read ON medical_records FOR read USING patient_id == @session_user
+
+-- 2. Define a READ/WRITE policy for Doctors
+SHAPE POLICY doctor_access ON medical_records FOR all USING doctor_id == @session_user
 ```
 
-## ⚡ Performance
+Once the policies are attached to the bucket, the storage engine immediately begins filtering data based on the active session context:
 
-The system was heavily audited and optimized (Days 1-102 Audit). The Python frontend utilizes a sophisticated Volcano execution model and Plan Enumerator with the following benchmarks:
+```sql
+-- Authenticate the session as a patient
+SET session_user = "alice123"
+
+-- Alice searches for records containing "blood test"
+-- The engine will silently filter out ANY records not matching `patient_id == "alice123"`
+SCOOP FROM medical_records MENTIONING "blood test"
+
+-- If Alice attempts to insert a document assigning the record to someone else:
+POUR INTO medical_records "rec_99" {"patient_id": "bob456", "data": "..."}
+-- > Error: Security Policy Violation: Write access denied by Document-Level Security.
+```
+
+**Administrative Override (Bypassing DLS):**
+If a backend service or database administrator needs to perform global aggregations, backups, or maintenance, DLS can be completely bypassed by setting the reserved context flag. This forces the Volcano executor to skip the policy evaluation layer entirely:
+
+```sql
+SET bypass_dls = "true"
+```
+
+### Step 7: Automated Pipelines (FLOW)
+CleaveDB can act as its own ETL pipeline. You can create rules that automatically move or copy data when it matches a condition.
+
+```sql
+SHAPE FLOW FROM orders TO archive_orders WHEN status = "completed" ACTION MOVE
+```
+
+---
+
+## ⚡ Performance & Benchmarks
+
+The Python frontend utilizes a highly tuned Plan Enumerator. Current latency targets:
 
 | Component | Metric (p99) | Throughput |
 |-----------|--------------|------------|
@@ -141,22 +180,31 @@ The system was heavily audited and optimized (Days 1-102 Audit). The Python fron
 | **Query Planner** | 7.8 µs | > 170,000 ops/sec |
 | **JSON Serialization** | 3.4 µs | > 300,000 ops/sec |
 
-*Note: The Rust backend performance metrics vary strictly by Disk I/O speeds and allocated buffer pool frames.*
+*Note: The Rust backend performance metrics scale dynamically with hardware AVX-512 availability and NVMe Disk I/O. Background processes like `HEAL ALL` utilize multi-threaded work stealing.*
 
-## 🛠️ Development & Testing
+---
 
-To run the end-to-end testing suite validating the entire pipeline (Parser -> Optimizer -> Rust Engine -> Disk):
+## 🛠️ Build & Contribution Guide
 
+### Prerequisites
+- Python 3.13+
+- Rust (cargo)
+- `maturin` python package
+
+### Compilation
+We use `maturin` to compile the Rust backend and bind it to Python.
 ```bash
-python test_e2e.py
+pip install maturin
+python build.py
 ```
 
-To test advanced analytical features and AST generation:
-
+### Running the Test Suite
+To execute the end-to-end integration tests (validating the Parser -> Optimizer -> Rust Engine -> Disk lifecycle):
 ```bash
-python test_advanced.py
+python test_e2e.py
+python test_security.py
 ```
 
 ## 📄 License
+MIT License
 
-This project is licensed under the MIT License.

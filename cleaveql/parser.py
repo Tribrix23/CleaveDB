@@ -34,6 +34,8 @@ class Parser:
             return self.follow_stmt()
         if self.match(TokenType.POUR):
             return self.pour_stmt()
+        if self.match(TokenType.SET):
+            return self.set_context_stmt()
         if self.match(TokenType.CHANGE):
             return self.change_stmt()
         if self.match(TokenType.DRAIN):
@@ -244,6 +246,24 @@ class Parser:
             if self.match(TokenType.WHERE):
                 where = self.expression()
             return ShapeProjectionStmt(path=path, from_bucket=bucket, where=where)
+            
+        elif self.match(TokenType.POLICY):
+            name = self.consume_identifier("Expected policy name.")
+            self.consume(TokenType.ON, "Expected 'on' after policy name.")
+            bucket = self.consume_identifier("Expected bucket name.")
+            self.consume(TokenType.FOR, "Expected 'for' after bucket name.")
+            
+            action = 'all'
+            if self.match(TokenType.READ, TokenType.WRITE, TokenType.ALL):
+                action = self.previous().lexeme.lower()
+            else:
+                raise self.error(self.peek(), "Expected 'read', 'write', or 'all'.")
+                
+            self.consume(TokenType.USING, "Expected 'using' after action.")
+            condition = self.expression()
+            
+            from .ast import PolicyStmt
+            return PolicyStmt(name=name, bucket=bucket, action=action, condition=condition)
             
         elif self.match(TokenType.FLOW):
             self.consume(TokenType.FROM, "Expected 'from' after 'shape flow'.")
@@ -513,3 +533,10 @@ class Parser:
             ):
                 return
             self.advance()
+
+    def set_context_stmt(self):
+        key = self.consume_identifier("Expected context key.")
+        self.consume(TokenType.EQ, "Expected '=' after key.")
+        value = self.consume_value("Expected value.")
+        from .ast import SetContextStmt
+        return SetContextStmt(key=key, value=value)

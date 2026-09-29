@@ -4,11 +4,16 @@ When engine is a CleaveDB instance (from PyO3), calls the real Rust methods.
 When engine is None, returns mock results for testing.
 """
 import json
+from .security import PolicyEngine, SecurityError
+
 
 
 class Interpreter:
     def __init__(self, engine=None):
-        self.engine = engine  # CleaveDB instance from PyO3, or None for mock
+        self.engine = engine
+        self.context = {}
+        self.security = PolicyEngine()
+  # CleaveDB instance from PyO3, or None for mock
 
     def execute(self, stmts: list) -> list:
         results = []
@@ -31,6 +36,8 @@ class Interpreter:
             bucket = getattr(stmt, 'bucket', '')
             doc_id = getattr(stmt, 'doc_id', None)
             body = getattr(stmt, 'json_body', None)
+            if not self.security.check_write(bucket, body, self.context):
+                return {"status": "error", "message": "Security Policy Violation: Write access denied by Document-Level Security."}
             json_str = json.dumps(body) if isinstance(body, (dict, list)) else str(body or '{}')
             gid = self.engine.pour(bucket, doc_id, json_str)
             return {"status": "ok", "gid": gid}
@@ -63,7 +70,13 @@ class Interpreter:
                     doc_json = self.engine.get(r['gid'])
                     if doc_json:
                         docs.append({"gid": r['gid'], "body": json.loads(doc_json), "score": r.get('freq', 0)})
-                return {"status": "ok", "documents": docs, "count": len(docs)}
+                    bucket = getattr(stmt, 'bucket', '')
+                    filtered_docs = []
+                    for doc in docs:
+                        if self.security.check_read(bucket, doc.get('body', {}), self.context):
+                            filtered_docs.append(doc)
+                    
+                    return {"status": "ok", "documents": filtered_docs[:limit] if limit else filtered_docs, "count": len(filtered_docs)}
             else:
                 # Without mentioning, we can't do a full scan through PyO3 yet
                 return {"status": "ok", "documents": [], "count": 0, "note": "Full scan requires cursor support"}
@@ -129,6 +142,20 @@ class Interpreter:
         elif stmt_type == "BondStmt":
             name = getattr(stmt, 'name', '')
             return {"status": "ok", "bond": name, "message": f"Bond '{name}' declared"}
+
+        elif stmt_type == "SetContextStmt":
+            key = getattr(stmt, 'key', '')
+            value = getattr(stmt, 'value', '')
+            self.context[key] = value
+            return {"status": "ok", "context": {key: value}}
+
+        elif stmt_type == "PolicyStmt":
+            bucket = getattr(stmt, 'bucket', '')
+            name = getattr(stmt, 'name', '')
+            action = getattr(stmt, 'action', '')
+            condition = getattr(stmt, 'condition', [])
+            self.security.add_policy(bucket, name, action, condition)
+            return {"status": "ok", "policy": name, "message": f"Document-Level Security policy '{name}' active on '{bucket}'"}
 
         elif stmt_type == "IndexStmt":
             bucket = getattr(stmt, 'bucket', '')
