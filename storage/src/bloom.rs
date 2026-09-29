@@ -12,8 +12,11 @@ pub struct BloomFilter {
 
 impl BloomFilter {
     /// Creates a new BloomFilter with `num_bits` bits.
+    /// `num_bits` MUST be a power of 2 (e.g. 1024, 2048, 4096).
     pub fn new(num_bits: usize) -> Self {
-        let num_bytes = (num_bits + 7) / 8;
+        assert!(num_bits > 0 && (num_bits & (num_bits - 1)) == 0, "num_bits must be a power of 2");
+        // Allocate 4 extra bytes of padding for safe AVX2 gather operations
+        let num_bytes = (num_bits + 7) / 8 + 4;
         Self {
             bits: vec![0; num_bytes],
             num_bits,

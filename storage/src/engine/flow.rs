@@ -37,7 +37,16 @@ impl FlowManager {
                 // Mock evaluation: check if body contains the field
                 if let Some(val) = doc.body.get(&rule.predicate_field) {
                     if let Some(num) = val.as_f64() {
-                        if rule.predicate_op == ">" && num > rule.predicate_val {
+                        let matches = match rule.predicate_op.as_str() {
+                            ">" => num > rule.predicate_val,
+                            ">=" => num >= rule.predicate_val,
+                            "<" => num < rule.predicate_val,
+                            "<=" => num <= rule.predicate_val,
+                            "=" | "==" => (num - rule.predicate_val).abs() < f64::EPSILON,
+                            "!=" => (num - rule.predicate_val).abs() >= f64::EPSILON,
+                            _ => false,
+                        };
+                        if matches {
                             return Ok(Some((rule.target_bucket.clone(), &rule.action)));
                         }
                     }

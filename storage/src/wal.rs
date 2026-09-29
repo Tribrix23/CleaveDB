@@ -364,6 +364,9 @@ impl WriteAheadLog {
         let segment_files = Self::find_segment_files(&self.config.dir)?;
         let checkpoint_lsn = self.checkpoint_lsn.load(Ordering::SeqCst);
         let mut entries = Vec::new();
+        // Safety limit: refuse to load more than 10M entries to prevent OOM.
+        // In production, recovery should be streamed/batched.
+        const MAX_RECOVERY_ENTRIES: usize = 10_000_000;
 
         for file in segment_files {
             let mut f = match File::open(&file) {
@@ -376,6 +379,10 @@ impl WriteAheadLog {
                     Ok(Some(entry)) => {
                         if entry.lsn() > checkpoint_lsn {
                             entries.push(entry);
+                            if entries.len() >= MAX_RECOVERY_ENTRIES {
+                                log::warn!("WAL recovery hit {} entry limit — checkpoint more frequently", MAX_RECOVERY_ENTRIES);
+                                return Ok(entries);
+                            }
                         }
                     }
                     Ok(None) => break,

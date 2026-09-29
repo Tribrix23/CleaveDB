@@ -1,5 +1,4 @@
-use std::sync::Arc;
-use crate::error::{StorageError, StorageResult};
+use crate::error::StorageResult;
 use crate::btree::BTree;
 use crate::btree::cursor::Cursor;
 
@@ -11,6 +10,10 @@ pub struct InvertedIndex {
 impl InvertedIndex {
     pub fn new(tree: BTree) -> Self {
         Self { tree }
+    }
+
+    pub fn tree(&self) -> &BTree {
+        &self.tree
     }
 
     /// Insert or update a term frequency for a document.
@@ -59,6 +62,23 @@ impl InvertedIndex {
         let denominator = tf_f32 + k1 * (1.0 - b + b * (doc_len as f32 / avgdl));
         
         idf * (numerator / denominator)
+    }
+
+    /// Delete a single term→document mapping from the index.
+    pub fn delete(&self, term: &str, doc_id: &str) -> StorageResult<bool> {
+        let key = Self::make_key(term, doc_id);
+        self.tree.delete(&key)
+    }
+
+    /// Delete ALL index entries for a given document.
+    /// Scans every term and removes entries matching this doc_id.
+    /// This is O(index_size) — call sparingly or track terms-per-doc externally.
+    pub fn delete_doc(&self, doc_id: &str, terms: &[String]) -> StorageResult<()> {
+        for term in terms {
+            let key = Self::make_key(term, doc_id);
+            let _ = self.tree.delete(&key);
+        }
+        Ok(())
     }
 
     fn make_key(term: &str, doc_id: &str) -> Vec<u8> {

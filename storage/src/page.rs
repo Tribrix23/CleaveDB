@@ -201,7 +201,8 @@ impl Page {
 
     fn compact(&mut self) {
         let mut new_data = Box::new([0; PAGE_SIZE]);
-        new_data[..self.free_space_offset() as usize].copy_from_slice(&self.data[..self.free_space_offset() as usize]);
+        // Copy only the fixed header (not the old slot directory which may contain stale entries)
+        new_data[..PAGE_HEADER_SIZE].copy_from_slice(&self.data[..PAGE_HEADER_SIZE]);
 
         let mut current_data_end = PAGE_SIZE;
         let mut current_slot = 0;
@@ -275,7 +276,10 @@ impl Page {
 
     pub fn delete(&mut self, key: &[u8]) -> bool {
         if let Ok(idx) = self.search_index(key) {
+            // Mark the record's slot as deleted (zero offset)
             self.write_slot(idx, 0, 0);
+            // Compact to remove the ghost slot and reclaim space
+            self.compact();
             true
         } else {
             false

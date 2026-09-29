@@ -19,14 +19,6 @@ impl Cursor {
     /// Traverses the left-most children from root to leaf.
     pub fn new(tree: &BTree) -> StorageResult<Self> {
         let root_id = tree.root_page_id.load(Ordering::SeqCst);
-        if root_id == 0 {
-            return Ok(Cursor {
-                pool: tree.pool.clone(),
-                file_path: tree.file_path.clone(),
-                current_page_id: None,
-                current_index: 0,
-            });
-        }
 
         let mut curr_page_id = root_id;
         loop {
@@ -35,6 +27,15 @@ impl Cursor {
             let page = guard.as_ref().unwrap();
 
             if page.page_type() == PageType::Leaf {
+                // If leaf is empty, no entries to iterate
+                if page.n_entries() == 0 {
+                    return Ok(Cursor {
+                        pool: tree.pool.clone(),
+                        file_path: tree.file_path.clone(),
+                        current_page_id: None,
+                        current_index: 0,
+                    });
+                }
                 return Ok(Cursor {
                     pool: tree.pool.clone(),
                     file_path: tree.file_path.clone(),
@@ -66,14 +67,6 @@ impl Cursor {
     /// Sets `current_index` to the exact index (using `page.search_index`).
     pub fn seek(tree: &BTree, key: &[u8]) -> StorageResult<Self> {
         let root_id = tree.root_page_id.load(Ordering::SeqCst);
-        if root_id == 0 {
-            return Ok(Cursor {
-                pool: tree.pool.clone(),
-                file_path: tree.file_path.clone(),
-                current_page_id: None,
-                current_index: 0,
-            });
-        }
 
         let mut curr_page_id = root_id;
         loop {

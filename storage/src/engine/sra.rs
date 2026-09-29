@@ -1,5 +1,5 @@
 use crate::simd_ffi::{multi_head_attention, dot_product};
-use crate::error::StorageResult;
+use crate::error::{StorageError, StorageResult};
 
 /// Semantic Relevance Attention (SRA)
 /// Performs cross-attention scoring between a query vector and document embeddings.
@@ -28,6 +28,12 @@ impl SemanticRelevanceAttention {
     /// Scores a batch of documents against a query.
     /// Hybrid BM25 + Semantic scoring.
     pub fn score_documents(&self, query_seq: &[f32], doc_seqs: &[Vec<f32>], bm25_scores: &[f32]) -> StorageResult<Vec<f32>> {
+        if bm25_scores.len() != doc_seqs.len() {
+            return Err(StorageError::Corruption(
+                format!("bm25_scores length ({}) != doc_seqs length ({})", bm25_scores.len(), doc_seqs.len())
+            ));
+        }
+
         let seq_len = query_seq.len() / self.embed_dim;
         let mut results = Vec::with_capacity(doc_seqs.len());
         

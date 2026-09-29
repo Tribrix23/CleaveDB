@@ -22,5 +22,5 @@ pub use operations::Database;
 pub use vector_index::VectorIndex;
 pub use sra::SemanticRelevanceAttention;
 pub use stats::{StatsManager, Histogram, HyperLogLog};
-pub use volcano::{ExecutorNode, FullScanNode, TextSearchScan, NumericProbe, BondJoin};
+pub use volcano::{ExecutorNode, FullScanNode, FilterNode, TextSearchScanNode, LimitNode, TopKNode, BondJoinNode};
 pub use flow::{FlowManager, FlowRule, FlowAction};

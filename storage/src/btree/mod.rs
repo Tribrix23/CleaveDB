@@ -9,6 +9,9 @@ use crate::wal::WriteAheadLog;
 pub mod cursor;
 pub mod bulk;
 
+/// Maximum allowed tree depth. Prevents infinite loops on corrupt data (cyclic child pointers).
+const MAX_BTREE_DEPTH: usize = 64;
+
 /// The B+Tree core operations
 pub struct BTree {
     pub pool: Arc<BufferPool>,
@@ -61,8 +64,12 @@ impl BTree {
     /// Point lookup
     pub fn get(&self, key: &[u8]) -> StorageResult<Option<Vec<u8>>> {
         let mut curr_id = self.root_page_id.load(Ordering::SeqCst);
+        let mut depth = 0;
         
         loop {
+            if depth >= MAX_BTREE_DEPTH {
+                return Err(StorageError::Corruption("B+Tree depth exceeds maximum — possible cycle in child pointers".into()));
+            }
             let pinned = self.pool.fetch(&self.file_path, curr_id)?;
             let guard = pinned.read();
             let page = guard.as_ref().unwrap();
@@ -71,6 +78,7 @@ impl BTree {
                 return Ok(page.get(key).map(|v| v.to_vec()));
             } else if page.page_type() == PageType::Internal {
                 curr_id = page.search_child(key);
+                depth += 1;
             } else {
                 return Err(StorageError::Corruption("Invalid page type in traversal".into()));
             }
@@ -81,13 +89,17 @@ impl BTree {
     pub fn insert(&self, key: &[u8], value: &[u8]) -> StorageResult<()> {
         self.wal.log_put(&self.tree_name, key, value)?;
         
-        let mut root_id = self.root_page_id.load(Ordering::SeqCst);
+        let root_id = self.root_page_id.load(Ordering::SeqCst);
         
         // 1. Traverse down and keep track of path for bottom-up split
         let mut path = Vec::new();
         let mut curr_id = root_id;
+        let mut depth = 0;
         
         loop {
+            if depth >= MAX_BTREE_DEPTH {
+                return Err(StorageError::Corruption("B+Tree depth exceeds maximum during insert".into()));
+            }
             let pinned = self.pool.fetch(&self.file_path, curr_id)?;
             let mut guard = pinned.write();
             let page = guard.as_mut().unwrap();
@@ -135,6 +147,7 @@ impl BTree {
                 drop(guard);
                 path.push((curr_id, pinned));
                 curr_id = next_id;
+                depth += 1;
             }
         }
     }
@@ -201,8 +214,12 @@ impl BTree {
         self.wal.log_delete(&self.tree_name, key)?;
         
         let mut curr_id = self.root_page_id.load(Ordering::SeqCst);
+        let mut depth = 0;
         
         loop {
+            if depth >= MAX_BTREE_DEPTH {
+                return Err(StorageError::Corruption("B+Tree depth exceeds maximum during delete".into()));
+            }
             let pinned = self.pool.fetch(&self.file_path, curr_id)?;
             let mut guard = pinned.write();
             let page = guard.as_mut().unwrap();
@@ -216,6 +233,7 @@ impl BTree {
             } else {
                 let next_id = page.search_child(key);
                 curr_id = next_id;
+                depth += 1;
             }
         }
     }

@@ -5,12 +5,11 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"unsafe"
 )
 
 //export ScatterGather
 func ScatterGather(query *C.char, numShards C.int) *C.char {
-	// 72-73 Coordinator core
-	// Scatter-gather with goroutines, context cancellation
 	qStr := C.GoString(query)
 	n := int(numShards)
 
@@ -21,15 +20,15 @@ func ScatterGather(query *C.char, numShards C.int) *C.char {
 
 	for i := 0; i < n; i++ {
 		go func(shardID int) {
-			// Mocking shard query execution
+			// Mock shard query execution using the actual query string
 			select {
 			case <-ctx.Done():
-			case results <- fmt.Sprintf("shard_%d_result", shardID):
+			case results <- fmt.Sprintf("shard_%d:%s", shardID, qStr):
 			}
 		}(i)
 	}
 
-	var collected []string
+	collected := make([]string, 0, n)
 	for i := 0; i < n; i++ {
 		select {
 		case <-ctx.Done():
@@ -39,18 +38,20 @@ func ScatterGather(query *C.char, numShards C.int) *C.char {
 		}
 	}
 
-	// 74 K-way merge (mocked here, full merge in merge.go)
 	merged := KWayMerge(collected)
 	return C.CString(merged)
 }
 
+//export FreeCString
+func FreeCString(s *C.char) {
+	C.free(unsafe.Pointer(s))
+}
+
 //export StartBackgroundWorkers
 func StartBackgroundWorkers() {
-	// 75-76 Background workers
 	go func() {
 		for {
 			time.Sleep(10 * time.Second)
-			// Flow rule evaluator, TTL expiry, WAL checkpoint
 			fmt.Println("[Go Coordinator] Background workers ran")
 		}
 	}()

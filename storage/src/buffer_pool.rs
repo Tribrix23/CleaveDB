@@ -330,7 +330,7 @@ fn read_page_from_file(file_path: &Path, page_id: PageId) -> StorageResult<Page>
     Page::from_bytes(buf)
 }
 
-fn write_page_to_file(file_path: &Path, page_id: PageId, _page: &Page) -> StorageResult<()> {
+fn write_page_to_file(file_path: &Path, page_id: PageId, page: &Page) -> StorageResult<()> {
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -341,8 +341,7 @@ fn write_page_to_file(file_path: &Path, page_id: PageId, _page: &Page) -> Storag
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| StorageError::Io(e))?;
 
-    let buf = [0u8; PAGE_SIZE]; // Replace with page.as_bytes()
-    file.write_all(&buf)
+    file.write_all(page.to_bytes())
         .map_err(|e| StorageError::Io(e))?;
 
     Ok(())
