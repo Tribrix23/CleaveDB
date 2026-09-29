@@ -10,7 +10,7 @@
 
 <br/>
 
-**CleaveDB 3.0** is an experimental, hybrid NoSQL database built for extreme performance and expressive relationship traversal. It bridges the gap between document flexibility and graph connectivity. The engine is written in **Rust** (with C++ AVX-512 extensions) for zero-cost abstractions, bounded by a **Python** frontend (PyO3) that powers the heavily optimized **CleaveQL** query language, with a **Go** coordinator for distributed scatter-gather routing.
+**CleaveDB 3.0** is an experimental, hybrid NoSQL database built for extreme performance and expressive relationship traversal. It bridges the gap between document flexibility and graph connectivity. The engine is written in **Rust** (with C++ AVX-512 extensions) for zero-cost abstractions, bounded by a **Python** frontend (PyO3) that powers the heavily optimized **Conversational CleaveQL** query language, with a **Go** coordinator for distributed scatter-gather routing.
 
 ---
 
@@ -77,17 +77,28 @@ POUR MANY INTO users [
 ```
 *Note: CleaveDB is schema-less. You can insert any valid JSON structure into a bucket.*
 
-### Step 3: Querying Data (SCOOP)
-To read data, we use the `SCOOP` command. CleaveDB features a native inverted index for high-speed text search.
+### Step 3: Conversational Extractions (SCOOP)
+CleaveDB is fundamentally a non-SQL database. We do not use legacy SELECT, WHERE, or JOIN statements. Instead, CleaveQL uses a **Conversational Data Language** designed to read exactly like plain English.
 
-```sql
--- Fetch all users in engineering via fast text extraction
-SCOOP FROM users MENTIONING "engineering"
+Data is extracted using the SCOOP command, paired with **Command Modes** and **Fluent Predicates**:
 
--- Fetch with a limit
-SCOOP FROM users MENTIONING "sales" LIMIT 1
-```
+`sql
+-- 1. Extract everything from a bucket
+SCOOP EVERYTHING FROM users
 
+-- 2. Extract only unique fields (The engine hashes and drops duplicates)
+SCOOP ONLY UNIQUE city FROM users
+
+-- 3. Extract a limited slice natively from the B+Tree
+SCOOP THE FIRST 5 FROM orders
+
+-- 4. Fluent Predicates (No math symbols like '=', '>', '<')
+SCOOP EVERYTHING FROM users WHOSE role IS "dev"
+
+-- 5. Field Projections (Yielding specific keys and dropping the rest)
+SCOOP THE FIRST 10 FROM users WHOSE city IS "Seattle" YIELD name, email
+`
+This syntax allows you to express complex extraction logic naturally without breaking mental flow.
 ### Step 4: Modifying & Deleting Data
 Partial updates and deletions are extremely fast thanks to the B+Tree backend.
 
@@ -207,4 +218,6 @@ python test_security.py
 
 ## 📄 License
 MIT License
+
+
 

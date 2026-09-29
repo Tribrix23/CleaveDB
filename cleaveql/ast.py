@@ -30,6 +30,12 @@ class ScoopStmt(ASTNode):
     mentioning: Optional[str] = None
     meaning: Optional[str] = None
     include: List[str] = field(default_factory=list)
+    matching: Optional[dict] = None
+    yield_fields: List[str] = field(default_factory=list)
+    mode: str = "EVERYTHING"
+    mode_count: Optional[int] = None
+    whose_field: Optional[str] = None
+    whose_value: Any = None
     limit: Optional[int] = None
     order_by: Optional[str] = None
     order_dir: Optional[str] = None
@@ -149,3 +155,10 @@ class PolicyStmt(ASTNode):
 class SetContextStmt(ASTNode):
     key: str = ""
     value: Any = None
+
+@dataclass
+class MaskStmt(ASTNode):
+    field: str = ''
+    bucket: str = ''
+    condition: Any = None
+

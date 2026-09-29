@@ -61,72 +61,55 @@ class Parser:
         raise self.error(self.peek(), "Expected a statement.")
 
     def scoop_stmt(self) -> ScoopStmt:
-        self.consume(TokenType.FROM, "Expected 'from' after 'scoop'.")
+        mode = "EVERYTHING"
+        mode_count = None
+        yield_fields = []
+        
+        # Parse modes
+        if self.match(TokenType.EVERYTHING):
+            mode = "EVERYTHING"
+        elif self.match(TokenType.ONLY):
+            self.consume(TokenType.UNIQUE, "Expected 'unique' after 'only'.")
+            mode = "UNIQUE"
+            yield_fields.append(self.consume_identifier("Expected field for unique."))
+            while self.match(TokenType.COMMA):
+                yield_fields.append(self.consume_identifier("Expected field after comma."))
+        elif self.match(TokenType.THE):
+            if self.match(TokenType.FIRST):
+                mode = "FIRST"
+                mode_count = self.consume(TokenType.INTEGER, "Expected number after 'first'.").value
+            elif self.match(TokenType.LAST):
+                mode = "LAST"
+                mode_count = self.consume(TokenType.INTEGER, "Expected number after 'last'.").value
+            else:
+                raise self.error(self.peek(), "Expected 'first' or 'last'.")
+                
+        self.consume(TokenType.FROM, "Expected 'from' after scoop modifiers.")
         bucket = self.consume_identifier("Expected bucket name.")
         
-        where = None
-        mentioning = None
-        meaning = None
-        include_list = []
-        order_by = None
+        whose_field = None
+        whose_value = None
         
-        while self.match(TokenType.WHERE, TokenType.WHOSE, TokenType.MEANING, TokenType.MENTIONING, TokenType.NEAR, TokenType.SINCE, TokenType.UNTIL, TokenType.ORDER, TokenType.INCLUDE):
-            clause_type = self.previous().type
-            if clause_type == TokenType.WHERE:
-                where = self._parse_where()
-            elif clause_type == TokenType.MENTIONING:
-                tok = self.consume(TokenType.STRING, "Expected string after 'mentioning'.")
-                mentioning = tok.value or tok.lexeme
-            elif clause_type == TokenType.MEANING:
-                tok = self.consume(TokenType.STRING, "Expected string after 'meaning'.")
-                meaning = tok.value or tok.lexeme
-            elif clause_type == TokenType.INCLUDE:
-                include_list.append(self.consume_identifier("Expected bond/bucket name after 'include'."))
-            elif clause_type == TokenType.ORDER:
-                if self.match(TokenType.BY):
-                    pass
-                if self.match(TokenType.NEWEST, TokenType.OLDEST, TokenType.RELEVANCE):
-                    order_by = self.previous().lexeme
-                else:
-                    order_by = self.consume_identifier("Expected sort order.")
-            else:
-                # WHOSE, NEAR, SINCE, UNTIL - consume expression tokens
-                self.expression()
-            
-        limit = None
-        if self.match(TokenType.LIMIT):
-            limit_tok = self.consume(TokenType.INTEGER, "Expected integer for limit.")
-            limit = limit_tok.value if limit_tok.value is not None else int(limit_tok.lexeme)
-            
-        return ScoopStmt(bucket=bucket, where=where, mentioning=mentioning, meaning=meaning, include=include_list, limit=limit, order_by=order_by)
-
-    def scoop_clause(self, clause_type: TokenType) -> Any:
-        if clause_type == TokenType.WHERE:
-            return WhereClause(self.expression())
-        elif clause_type == TokenType.WHOSE:
-            return dict(clause_type="whose", expr=self.expression())
-        elif clause_type == TokenType.MEANING:
-            return dict(clause_type="meaning", expr=self.expression())
-        elif clause_type == TokenType.MENTIONING:
-            return dict(clause_type="mentioning", expr=self.expression())
-        elif clause_type == TokenType.NEAR:
-            return dict(clause_type="near", expr=self.expression())
-        elif clause_type == TokenType.SINCE:
-            return dict(clause_type="since", expr=self.expression())
-        elif clause_type == TokenType.UNTIL:
-            return dict(clause_type="until", expr=self.expression())
-        elif clause_type == TokenType.ORDER:
-            return dict(clause_type="order", expr=self.expression())
-        elif clause_type == TokenType.INCLUDE:
-            return dict(clause_type="include", expr=self.expression())
-        raise self.error(self.peek(), "Invalid scoop clause.")
+        # We can loop through remaining clauses
+        while self.match(TokenType.WHOSE, TokenType.MATCHING, TokenType.YIELD):
+            ctype = self.previous().type
+            if ctype == TokenType.WHOSE:
+                whose_field = self.consume_identifier("Expected field after 'whose'.")
+                self.consume(TokenType.IS, "Expected 'is' after field.")
+                whose_value = self.consume_value("Expected value after 'is'.")
+            elif ctype == TokenType.YIELD:
+                yield_fields.append(self.consume_identifier("Expected field name to yield."))
+                while self.match(TokenType.COMMA):
+                    yield_fields.append(self.consume_identifier("Expected field name after comma."))
+                    
+        return ScoopStmt(bucket=bucket, mode=mode, mode_count=mode_count, whose_field=whose_field, whose_value=whose_value, yield_fields=yield_fields)
 
     def count_stmt(self) -> CountStmt:
         self.consume(TokenType.FROM, "Expected 'from' after 'count'.")
         bucket = self.consume_identifier("Expected bucket name.")
         
         clauses = []
-        while self.match(TokenType.WHERE, TokenType.WHOSE, TokenType.MEANING, TokenType.MENTIONING, TokenType.NEAR, TokenType.SINCE, TokenType.UNTIL, TokenType.ORDER, TokenType.INCLUDE):
+        while self.match(TokenType.WHERE, TokenType.WHOSE, TokenType.MEANING, TokenType.MENTIONING, TokenType.NEAR, TokenType.SINCE, TokenType.UNTIL, TokenType.ORDER, TokenType.INCLUDE, TokenType.MATCHING, TokenType.YIELD):
             clauses.append(self.scoop_clause(self.previous().type))
             
         where = None
@@ -144,7 +127,7 @@ class Parser:
         field = self.consume_identifier("Expected field name.")
         
         clauses = []
-        while self.match(TokenType.WHERE, TokenType.WHOSE, TokenType.MEANING, TokenType.MENTIONING, TokenType.NEAR, TokenType.SINCE, TokenType.UNTIL, TokenType.ORDER, TokenType.INCLUDE):
+        while self.match(TokenType.WHERE, TokenType.WHOSE, TokenType.MEANING, TokenType.MENTIONING, TokenType.NEAR, TokenType.SINCE, TokenType.UNTIL, TokenType.ORDER, TokenType.INCLUDE, TokenType.MATCHING, TokenType.YIELD):
             clauses.append(self.scoop_clause(self.previous().type))
             
         return DistillStmt(bucket=bucket, agg_function=agg_function, field=field)
@@ -264,6 +247,16 @@ class Parser:
             
             from .ast import PolicyStmt
             return PolicyStmt(name=name, bucket=bucket, action=action, condition=condition)
+
+        elif self.match(TokenType.MASK):
+            field = self.consume_identifier("Expected field name to mask.")
+            self.consume(TokenType.ON, "Expected 'on' after field name.")
+            bucket = self.consume_identifier("Expected bucket name.")
+            self.consume(TokenType.USING, "Expected 'using' after bucket name.")
+            condition = self.expression()
+            from .ast import MaskStmt
+            return MaskStmt(field=field, bucket=bucket, condition=condition)
+
             
         elif self.match(TokenType.FLOW):
             self.consume(TokenType.FROM, "Expected 'from' after 'shape flow'.")

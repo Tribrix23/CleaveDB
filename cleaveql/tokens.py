@@ -65,7 +65,18 @@ class TokenType(Enum):
     AND = auto()
     OR = auto()
     NOT = auto()
+    MATCHING = auto()
+    IS = auto()
+    RANDOM = auto()
+    LAST = auto()
+    FIRST = auto()
+    THE = auto()
+    UNIQUE = auto()
+    ONLY = auto()
+    EVERYTHING = auto()
+    YIELD = auto()
     POLICY = auto()
+    MASK = auto()
     FOR = auto()
     USING = auto()
     READ = auto()
@@ -143,6 +154,7 @@ class TokenType(Enum):
 
 KEYWORDS = {
     'policy': TokenType.POLICY,
+    'mask': TokenType.MASK,
     'for': TokenType.FOR,
     'using': TokenType.USING,
     'read': TokenType.READ,
@@ -208,6 +220,16 @@ KEYWORDS = {
     'and': TokenType.AND,
     'or': TokenType.OR,
     'not': TokenType.NOT,
+    'matching': TokenType.MATCHING,
+    'is': TokenType.IS,
+    'random': TokenType.RANDOM,
+    'last': TokenType.LAST,
+    'first': TokenType.FIRST,
+    'the': TokenType.THE,
+    'unique': TokenType.UNIQUE,
+    'only': TokenType.ONLY,
+    'everything': TokenType.EVERYTHING,
+    'yield': TokenType.YIELD,
     'newest': TokenType.NEWEST,
     'oldest': TokenType.OLDEST,
     'relevance': TokenType.RELEVANCE,
@@ -241,6 +263,7 @@ class Token:
 
     # Security Features
     POLICY = auto()
+    MASK = auto()
     FOR = auto()
     USING = auto()
     READ = auto()

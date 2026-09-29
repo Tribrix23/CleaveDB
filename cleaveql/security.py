@@ -22,23 +22,55 @@ class PolicyEngine:
             return True
             
         expr_str = "".join([t.lexeme for t in condition_tokens])
+        
+        # Support == and !=
         import re
         
-        # Match pattern 1: field == @context
-        m1 = re.match(r'^([a-zA-Z_]+)==@([a-zA-Z_]+)$', expr_str)
+        m1 = re.match(r'^([a-zA-Z_]+)(==|!=)@([a-zA-Z_]+)$', expr_str)
         if m1:
             field = m1.group(1)
-            ctx_key = m1.group(2)
-            return document.get(field) == context.get(ctx_key)
+            op = m1.group(2)
+            ctx_key = m1.group(3)
+            val1 = document.get(field)
+            val2 = context.get(ctx_key)
+            if op == '==': return val1 == val2
+            if op == '!=': return val1 != val2
             
-        # Match pattern 2: @context == "value"
-        m2 = re.match(r'^@([a-zA-Z_]+)==\"?([a-zA-Z0-9_]+)\"?$', expr_str)
+        m2 = re.match(r'^@([a-zA-Z_]+)(==|!=)"?([a-zA-Z0-9_]+)"?$', expr_str)
         if m2:
             ctx_key = m2.group(1)
-            val = m2.group(2)
-            return context.get(ctx_key) == val
+            op = m2.group(2)
+            val1 = context.get(ctx_key)
+            val2 = m2.group(3)
+            if op == '==': return val1 == val2
+            if op == '!=': return val1 != val2
             
         return False
+
+
+    def add_mask(self, bucket: str, field: str, condition_ast):
+        if not hasattr(self, 'masks'):
+            self.masks = {}
+        if bucket not in self.masks:
+            self.masks[bucket] = []
+        self.masks[bucket].append({
+            'field': field,
+            'condition': condition_ast
+        })
+
+    def apply_masks(self, bucket: str, document: dict, context: dict) -> dict:
+        if not hasattr(self, 'masks') or bucket not in self.masks:
+            return document
+            
+        import copy
+        masked_doc = copy.deepcopy(document)
+        for mask in self.masks[bucket]:
+            # If the condition evaluates to True, we APPLY the mask (redact it)
+            if self._evaluate_condition(mask['condition'], masked_doc, context):
+                field = mask['field']
+                if field in masked_doc:
+                    masked_doc[field] = "***MASKED***"
+        return masked_doc
 
     def check_read(self, bucket: str, document: dict, context: dict) -> bool:
 
