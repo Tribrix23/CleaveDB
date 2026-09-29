@@ -235,7 +235,7 @@ async def main():
     print(f"=========================================")
     async with server:
         asyncio.create_task(cron_worker())
-    await server.serve_forever()
+        await server.serve_forever()
 
 if __name__ == '__main__':
     try:
