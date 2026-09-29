@@ -12,6 +12,65 @@ SECURITY_QUESTIONS = [
     "What was the make of your first car?"
 ]
 
+
+HELP_TEXT = """
+================================================================================
+  CleaveDB 3.0 Manual (CleaveQL) - Complete Comprehensive Reference
+================================================================================
+
+1. WRITE & UPDATE (Mutations)
+  POUR INTO <bucket> "<id>" {json}           - Insert/upsert document (use RANDOM for auto-ID).
+  POUR MANY INTO <bucket> [{json}, {json}]   - Bulk insert multiple documents.
+  CHANGE <id> IN <bucket> TO <field> = <val> - Update specific fields.
+  DRAIN <bucket> "<id>"                      - Delete a document.
+  DRAIN <bucket> BEFORE "<date>"             - Bulk delete old documents.
+
+2. READ & SEARCH (SCOOP Engine)
+  SCOOP EVERYTHING FROM <bucket>
+  SCOOP THE [FIRST|LAST] <N> FROM <bucket>
+  SCOOP THE [HIGHEST|LOWEST] <N> <field> FROM <bucket>
+  
+  [Modifiers - chainable]
+  ... WHOSE <field> IS <value>            - Exact field match filter.
+  ... MEANING "<text>"                    - AI Vector Semantic Search (Hardware-accelerated).
+  ... MENTIONING "<text>"                 - Full Text Search (Substring/BM25).
+  ... ARRANGED BY <field> GOING [UP|DOWN] - Sort results.
+  ... YIELD <field1>, <field2>            - Return specific fields only.
+
+3. ANALYTICS & AGGREGATION
+  SCOOP THE TALLY OF <bucket>             - Total document count.
+  SCOOP ONLY UNIQUE <field> FROM <bucket> - Returns distinct field values.
+  SCOOP TOTAL <field> GROUPED BY <field> FROM <bucket> - Grouped summation.
+  DISTILL <bucket>                        - Advanced pipeline aggregation.
+
+4. GRAPH RELATIONS (15D Bonds)
+  BOND "<id1>" TO "<id2>" AS "<label>"    - Create relationship.
+    [Modifiers]: MUTUAL, CASCADE, EXCLUSIVELY, CONFIDENCE <float>, 
+                 AFFINITY <float>, EXPIRES IN <seconds>, CONDITION <field> = <val>
+  SCOOP THE <label> OF <bucket> "<id>"    - Traversal (e.g. SCOOP THE friend OF users "u1").
+  SCOOP RELATED "<label>" FROM "<id>"     - Returns detailed metadata about bonds.
+  SUGGEST BONDS                           - AI suggests missing logical relationships.
+  FOLLOW ...                              - Legacy graph API traversal.
+
+5. SECURITY (DLS & Masking)
+  MASK <field> IN <bucket>                - Redact field (***) from standard users.
+  POLICY <name> ON <bucket> TO <action> WHERE <field> = <val> - Row-level security.
+  SET CONTEXT <key> TO "<value>"          - Set session state (e.g. SET CONTEXT role TO "admin").
+
+6. INFRASTRUCTURE & SCHEDULING
+  SHAPE BUCKET <bucket>                   - Configures a bucket (TTL, Max Docs).
+  SHAPE PROJECTION ...                    - Defines a virtual materialized view.
+  INDEX <field> IN <bucket>               - Builds B+Tree index for O(log N) lookups.
+  SCHEDULE EVERY <seconds> SECONDS "<cmd>"- Registers a background Cron daemon.
+
+7. DIAGNOSTICS & METADATA
+  SHOW BUCKETS                            - List all active buckets.
+  DESCRIBE <bucket>                       - Display statistics for a specific bucket.
+  HEAL ALL  (or HEAL BUCKET <bucket>)     - Reclaim WAL space & defragment buffer pool.
+  PEER EXPLAIN "<query>"                  - Print internal Rust execution plan.
+================================================================================
+"""
+
 def do_register(f):
     print("\n--- Register New User ---")
     username = input("Username: ").strip()
@@ -180,6 +239,9 @@ def main():
             cmd = input("cleavedb> ").strip()
             if cmd.lower() in ['exit', 'quit']:
                 break
+            if cmd.lower() in ['?', 'help']:
+                print(HELP_TEXT)
+                continue
             if not cmd:
                 continue
             
