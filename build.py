@@ -46,7 +46,7 @@ def main():
 
     print("\n[4/4] Python Bindings")
     if check_tool('maturin'):
-        run('maturin develop --release', cwd=os.path.join(root, 'storage'))
+        run('pip install .', cwd=os.path.join(root, 'storage'))
     else:
         print("  INFO: maturin not found, using cargo build only")
         print("  Install maturin for Python bindings: pip install maturin")

@@ -1,5 +1,3 @@
-//! FFI bindings to the Go Coordinator
-
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 

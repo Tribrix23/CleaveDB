@@ -1,0 +1,7 @@
+
+# Go Coordinator Build Artifacts
+coordinator.def
+coordinator.exp
+coordinator.lib
+libcoordinator.dll
+libcoordinator.h

@@ -179,9 +179,29 @@ impl CleaveDB {
         let target = target.unwrap_or("buckets");
         match target {
             "buckets" => {
-                let names: Vec<String> = self.db.catalog.buckets.iter()
-                    .map(|b| b.name.clone())
-                    .collect();
+                let mut unique_buckets = std::collections::HashSet::new();
+                
+                // Add any explicitly defined buckets from catalog
+                for b in &self.db.catalog.buckets {
+                    unique_buckets.insert(b.name.clone());
+                }
+                
+                // Scan all shards to find implicit buckets (schema-less)
+                for shard in self.db.shards.all_shards() {
+                    if let Ok(mut cursor) = crate::btree::cursor::Cursor::new(shard) {
+                        while let Ok(Some((key, _))) = cursor.next() {
+                            if let Ok(key_str) = std::str::from_utf8(&key) {
+                                if let Some(idx) = key_str.find(':') {
+                                    let bucket_name = &key_str[..idx];
+                                    unique_buckets.insert(bucket_name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                let mut names: Vec<String> = unique_buckets.into_iter().collect();
+                names.sort();
                 Ok(serde_json::to_string_pretty(&names).unwrap_or_default())
             }
             "bonds" => {
