@@ -24,7 +24,7 @@ class Parser:
         if self.match(TokenType.SCOOP):
             return self.scoop_stmt()
         if self.match(TokenType.COUNT):
-            return self.count_stmt()
+            return self.scoop_stmt() # Fallback for legacy count
         if self.match(TokenType.DISTILL):
             return self.distill_stmt()
         if self.match(TokenType.FOLLOW):
@@ -140,7 +140,7 @@ class Parser:
         
         where = None
         if self.match(TokenType.WHERE):
-            where = self.where_clause()
+            where = self._parse_where()
             
         whose_field = None
         whose_value = None

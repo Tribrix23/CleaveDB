@@ -46,7 +46,7 @@ def run_benchmarks():
         'count from shop/orders where total > 50',
         'heal all', 'show buckets',
         'drain shop/orders "o1"',
-        'bond cust from shop/orders.customer to shop/customers',
+        'BOND "o1" TO "c1" AS "cust"',
         'describe shop/orders',
     ]
     lats = []

@@ -6,3 +6,6 @@ storage/target/
 target/
 *.exe
 
+
+cleavedb.key
+cleavedb_server_data/

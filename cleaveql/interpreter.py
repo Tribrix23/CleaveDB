@@ -165,17 +165,70 @@ class Interpreter:
             else:
                 filtered_docs = docs
 
+            # Apply Row-Level Security Read Filters
+            if hasattr(self, 'security'):
+                filtered_docs = [d for d in filtered_docs if self.security.check_read(bucket, d['body'], self.context)]
 
+            # Apply WHOSE
+            if whose_field and whose_value is not None:
+                filtered_docs = [d for d in filtered_docs if d['body'].get(whose_field) == whose_value]
 
+            # Handle Sorting (ARRANGED BY, HIGHEST, LOWEST)
             arrange_field = getattr(stmt, 'arrange_field', None)
             if arrange_field:
                 arrange_dir = getattr(stmt, 'arrange_dir', 'ASC')
-                # Sort robustly, handling missing fields
                 filtered_docs.sort(key=lambda x: x['body'].get(arrange_field, ""), reverse=(arrange_dir == "DESC"))
+            elif mode in ("HIGHEST", "LOWEST"):
+                target_field = getattr(stmt, 'target_field', None)
+                if target_field:
+                    filtered_docs.sort(key=lambda x: x['body'].get(target_field, 0), reverse=(mode == "HIGHEST"))
 
+            # Handle Limits
+            if mode in ("FIRST", "HIGHEST", "LOWEST") and mode_count is not None:
+                filtered_docs = filtered_docs[:mode_count]
+            elif mode == "LAST" and mode_count is not None:
+                filtered_docs = filtered_docs[-mode_count:]
+            
             if limit is not None:
                 filtered_docs = filtered_docs[:limit]
-            
+
+            # Apply Yield (Field Projection)
+            if yield_fields:
+                for d in filtered_docs:
+                    d['body'] = {k: v for k, v in d['body'].items() if k in yield_fields}
+
+            # Apply Field Masking
+            if hasattr(self, 'security'):
+                for d in filtered_docs:
+                    d['body'] = self.security.apply_masks(bucket, d['body'], self.context)
+
+            # Analytics Returns
+            if mode == "TALLY":
+                return {"status": "ok", "mode": mode, "count": len(filtered_docs)}
+            elif mode == "UNIQUE":
+                target_field = getattr(stmt, 'target_field', None)
+                if target_field:
+                    seen = set()
+                    unique_vals = []
+                    for d in filtered_docs:
+                        val = d['body'].get(target_field)
+                        if val not in seen:
+                            seen.add(val)
+                            unique_vals.append(val)
+                    return {"status": "ok", "mode": mode, "values": unique_vals, "count": len(unique_vals)}
+            elif mode == "TOTAL":
+                group_by = getattr(stmt, 'group_by', None)
+                target_field = getattr(stmt, 'target_field', None)
+                if target_field and group_by:
+                    groups = {}
+                    for d in filtered_docs:
+                        gv = d['body'].get(group_by, "unknown")
+                        tv = d['body'].get(target_field, 0)
+                        if isinstance(tv, (int, float)):
+                            groups[gv] = groups.get(gv, 0) + tv
+                    results = [{"group": k, "total": v} for k, v in groups.items()]
+                    return {"status": "ok", "mode": mode, "results": results, "count": len(results)}
+
             return {"status": "ok", "mode": mode, "documents": filtered_docs, "count": len(filtered_docs)}
 
         elif stmt_type == "CountStmt":
