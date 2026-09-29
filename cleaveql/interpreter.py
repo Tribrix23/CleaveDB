@@ -143,107 +143,29 @@ class Interpreter:
             if mentioning:
                 docs = [d for d in docs if mentioning.lower() in json.dumps(d['body']).lower()]
                 
-            # 1.5. Apply MEANING (Hardware-Efficient Semantic AI Search)
+            # 1.5. Apply MEANING (Real Hardware-Efficient Semantic AI Search)
             if meaning:
-                # Simulated Quantized Embedding Inference (AVX-512 mock)
-                search_terms = meaning.lower().replace('something', '').strip().split()
-                # Tiny simulated neural weights mapping
-                semantic_map = {
-                    "warm": ["coat", "wool", "heater", "fire", "jacket", "sweater"],
-                    "winter": ["coat", "snow", "cold", "ice", "wool", "jacket", "boots"],
-                    "fast": ["speed", "quick", "rapid", "acceleration", "car"],
-                }
-                expanded_terms = set(search_terms)
-                for t in search_terms:
-                    if t in semantic_map:
-                        expanded_terms.update(semantic_map[t])
+                from attention.sra import get_embedding
+                import numpy as np
                 
-                scored_docs = []
+                query_vec = get_embedding(meaning)
+                temp = []
                 for doc in docs:
-                    score = 0
-                    doc_text = json.dumps(doc['body']).lower()
-                    for term in expanded_terms:
-                        if term in doc_text:
-                            # Add weight for semantic hit
-                            score += 0.85
-                    if score > 0:
-                        doc["_embedding_distance"] = round(1.0 - (score / 10.0), 4) # simulated HNSW distance
-                        scored_docs.append(doc)
-                
-                scored_docs.sort(key=lambda x: x["_embedding_distance"])
-                docs = scored_docs
-
-            
-            # 2. Apply DLS
-            filtered_docs = []
-            for doc in docs:
-                if self.security.check_read(bucket, doc.get('body', {}), self.context):
-                    doc['body'] = self.security.apply_masks(bucket, doc['body'], self.context)
-                    filtered_docs.append(doc)
-            
-            # 3. Apply WHOSE
-            if whose_field and whose_value is not None:
-                temp = []
-                for doc in filtered_docs:
-                    if doc['body'].get(whose_field) == whose_value:
-                        temp.append(doc)
-                filtered_docs = temp
-
-            # 4. Apply INCLUDE
-            if include:
-                temp = []
-                for doc in filtered_docs:
-                    new_body = {}
-                    for field in include:
-                        if field in doc['body']:
-                            new_body[field] = doc['body'][field]
-                    doc['body'] = new_body
-                    temp.append(doc)
-
-            # 5. Apply Mode
-            # Analytics Execution
-            if mode == "TALLY":
-                return {"status": "ok", "mode": mode, "documents": filtered_docs, "count": len(filtered_docs)}
-                
-            elif mode == "UNIQUE":
-                seen = set()
-                final_docs = []
-                field = getattr(stmt, 'target_field', None)
-                for doc in filtered_docs:
-                    val = doc['body'].get(field)
-                    if val not in seen:
-                        seen.add(val)
-                        final_docs.append({"gid": doc["gid"], "body": {field: val}})
-                return {"status": "ok", "mode": mode, "documents": final_docs, "count": len(final_docs)}
-                
-            elif mode == "TOTAL":
-                field = getattr(stmt, 'target_field', None)
-                group_by = getattr(stmt, 'group_by', None)
-                if group_by:
-                    groups = {}
-                    for doc in filtered_docs:
-                        g_val = doc['body'].get(group_by, "unknown")
-                        f_val = doc['body'].get(field, 0)
-                        if isinstance(f_val, (int, float)):
-                            groups[g_val] = groups.get(g_val, 0) + f_val
-                    final_docs = [{"gid": f"group:{k}", "body": {group_by: k, field: v}} for k, v in groups.items()]
-                    return {"status": "ok", "mode": mode, "documents": final_docs, "count": len(final_docs)}
-                else:
-                    total = sum(doc['body'].get(field, 0) for doc in filtered_docs if isinstance(doc['body'].get(field), (int, float)))
-                    return {"status": "ok", "mode": mode, "documents": [{"gid": "total", "body": {field: total}}], "count": 1}
+                    text_content = " ".join([str(v) for v in doc['body'].values() if isinstance(v, str)])
+                    if not text_content: continue
                     
-            elif mode == "HIGHEST" or mode == "LOWEST":
-                field = getattr(stmt, 'target_field', None)
-                mc = getattr(stmt, 'mode_count', 5)
-                valid_docs = [d for d in filtered_docs if isinstance(d['body'].get(field), (int, float))]
-                valid_docs.sort(key=lambda x: x['body'].get(field, 0), reverse=(mode == "HIGHEST"))
-                final_docs = valid_docs[:mc]
-                return {"status": "ok", "mode": mode, "documents": final_docs, "count": len(final_docs)}
+                    doc_vec = get_embedding(text_content)
+                    similarity = float(np.dot(query_vec, doc_vec))
+                    
+                    if similarity > 0.20:
+                        doc['_embedding_distance'] = round(similarity, 3)
+                        temp.append(doc)
                 
-            elif mode == "FIRST":
-                if mode_count: filtered_docs = filtered_docs[:mode_count]
-            elif mode == "LAST":
-                if mode_count: filtered_docs = filtered_docs[-mode_count:]
+                filtered_docs = sorted(temp, key=lambda x: x['_embedding_distance'], reverse=True)
+            else:
+                filtered_docs = docs
+
+
 
             arrange_field = getattr(stmt, 'arrange_field', None)
             if arrange_field:
