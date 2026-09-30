@@ -28,7 +28,7 @@ CleaveDB operates over a **TCP Protocol (port 8300)** and a **WebSocket Protocol
 
 ### Python (Raw TCP connection)
 
-`python
+```python
 import asyncio
 import json
 
@@ -37,8 +37,7 @@ async def connect_tcp():
     
     # 1. Authenticate
     auth_payload = {"action": "login", "username": "david", "password": "perez"}
-    writer.write((json.dumps(auth_payload) + "
-").encode())
+    writer.write((json.dumps(auth_payload) + "\n").encode())
     await writer.drain()
     
     response = await reader.readline()
@@ -46,19 +45,18 @@ async def connect_tcp():
         return print("Auth failed!")
         
     # 2. Run Queries (Newline delimited)
-    writer.write(b'FIND users
-')
+    writer.write(b'FIND users\n')
     await writer.drain()
     
     query_result = await reader.readline()
     print("TCP Query Result:", query_result.decode())
 
 asyncio.run(connect_tcp())
-`
+```
 
-### Python (websockets library)
+### Python (`websockets` library)
 
-`python
+```python
 import asyncio
 import websockets
 import json
@@ -77,11 +75,11 @@ async def connect_ws():
         print("WS Query Result:", await ws.recv())
 
 asyncio.run(connect_ws())
-`
+```
 
-### Node.js (ws)
+### Node.js (`ws`)
 
-`javascript
+```javascript
 const WebSocket = require('ws');
 
 const ws = new WebSocket('ws://127.0.0.1:8301');
@@ -112,13 +110,13 @@ ws.on('message', function incoming(data) {
     console.log('Query Result:', response);
   }
 });
-`
+```
 
-### CLI / Terminal (wscat)
+### CLI / Terminal (`wscat`)
 
-Since CleaveDB runs exclusively over WebSockets for real-time Pub/Sub, standard HTTP curl won't work out of the box. Instead, use a websocket tool like wscat:
+Since CleaveDB runs exclusively over WebSockets for real-time Pub/Sub, standard HTTP `curl` won't work out of the box. Instead, use a websocket tool like `wscat`:
 
-`ash
+```bash
 # Install wscat
 npm install -g wscat
 
@@ -132,7 +130,8 @@ wscat -c ws://127.0.0.1:8301
 # Run a query
 > FIND users
 < [{"status": "ok", "documents": [...]}]
-`
+```
+
 
 
 ## 🏗️ Architecture & Toolchain
