@@ -1,4 +1,4 @@
-CleaveDB Conditional Consent License
+CleaveDB Source-Available License
 Version 1.0, September 2026
 
 TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
@@ -17,67 +17,70 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
    under this License.
 
    "You" (or "Your") shall mean an individual or Legal Entity exercising
-   permissions granted by this License, subsequent to obtaining Explicit
-   Written Consent.
-
-   "Explicit Written Consent" shall mean documented approval (including
-   but not limited to physical signature, electronic signature, or direct
-   verifiable email authorization) provided directly by the Licensor to You,
-   outlining the specific scope and permissions granted to You.
+   permissions granted by this License.
 
    "Derivative Works" shall mean any work, whether in Source or Object
    form, that is based on (or derived from) the Work and for which the
    editorial revisions, annotations, elaborations, or other modifications
    represent, as a whole, an original work of authorship.
 
-2. Prerequisite of Consent.
+   "Commercial License" shall mean a separate, explicit written agreement 
+   granted by the Licensor that supersedes the restrictions of this License 
+   to permit commercial deployment or redistribution.
 
-   THIS IS NOT A TRADITIONAL OPEN-SOURCE LICENSE. The Software is made
-   available for public viewing, but NO RIGHTS for use, reproduction,
-   modification, or distribution are granted automatically. You must
-   request and obtain Explicit Written Consent from the Licensor BEFORE
-   undertaking any action governed by copyright law.
+2. Grant of Source-Available License.
 
-3. Grant of Conditional License.
+   Subject to the terms and conditions of this License, the Licensor hereby
+   grants You a worldwide, royalty-free, non-exclusive license to use, copy, 
+   and modify the Software STRICTLY AND SOLELY for the following purposes:
+   (a) Personal use and individual side projects;
+   (b) Educational use and academic instruction;
+   (c) Academic and non-commercial research; and
+   (d) Internal evaluation and testing within Your organization.
 
-   Subject to You obtaining Explicit Written Consent, and strictly
-   bound by the specific parameters defined within that consent agreement,
-   the Licensor grants You a worldwide, non-exclusive, royalty-free
-   (unless otherwise stipulated in the consent agreement) copyright
-   license to:
-   (a) reproduce the Work;
-   (b) prepare Derivative Works;
-   (c) display and perform the Work; and
-   (d) distribute the Work and such Derivative Works in Source or Object form.
+3. Commercial Use and Restrictions.
 
-4. Redistribution.
+   Any use of the Software outside the scope explicitly granted in Section 2 
+   requires a separate Commercial License. Without a Commercial License, You 
+   may NOT engage in any of the following activities:
+   
+   (a) Commercial Deployment: Using the Software in a production environment 
+       to generate revenue, support commercial operations, or run business 
+       infrastructure.
+   (b) Hosted or Managed Services: Offering the Software to third parties as 
+       a managed service, Platform-as-a-Service (PaaS), Database-as-a-Service 
+       (DBaaS), or Software-as-a-Service (SaaS).
+   (c) Commercial Integration: Selling products, applications, or services 
+       that are substantially based on, or incorporate, the Software.
+   (d) Redistribution: Distributing the Software, in Source or Object form, 
+       to any third party.
+   (e) Public Forks: Creating, publishing, or distributing forks or Derivative 
+       Works intended for public or commercial use.
 
-   If You have been granted Explicit Written Consent to reproduce and
-   distribute copies of the Work or Derivative Works, You must meet the
-   following conditions, unless Your consent agreement explicitly overrides
-   them:
-   (a) You must give any other recipients of the Work or Derivative Works
-       a copy of this License; and
-   (b) You must cause any modified files to carry prominent notices
-       stating that You changed the files; and
-   (c) You may not grant downstream users the right to use the Software
-       without them also obtaining Explicit Written Consent from the Licensor,
-       unless Your specific consent agreement explicitly grants You the right
-       to sub-license.
+4. Modifications and Derivative Works.
 
-5. Modifications and Derivative Works.
+   Modification of the Software is permitted strictly for the purposes 
+   expressly allowed by this License (as defined in Section 2). However, 
+   You must comply with the following conditions:
+   (a) You may not redistribute Your modified copies to any third party.
+   (b) You may not commercially deploy Your modified copies.
+   (c) Any Derivative Work You create remains subject to the restrictions 
+       of this License unless authorized by a separate Commercial License.
 
-   Any Derivative Works created by You (after obtaining the required consent)
-   remain subject to this License. You may not distribute Derivative Works
-   under a different license unless explicitly permitted by the Licensor in
-   writing.
+5. Attribution and Notices.
+
+   In all copies or substantial portions of the Software, You must retain 
+   and reproduce all copyright, patent, trademark, and attribution notices 
+   present in the original Source form of the Software. You may not remove 
+   or alter any branding or proprietary notices.
 
 6. Submission of Contributions.
 
    Unless You explicitly state otherwise, any Contribution intentionally
    submitted for inclusion in the Work by You to the Licensor shall be
-   owned by the Licensor, and You grant the Licensor full rights to use,
-   modify, and distribute Your Contribution without restriction.
+   owned by the Licensor, and You grant the Licensor full, irrevocable, 
+   worldwide rights to use, modify, commercially exploit, and distribute 
+   Your Contribution without restriction.
 
 7. Intellectual Property Rights.
 
@@ -91,34 +94,30 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 8. Disclaimer of Warranty.
 
    Unless required by applicable law or agreed to in writing, Licensor
-   provides the Work (and each Contributor provides its Contributions)
-   on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
-   either express or implied, including, without limitation, any warranties
-   or conditions of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS
-   FOR A PARTICULAR PURPOSE. You are solely responsible for determining the
-   appropriateness of using or redistributing the Work and assume any
-   risks associated with Your exercise of permissions under this License.
+   provides the Work on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS 
+   OF ANY KIND, either express or implied, including, without limitation, 
+   any warranties or conditions of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, 
+   or FITNESS FOR A PARTICULAR PURPOSE. You are solely responsible for 
+   determining the appropriateness of using the Work and assume any risks 
+   associated with Your exercise of permissions under this License.
 
 9. Limitation of Liability.
 
    In no event and under no legal theory, whether in tort (including
    negligence), contract, or otherwise, unless required by applicable law
    (such as deliberate and grossly negligent acts) or agreed to in writing,
-   shall any Contributor or the Licensor be liable to You for damages,
+   shall the Licensor or any Contributor be liable to You for damages,
    including any direct, indirect, special, incidental, or consequential
    damages of any character arising as a result of this License or out of
    the use or inability to use the Work (including but not limited to damages
    for loss of goodwill, work stoppage, computer failure or malfunction,
-   or any and all other commercial damages or losses), even if such
-   Contributor has been advised of the possibility of such damages.
+   or any and all other commercial damages or losses).
 
 10. Termination.
 
-    The Licensor reserves the right to terminate Your Explicit Written
-    Consent and this License at any time if You fail to comply with any
-    term of this License or the terms of Your specific consent agreement.
-    Upon termination, You must immediately cease all use and distribution
-    of the Software and destroy all copies of the Software in Your
-    possession.
+    The Licensor reserves the right to terminate this License at any time 
+    if You fail to comply with any term of this License. Upon termination, 
+    You must immediately cease all use of the Software and destroy all 
+    copies of the Software (and any modifications) in Your possession.
 
 END OF TERMS AND CONDITIONS

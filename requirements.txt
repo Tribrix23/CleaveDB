@@ -1,0 +1,8 @@
+# Core AI Semantic Search Dependencies
+numpy>=1.24.0
+onnxruntime>=1.15.0
+tokenizers>=0.13.0
+huggingface-hub>=0.16.0
+
+# Rust PyO3 Compilation tool
+maturin>=1.2.0

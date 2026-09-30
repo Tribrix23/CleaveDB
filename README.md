@@ -1,5 +1,6 @@
 <div align="center">
-  <h1>🧬 CleaveDB 3.5</h1>
+  <img src="assets/CleaveDB.png" alt="CleaveDB 3.5" width="500"/>
+  <br/><br/>
   <p><strong>The polyglot, AVX-512 accelerated, non-relational database with Transformer attention layers.</strong></p>
   
   [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
