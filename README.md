@@ -63,17 +63,16 @@
 
 ### Installation
 ```bash
-# Full build (SIMD + Go coordinator + Rust engine + Python bindings)
+# 1. Install Python dependencies (AI Semantic Search & PyO3 compilation)
+pip install -r requirements.txt
+
+# 2. Compile native extensions (Rust storage, Go coordinator, C++ SIMD)
 python build.py
 
-# Or manual steps:
-cd storage && maturin develop --release
-pip install onnxruntime tokenizers huggingface_hub numpy
-
-# Start the TCP server
+# 3. Start the TCP Server
 python cleavedb_server.py
 
-# Connect with the CLI
+# 4. In a new terminal, open the CLI
 python cleave_cli.py
 ```
 
