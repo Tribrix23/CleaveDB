@@ -277,6 +277,35 @@ DETAILED_HELP = {
 
 "unlink": """  UNLINK is an alias for SEVER. Type 'help sever' for the full reference.""",
 
+
+"transaction": """
+================================================================================
+  CleaveQL Reference: ACID Transactions
+================================================================================
+
+  Transactions guarantee Atomicity, Consistency, Isolation, and Durability.
+  If any statement fails, the entire block rolls back.
+
+  Syntax:
+    BEGIN TRANSACTION
+    POUR INTO users "alice" {"money": 50}
+    POUR INTO users "bob" {"money": 150}
+    COMMIT
+""",
+
+"trigger": """
+================================================================================
+  CleaveQL Reference: Database Triggers
+================================================================================
+
+  Triggers automatically execute CleaveQL background queries on data mutation.
+  Variables like `$gid` and `$field_name` are dynamically interpolated from the
+  body of the inserted/modified document.
+
+  Syntax:
+    ON POUR INTO purchases RUN 'POUR INTO audit \"$gid\" {\"action\": \"item_purchased\", \"item\": \"$item\"}'
+""",
+
 "meaning": """
 ================================================================================
   MEANING — AI Vector Semantic Search
@@ -885,7 +914,16 @@ HELP_TEXT = """
   ASC = GOING UP        DESC = GOING DOWN       WITH = INCLUDE
   SHOW = YIELD          IF = ONLY WHEN (bonds)
 
-10. SHELL COMMANDS
+
+10. ACID TRANSACTIONS & TRIGGERS
+  BEGIN TRANSACTION                             Start an atomic transaction block.
+  COMMIT                                        Execute and commit transaction.
+  ROLLBACK                                      Abort and rollback transaction.
+  ON POUR INTO <bucket> RUN '<query>'           Create a database-level trigger.
+  ON CHANGE IN <bucket> RUN '<query>'
+  ON DRAIN FROM <bucket> RUN '<query>'
+
+11. SHELL COMMANDS
   help | ?                                      Show this manual.
   logout                                        End session, return to login.
   cls | clear                                   Clear terminal screen.

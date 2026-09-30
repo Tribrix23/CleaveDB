@@ -23,6 +23,50 @@ class Parser:
         return statements
 
     def statement(self) -> Any:
+
+        if self.match(TokenType.BEGIN):
+            if self.match(TokenType.TRANSACTION):
+                pass
+            return BeginStmt()
+            
+        if self.match(TokenType.COMMIT):
+            if self.match(TokenType.TRANSACTION):
+                pass
+            return CommitStmt()
+            
+        if self.match(TokenType.ROLLBACK):
+            if self.match(TokenType.TRANSACTION):
+                pass
+            return RollbackStmt()
+
+
+        if self.match(TokenType.ON):
+            if self.match(TokenType.POUR):
+                event = "POUR"
+                self.match(TokenType.INTO)
+            elif self.match(TokenType.CHANGE):
+                event = "CHANGE"
+                self.match(TokenType.IN)
+            elif self.match(TokenType.DRAIN):
+                event = "DRAIN"
+                self.match(TokenType.FROM)
+            else:
+                self.error("Expected 'POUR', 'CHANGE', or 'DRAIN' after 'ON'.")
+                return None
+                
+            bucket = self.consume_identifier("Expected bucket name for trigger.")
+            self.consume(TokenType.RUN, "Expected 'RUN' keyword.")
+            
+            if self.check(TokenType.STRING):
+                query_template = self.advance().value
+            else:
+                self.error("Expected string literal containing the CleaveQL trigger query.")
+                return None
+                
+            return TriggerStmt(event, bucket, query_template)
+
+        if self.match(TokenType.MIGRATE):
+            return self.migrate_stmt()
         if self.match(TokenType.LISTEN):
             return self.listen_stmt()
         if self.match(TokenType.SCOOP, TokenType.FIND):
@@ -44,6 +88,8 @@ class Parser:
             return self.sever_stmt()
         if self.match(TokenType.DROP):
             return self.drop_stmt()
+        if self.match(TokenType.LIMIT):
+            return self.limit_stmt()
         if self.match(TokenType.MASK):
             return self.mask_stmt()
         if self.match(TokenType.POUR):
@@ -505,7 +551,9 @@ class Parser:
             from .ast import PolicyStmt
             return PolicyStmt(name=name, bucket=bucket, action=action, condition=condition)
 
-        elif self.match(TokenType.MASK):
+        elif self.match(TokenType.LIMIT):
+            return self.limit_stmt()
+        if self.match(TokenType.MASK):
             field = self.consume_identifier("Expected field name to mask.")
             self.consume(TokenType.ON, "Expected 'on' after field name.")
             if self.match(TokenType.STRING): bucket = self.previous().value
@@ -667,11 +715,7 @@ class Parser:
             condition = []
             while not self.is_at_end() and self.peek().type != TokenType.EOF:
                 condition.append(self.advance())
-            stmt = PolicyStmt(bucket, None, line=self.previous().line, column=self.previous().column)
-            stmt.name = name
-            stmt.action = action
-            stmt.condition = condition
-            return stmt
+            return PolicyStmt(bucket=bucket, name=name, action=action, condition=condition)
 
         self.consume(TokenType.POLICY, "Expected 'policy'.")
         self.consume(TokenType.ON, "Expected 'on'.")
@@ -694,7 +738,7 @@ class Parser:
         else:
             raise self.error(self.peek(), "Expected 'overwrite' or 'replace'.")
             
-        return PolicyStmt(bucket, algorithm, line=self.previous().line, column=self.previous().column)
+        return PolicyStmt(bucket=bucket, algorithm=algorithm)
 
     def index_stmt(self) -> IndexStmt:
         bucket = self.consume_identifier("Expected bucket name.")
@@ -1082,3 +1126,38 @@ class Parser:
         if self.match(TokenType.STRING):
             target_gid = self.previous().lexeme
         return ListenStmt(target_bucket=bucket, target_gid=target_gid)
+
+    def limit_stmt(self):
+        # LIMIT <n> QUERIES PER MINUTE FOR <role>
+        if self.match(TokenType.INTEGER):
+            limit_val = int(self.previous().value)
+        else:
+            raise Exception("Expected number after LIMIT")
+        
+        self.consume(TokenType.QUERIES, "Expected 'QUERIES'")
+        self.consume(TokenType.PER, "Expected 'PER'")
+        self.consume(TokenType.MINUTE, "Expected 'MINUTE'")
+        self.consume(TokenType.FOR, "Expected 'FOR'")
+        
+        if self.match(TokenType.STRING):
+            role = self.previous().value
+        elif self.match(TokenType.IDENTIFIER):
+            role = self.previous().value
+        else:
+            raise Exception("Expected role string after FOR")
+            
+        return RateLimitStmt(limit=limit_val, role=role)
+
+    def migrate_stmt(self):
+        if self.match(TokenType.STRING):
+            bucket = self.previous().value
+        else:
+            bucket = self.consume_identifier("Expected bucket name.")
+            
+        self.consume(TokenType.FROM, "Expected 'FROM'")
+        src_json = self.consume_json("Expected source JSON pattern")
+        
+        self.consume(TokenType.TO, "Expected 'TO'")
+        dst_json = self.consume_json("Expected destination JSON pattern")
+        
+        return MigrateStmt(bucket=bucket, src_json=src_json, dst_json=dst_json)

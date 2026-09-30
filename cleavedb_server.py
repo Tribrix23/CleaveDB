@@ -4,6 +4,7 @@ import websockets
 import os
 import sys
 import argparse
+rate_limit_counters = {}
 import hashlib
 from cryptography.fernet import Fernet
 import cleavedb3_storage
@@ -122,8 +123,11 @@ def vector_worker():
         except Exception as e:
             print(f"[VectorWorker] Error: {e}")
 
+
 async def ws_handler(websocket):
     context = None
+    transaction_buffer = []
+
     try:
         async for message in websocket:
             try:
@@ -159,8 +163,50 @@ async def ws_handler(websocket):
                         await websocket.send(json.dumps([{"status": "error", "message": "Authentication required. Send JSON {action: authenticate, username, password}"}]))
                         continue
 
+                # Phase 9: Rate Limit Check
+                role = context.get("role", "user")
+                rate_limit_doc = dist_engine.local_db.get(f"_rate_limits:{role}")
+                if rate_limit_doc:
+                    limit_data = json.loads(rate_limit_doc)
+                    max_queries = limit_data.get("limit", 60)
+                    
+                    current_time = time.time()
+                    minute_window = int(current_time // 60)
+                    user_key = f"{context['user']}_{minute_window}"
+                    
+                    current_count = rate_limit_counters.get(user_key, 0)
+                    if current_count >= max_queries:
+                        await websocket.send(json.dumps([{"status": "error", "message": "Rate limit exceeded 429"}]))
+                        continue
+                    rate_limit_counters[user_key] = current_count + 1
+
                 # 2. Proceed with CleaveQL queries once authenticated
-                if 'POUR' in message.upper() or 'CHANGE' in message.upper() or 'DRAIN' in message.upper():
+                msg_upper = message.strip().upper()
+                if msg_upper == "BEGIN TRANSACTION" or msg_upper == "BEGIN":
+                    transaction_buffer = [message]
+                    await websocket.send(json.dumps([{"status": "ok", "message": "Transaction started. Buffering statements..."}]))
+                    continue
+                elif msg_upper == "ROLLBACK":
+                    if not transaction_buffer:
+                        await websocket.send(json.dumps([{"status": "error", "message": "No active transaction to rollback"}]))
+                        continue
+                    transaction_buffer = []
+                    await websocket.send(json.dumps([{"status": "ok", "message": "Transaction aborted"}]))
+                    continue
+                elif msg_upper == "COMMIT":
+                    if not transaction_buffer:
+                        await websocket.send(json.dumps([{"status": "error", "message": "No active transaction to commit"}]))
+                        continue
+                    transaction_buffer.append(message)
+                    message = " ".join(transaction_buffer)
+                    transaction_buffer = []
+                elif transaction_buffer:
+                    transaction_buffer.append(message)
+                    await websocket.send(json.dumps([{"status": "ok", "message": "Statement queued"}]))
+                    continue
+                    
+                if 'POUR' in msg_upper or 'CHANGE' in msg_upper or 'DRAIN' in msg_upper or 'MIGRATE' in msg_upper or 'BEGIN' in msg_upper:
+
                     response = dist_engine.execute_write(message, context)
                 else:
                     response = dist_engine.execute_read(message, context)

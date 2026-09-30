@@ -1,4 +1,6 @@
 import time
+import threading
+import copy
 import uuid
 import json
 import hashlib
@@ -34,6 +36,8 @@ class Interpreter:
         self.engine = engine
         self.indexing_queue = indexing_queue
         self.context = {}
+        self.in_transaction = False
+        self.transaction_log = []
         self.emitted_events = []
         self.security = PolicyEngine()
         
@@ -94,16 +98,39 @@ class Interpreter:
                 
         return result
 
+
     def execute(self, stmts: list) -> list:
         results = []
         for stmt in stmts:
             try:
-                results.append(self._execute_stmt(stmt))
+                res = self._execute_stmt(stmt)
+                results.append(res)
+                if res.get("status") == "error" and self.in_transaction:
+                    self._rollback()
+                    results.append({"status": "error", "message": "Transaction aborted due to error"})
+                    break
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 results.append({"status": "error", "message": str(e)})
+                if self.in_transaction:
+                    self._rollback()
+                    results.append({"status": "error", "message": "Transaction aborted due to error"})
+                    break
         return results
+
+    def _rollback(self):
+        for log in reversed(self.transaction_log):
+            gid = log["gid"]
+            body = log["body"]
+            if body is None:
+                self.engine.delete(gid)
+            else:
+                bucket, doc_id = gid.split(":", 1)
+                self.engine.pour(bucket, doc_id, body)
+        self.in_transaction = False
+        self.transaction_log = []
+
 
     def _namespace_gid(self, gid):
         if not gid:
@@ -119,6 +146,133 @@ class Interpreter:
                 return f"{bucket}:{tenant}.{doc_id}"
         return gid
 
+    
+    def _run_migration(self, bucket, src_json, dst_json):
+
+        def map_fields(src_pattern, current_doc):
+            import re
+            mapping = {}
+            if isinstance(src_pattern, dict) and isinstance(current_doc, dict):
+                for k, v in src_pattern.items():
+                    if k in current_doc:
+                        if isinstance(v, str) and "$" in v:
+                            regex_str = "^" + re.escape(v) + "$"
+                            vars_in_v = []
+                            for m in re.finditer(r"\$(\d+)", v):
+                                vars_in_v.append(m.group(0))
+                                regex_str = regex_str.replace(re.escape(m.group(0)), "(.*)", 1)
+                            match = re.match(regex_str, str(current_doc[k]))
+                            if match:
+                                for i, var in enumerate(vars_in_v):
+                                    mapping[var] = match.group(i+1)
+                            else:
+                                return None
+                        elif isinstance(v, dict):
+                            res = map_fields(v, current_doc[k])
+                            if res is None: return None
+                            mapping.update(res)
+                        else:
+                            if v != current_doc[k]: return None
+                    else:
+                        return None
+            return mapping
+
+        def apply_mapping(dst_pattern, mapping):
+            if isinstance(dst_pattern, str) and dst_pattern.startswith('$'):
+                return mapping.get(dst_pattern, dst_pattern)
+            elif isinstance(dst_pattern, dict):
+                return {k: apply_mapping(v, mapping) for k, v in dst_pattern.items()}
+            elif isinstance(dst_pattern, list):
+                return [apply_mapping(i, mapping) for i in dst_pattern]
+            return dst_pattern
+
+        try:
+            # Paginate through bucket 100 documents at a time
+            all_docs = json.loads(self.engine.scan_bucket(bucket) or "[]")
+            batch_size = 100
+            for i in range(0, len(all_docs), batch_size):
+                batch = all_docs[i:i+batch_size]
+                for doc_meta in batch:
+
+                    gid = doc_meta.get("gid")
+                    doc_id = gid.split(":", 1)[1] if ":" in gid else gid
+                    
+                    
+                    retries = 3
+                    while retries > 0:
+                        current_meta = next((d for d in json.loads(self.engine.scan_bucket(bucket) or "[]") if d["gid"] == gid), None)
+                        if not current_meta:
+                            break
+                            
+                        current_body = current_meta.get("body", {})
+                        current_version = current_body.get("_version", 1)
+                        
+
+                        mapping = map_fields(src_json, current_body)
+                        
+                        if not mapping:
+                            break # Doesn't match src_json pattern
+                            
+                        new_body = apply_mapping(dst_json, mapping)
+                        
+                        # Preserve other fields? Or strict replacement?
+                        # Usually migration merges or replaces. We'll strict replace based on mapping.
+                        # Actually, better to merge with original body minus old mapped fields.
+                        final_body = copy.deepcopy(current_body)
+                        if isinstance(src_json, dict):
+                            for k in src_json.keys():
+                                final_body.pop(k, None)
+                        final_body.update(new_body)
+                        final_body["_version"] = current_version + 1
+                        
+                        # Simulate CAS
+                        # In a real DB, CAS is atomic. Here we do our best within the thread.
+                        check_meta = next((d for d in json.loads(self.engine.scan_bucket(bucket) or "[]") if d["gid"] == gid), None)
+                        if check_meta and check_meta.get("body", {}).get("_version", 1) == current_version:
+                            self.engine.pour(bucket, doc_id, json.dumps(final_body))
+                            break
+                        else:
+                            retries -= 1
+                            time.sleep(0.1)
+                time.sleep(0.01) # Yield to other threads
+        except Exception as e:
+            print(f"[Migration] Error: {e}")
+
+
+    def _fire_triggers(self, event, bucket, doc_id, body):
+        trigger_depth = self.context.get("trigger_depth", 0)
+        if trigger_depth > 5: return
+        
+        trigger_data = self.engine.scan_bucket("_triggers")
+        if not trigger_data: return
+        triggers = json.loads(trigger_data)
+        
+        for t in triggers:
+            t_body = t.get("body", {})
+            if t_body.get("event") == event and t_body.get("bucket") == bucket:
+                query = t_body.get("query_template")
+                
+                if isinstance(body, dict):
+                    for k, v in body.items():
+                        query = query.replace(f"${k}", str(v))
+                if doc_id:
+                    query = query.replace("$gid", str(doc_id).split(":")[-1])
+                
+                from cleaveql.lexer import Lexer
+                from cleaveql.parser import Parser
+                open("debug_trigger.txt", "a").write(f"QUERY: {query}\n"); lexer = Lexer(query)
+                tokens = lexer.tokenize()
+                parser = Parser(tokens); open("debug_trigger.txt", "a").write(f"TOKENS: {tokens}\n")
+                stmts = parser.parse(); open("debug_trigger.txt", "a").write(f"ERRORS: {parser.errors}\n")
+                
+                old_depth = self.context.get("trigger_depth", 0)
+                self.context["trigger_depth"] = old_depth + 1
+                for s in stmts:
+                    res = self._execute_stmt(s)
+                    if isinstance(res, dict) and res.get("status") == "error":
+                        raise Exception(f"Trigger Error: {res.get('message')}")
+                self.context["trigger_depth"] = old_depth
+
     def _execute_stmt(self, stmt):
         stmt_type = type(stmt).__name__
 
@@ -133,7 +287,30 @@ class Interpreter:
                 return {"status": "error", "message": f"Access Denied: The '{target_bucket}' bucket requires Dev Password (superuser override) to access."}
 
         # ---- Real engine dispatch ----
-        if stmt_type == "PourStmt":
+
+        if stmt_type == "BeginStmt":
+            self.in_transaction = True
+            self.transaction_log = []
+            return {"status": "ok", "message": "Transaction started"}
+
+        elif stmt_type == "CommitStmt":
+            if not self.in_transaction: return {"status": "error", "message": "No active transaction"}
+            self.in_transaction = False
+            self.transaction_log = []
+            return {"status": "ok", "message": "Transaction committed"}
+
+        elif stmt_type == "RollbackStmt":
+            if not self.in_transaction: return {"status": "error", "message": "No active transaction"}
+            self._rollback()
+            return {"status": "ok", "message": "Transaction rolled back"}
+
+
+        elif stmt_type == "TriggerStmt":
+            doc = {"event": stmt.event, "bucket": stmt.bucket, "query_template": stmt.query_template}
+            self.engine.pour("_triggers", None, json.dumps(doc))
+            return {"status": "ok", "message": f"Trigger created for {stmt.event} on {stmt.bucket}."}
+
+        elif stmt_type == "PourStmt":
             bucket = getattr(stmt, 'bucket', '')
             doc_id = getattr(stmt, 'doc_id', None)
             body = getattr(stmt, 'json_body', None)
@@ -170,7 +347,17 @@ class Interpreter:
                 if creator != "cron" and doc_id and not doc_id.startswith(f"{creator}.") and doc_id != creator:
                     doc_id = f"{creator}.{doc_id}"
 
+
+            if self.in_transaction:
+                gid_check = f"{bucket}:{doc_id}" if doc_id else None
+                old_val = self.engine.get(gid_check) if gid_check else None
+
             gid = self.engine.pour(bucket, doc_id, json_str)
+            
+            if self.in_transaction:
+                self.transaction_log.append({"gid": gid, "body": old_val})
+            self._fire_triggers("POUR", bucket, gid.split(":")[-1], body)
+
             
             if ttl is not None and isinstance(body, dict):
                 # Put a fast-lookup pointer in _ttl bucket for the cron worker
@@ -214,7 +401,16 @@ class Interpreter:
                     doc_id = f"{tenant}.{doc_id}"
                     
                 json_str = json.dumps(doc) if isinstance(doc, dict) else str(doc)
+
+                if self.in_transaction:
+                    gid_check = f"{bucket}:{doc_id}" if doc_id else None
+                    old_val = self.engine.get(gid_check) if gid_check else None
+                    
                 gid = self.engine.pour(bucket, doc_id, json_str)
+                
+                if self.in_transaction:
+                    self.transaction_log.append({"gid": gid, "body": old_val})
+
             
             if ttl is not None and isinstance(body, dict):
                 # Put a fast-lookup pointer in _ttl bucket for the cron worker
@@ -696,6 +892,24 @@ class Interpreter:
                     self.engine.pour("_security_policies", pol_id, json.dumps(doc))
                 return {"status": "ok", "policy": name, "message": f"Document Security Level (DSL) policy '{name}' active on '{bucket}'"}
 
+
+        elif stmt_type == "MigrateStmt":
+            bucket = getattr(stmt, 'bucket', '')
+            src_json = getattr(stmt, 'src_json', {})
+            dst_json = getattr(stmt, 'dst_json', {})
+            
+            thread = threading.Thread(target=self._run_migration, args=(bucket, src_json, dst_json))
+            thread.daemon = True
+            thread.start()
+            
+            return {"status": "ok", "message": f"Zero-Downtime Migration started for bucket '{bucket}' in background."}
+
+        elif stmt_type == "RateLimitStmt":
+            doc_id = stmt.role
+            data = {"limit": stmt.limit, "role": stmt.role}
+            self.engine.pour("_rate_limits", doc_id, json.dumps(data))
+            return {"status": "ok", "message": f"Rate limit of {stmt.limit} QPM set for role '{stmt.role}'"}
+
         elif stmt_type == "MaskStmt":
             bucket = getattr(stmt, 'bucket', '')
             field = getattr(stmt, 'field', '')
@@ -818,6 +1032,7 @@ class Interpreter:
                     }
                     self.engine.pour("_rubbish", gid, json.dumps(rubbish_entry))
                     self.engine.delete(gid)
+                    self._fire_triggers("DRAIN", bucket, doc_id, json.loads(doc_json))
                 
                 # CASCADING DELETE
                 b_data = self._scan_bucket_rls("_bonds")

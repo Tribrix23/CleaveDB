@@ -3,9 +3,12 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 class TokenType(Enum):
+    QUERIES = auto()
+    PER = auto()
     # Verbs
     SCOOP = auto()    # query/read
-    POUR = auto()     # insert/upsert
+    POUR = auto()
+    MIGRATE = auto()     # insert/upsert
     DRAIN = auto()    # delete
     FLOW = auto()     # move/copy between buckets
     BOND = auto()     # declare relationship
@@ -115,6 +118,10 @@ class TokenType(Enum):
     CANDIDATE = auto()  # Flag to show dormant bonds
     TRACE = auto()      # Alias for SCOOP CHAIN
     REWIND = auto()
+    BEGIN = auto()
+    TRANSACTION = auto()
+    COMMIT = auto()
+    ROLLBACK = auto()
     ENFORCE = auto()
     OVERWRITE = auto()
     CURRENT = auto()
@@ -131,6 +138,7 @@ class TokenType(Enum):
     ASC = auto()        # Alias for UP
     SORTED = auto()     # Alias for ARRANGED
     MASK = auto()
+    RUN = auto()
     FOR = auto()
     USING = auto()
     READ = auto()
@@ -239,7 +247,10 @@ KEYWORDS = {
     'every': TokenType.EVERY,
     'policy': TokenType.POLICY,
     'mask': TokenType.MASK,
+    'run': TokenType.RUN,
     'for': TokenType.FOR,
+    'queries': TokenType.QUERIES,
+    'per': TokenType.PER,
     'using': TokenType.USING,
     'read': TokenType.READ,
     'write': TokenType.WRITE,
@@ -250,6 +261,8 @@ KEYWORDS = {
     'unlink': TokenType.UNLINK,
     'sever': TokenType.SEVER,
     'drop': TokenType.DROP,
+    'migrate': TokenType.MIGRATE,
+    'to': TokenType.TO,
 
     'scoop': TokenType.SCOOP,
     'find': TokenType.FIND,
@@ -266,6 +279,10 @@ KEYWORDS = {
     'candidate': TokenType.CANDIDATE,
     'distill': TokenType.DISTILL,
     'rewind': TokenType.REWIND,
+    'begin': TokenType.BEGIN,
+    'transaction': TokenType.TRANSACTION,
+    'commit': TokenType.COMMIT,
+    'rollback': TokenType.ROLLBACK,
     'enforce': TokenType.ENFORCE,
     'overwrite': TokenType.OVERWRITE,
     'current': TokenType.CURRENT,

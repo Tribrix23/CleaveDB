@@ -683,7 +683,37 @@ FOLLOW "users:alice" DIRECTION OUT DEPTH 1
 
 ---
 
-## 📊 Complete Language Alias Table
+
+### 23. ACID Transactions (`BEGIN` / `COMMIT`)
+CleaveDB supports full, multi-step ACID transactions (Atomicity, Consistency, Isolation, Durability) running via Software Transactional Memory (STM). Transactions buffer in the engine and commit atomically. If any execution error occurs (e.g., Syntax Error, Security Violation), the database automatically rolls back all previous statements in the block.
+
+<div align="center">
+  <img src="assets/demo_transactions.svg" alt="ACID Transactions" width="600"/>
+</div>
+
+```sql
+BEGIN TRANSACTION
+POUR INTO users "alice" {"money": 50}
+POUR INTO users "bob" {"money": 150}
+COMMIT
+```
+Or rollback manually:
+```sql
+ROLLBACK
+```
+
+### 24. Database Triggers (`ON ... RUN`)
+Execute background CleaveQL queries automatically in response to database mutations. Variables like `$gid` and JSON keys (e.g., `$amount`) are dynamically interpolated.
+
+<div align="center">
+  <img src="assets/demo_triggers.svg" alt="Database Triggers" width="600"/>
+</div>
+
+```sql
+ON POUR INTO purchases RUN 'POUR INTO audit "$gid" {"action": "item_purchased", "item": "$item"}'
+```
+
+## ⚔️ Complete Language Alias Table
 
 CleaveQL provides natural-language aliases so you can write queries the way you think:
 

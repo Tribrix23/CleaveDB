@@ -54,8 +54,8 @@ class CountStmt(ASTNode):
 @dataclass
 class DistillStmt(ASTNode):
     bucket: str = ""
-    agg_func: str = ""  # total, average, min, max, spread
-    agg_field: str = ""
+    agg_function: str = ""  # total, average, min, max, spread
+    field: str = ""
     where: Optional[WhereClause] = None
 
 @dataclass
@@ -166,6 +166,7 @@ class PolicyStmt(ASTNode):
     name: str = ""
     action: str = ""
     condition: Any = None
+    algorithm: str = "" 
 
 @dataclass
 class SetContextStmt(ASTNode):
@@ -192,26 +193,12 @@ class RewindStmt:
         self.line = line
         self.column = column
 
-class PolicyStmt:
-    def __init__(self, bucket, algorithm, line=0, column=0):
-        self.type = "PolicyStmt"
-        self.bucket = bucket
-        self.algorithm = algorithm
-        self.line = line
-        self.column = column
-
 class AuthenticateStmt:
     def __init__(self, user_id, line=0, column=0):
         self.type = "AuthenticateStmt"
         self.user_id = user_id
         self.line = line
         self.column = column
-
-@dataclass
-class MaskStmt(ASTNode):
-    field: str = ""
-    bucket: str = ""
-    condition: str = ""
 
 @dataclass
 
@@ -231,6 +218,7 @@ class MatchStmt(ASTNode):
         self.edges = edges
         self.where = where
 
+@dataclass
 class SeverStmt(ASTNode):
     source_gid: str = ""
     target_gid: str = ""
@@ -245,3 +233,29 @@ class DropSecurityStmt(ASTNode):
 class ListenStmt(ASTNode):
     target_bucket: str = ""
     target_gid: Optional[str] = None
+
+@dataclass
+class MigrateStmt(ASTNode):
+    bucket: str = ''
+    src_json: Any = None
+    dst_json: Any = None
+
+class BeginStmt(ASTNode):
+    pass
+
+class CommitStmt(ASTNode):
+    pass
+
+class RollbackStmt(ASTNode):
+    pass
+
+class TriggerStmt(ASTNode):
+    def __init__(self, event, bucket, query_template):
+        self.event = event
+        self.bucket = bucket
+        self.query_template = query_template
+
+@dataclass
+class RateLimitStmt(ASTNode):
+    role: str = ''
+    limit: int = 0
