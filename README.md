@@ -17,7 +17,7 @@
 - A **Python interpreter frontend** (via PyO3 bindings) that runs the **CleaveQL** query language.
 - **Real neural Transformer embeddings** for semantic search via a quantized ONNX model, using ~22MB of RAM.
 - A **Go-based distributed coordinator** with scatter-gather and K-way merge for multi-shard deployments.
-- A **TCP server** (`cleavedb_server.py`) with full authentication, background Cron worker, and **multi-tenant Row-Level Security (RLS)**.
+- A **TCP server** (`cleavedb_server.py`) with full authentication, background Cron worker, and **multi-tenant Document-Level Security (DLS)**.
 
 ---
 
@@ -28,7 +28,7 @@
 │                  CleaveQL (Python Layer)                │
 │   Lexer ──► Parser ──► AST ──► Interpreter             │
 │         attention/sra.py  ─── ONNX Q8 Transformer      │
-│         cleaveql/security.py ── GBAC / RLS / Masking   │
+│         cleaveql/security.py ── GBAC / DLS / Masking   │
 │         cleaveql/cost_model.py ── Query Cost Estimation │
 └────────────────────────┬────────────────────────────────┘
                          │  PyO3 FFI
@@ -48,7 +48,7 @@
 | **Storage** | Rust 2021 | `storage/src/` | Hand-built B+Tree, 16KB pages with CRC32, CLOCK-sweep buffer pool, WAL with group commit, Bloom filters, AES-256-GCM at-rest encryption |
 | **SIMD** | C++ (AVX-512/AVX2) | `simd/src/` | Hardware-accelerated dot product (4× unrolled FMA), softmax, GELU, sigmoid, layer norm, matrix multiply. Auto-fallback to scalar on unsupported CPUs |
 | **Coordinator** | Go 1.21 | `coordinator/src/` | Scatter-gather across shards with goroutine concurrency, K-way merge via min-heap in O(N log K), C-shared FFI export |
-| **Interpreter** | Python 3.13 | `cleaveql/` | Recursive-descent parser producing 34 AST node types, security policy engine (GBAC + RBAC + RLS + Masking) |
+| **Interpreter** | Python 3.13 | `cleaveql/` | Recursive-descent parser producing 34 AST node types, security policy engine (GBAC + RBAC + DLS + Masking) |
 | **AI Search** | ONNX Runtime | `attention/sra.py` | Semantic Relevance Attention — quantized `all-MiniLM-L6-v2` Transformer generating 384-dim embeddings, cosine similarity ranking |
 | **Bindings** | PyO3 / Maturin | `storage/src/python.rs` | Zero-copy Rust↔Python bridge exposing `pour`, `get`, `scan_bucket`, `delete`, `heal`, `show` |
 
@@ -123,7 +123,7 @@ john@cleavedb> FIND products
 → Returns: [] (zero results — John cannot see David's data)
 ```
 
-Row-Level Security (RLS) filtering is enforced at the engine level on every scan. Even a Dev Superuser logged in as John **cannot** see David's documents.
+Document-Level Security (DLS) filtering is enforced at the engine level on every scan. Even a Dev Superuser logged in as John **cannot** see David's documents.
 
 ---
 
@@ -605,7 +605,7 @@ dsc/
 │   ├── tokens.py             # Token type enum
 │   ├── parser.py             # Recursive descent parser → 34 AST nodes
 │   ├── ast.py                # AST node definitions
-│   ├── interpreter.py        # AST executor with RLS & auto-namespacing
+│   ├── interpreter.py        # AST executor with DLS & auto-namespacing
 │   ├── security.py           # GBAC + RBAC + Field Masking policy engine
 │   ├── cost_model.py         # Query cost estimation
 │   └── repl.py               # Interactive REPL
@@ -630,7 +630,7 @@ dsc/
 ├── benchmarks/               # Performance benchmark suite
 │   └── run.py
 │
-├── cleavedb_server.py        # TCP server, auth shell, cron worker, multi-tenant RLS
+├── cleavedb_server.py        # TCP server, auth shell, cron worker, multi-tenant DLS
 ├── cleave_cli.py             # Command-line client with colored prompts
 ├── build.py                  # Multi-language build orchestrator
 └── README.md
