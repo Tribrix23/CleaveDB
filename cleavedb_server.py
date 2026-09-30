@@ -2,12 +2,16 @@ import asyncio
 import json
 import websockets
 import os
+import sys
+import argparse
 import hashlib
 from cryptography.fernet import Fernet
 import cleavedb3_storage
 from cleaveql.lexer import Lexer
 from cleaveql.parser import Parser
 from cleaveql.interpreter import Interpreter
+from pysyncobj import SyncObj, replicated_sync, SyncObjConf
+
 
 HOST = '127.0.0.1'
 PORT = 8300
@@ -20,6 +24,43 @@ if not os.path.exists(KEY_FILE):
         f.write(Fernet.generate_key())
 with open(KEY_FILE, "rb") as f:
     cipher = Fernet(f.read())
+
+
+class DistributedEngine(SyncObj):
+    def __init__(self, selfNodeAddr, otherNodeAddrs, db_dir):
+        conf = SyncObjConf(dynamicMembershipChange=True)
+        super(DistributedEngine, self).__init__(selfNodeAddr, otherNodeAddrs, conf)
+        self.local_db = cleavedb3_storage.CleaveDB(db_dir)
+        
+    @replicated_sync
+    def execute_write(self, query: str, context: dict):
+        try:
+            lexer = Lexer(query)
+            tokens = lexer.tokenize()
+            parser = Parser(tokens)
+            stmts = parser.parse()
+            interpreter = Interpreter(self.local_db, indexing_queue)
+            interpreter.set_context(context)
+            results = interpreter.execute(stmts)
+            return {"results": results, "events": interpreter.emitted_events}
+        except Exception as e:
+            return {"results": [{"status": "error", "message": str(e)}], "events": []}
+
+    def execute_read(self, query: str, context: dict):
+        # Reads don't need raft consensus
+        try:
+            lexer = Lexer(query)
+            tokens = lexer.tokenize()
+            parser = Parser(tokens)
+            stmts = parser.parse()
+            interpreter = Interpreter(self.local_db, indexing_queue)
+            interpreter.set_context(context)
+            results = interpreter.execute(stmts)
+            return {"results": results, "events": interpreter.emitted_events}
+        except Exception as e:
+            return {"results": [{"status": "error", "message": str(e)}], "events": []}
+
+dist_engine = None
 
 def hash_password(password: str, salt: bytes = None) -> tuple[str, str]:
     if salt is None:
@@ -36,6 +77,8 @@ engine = None
 
 
 import time
+import queue
+import threading
 
 
 class EventDispatcher:
@@ -62,27 +105,75 @@ class EventDispatcher:
             self.subscribers[target_id].remove(ws)
 
 dispatcher = EventDispatcher()
+indexing_queue = queue.Queue()
+
+def vector_worker():
+    from attention.sra import get_embedding
+    print("[Server] Asynchronous Vector Indexing Worker started.")
+    while True:
+        try:
+            gid, text_content = indexing_queue.get()
+            print(f"[VectorWorker] Generating embedding for {gid}..."); vec = get_embedding(text_content); print(f"[VectorWorker] Storing {gid}!");
+            # Store as JSON list array
+            # engine.pour("_embeddings", gid, ...)
+            # Wait, pour appends bucket to ID. Let's just put it in _embeddings bucket with ID=gid
+            engine.pour("_embeddings", gid, json.dumps(vec.tolist()))
+            indexing_queue.task_done()
+        except Exception as e:
+            print(f"[VectorWorker] Error: {e}")
 
 async def ws_handler(websocket):
-    # Completely real functional CleaveQL execution over WebSocket
+    context = None
     try:
         async for message in websocket:
             try:
-                # We expect the client to send a raw CleaveQL query like: 'LISTEN TO users "alice"'
-                # However, they might need context if auth is required, but for this Phase 1 we will allow direct LISTEN execution
-                stmts = Parser(Lexer(message).tokenize()).parse()
-                interp = Interpreter(engine)
-                # Quick empty context for anonymous listeners
-                interp.set_context({"user": "anonymous", "role": "viewer", "auth_level": "standard"})
-                results = interp.execute(stmts)
+                # 1. Require strict JSON authentication first
+                if context is None:
+                    try:
+                        req = json.loads(message.strip())
+                        if req.get("action") == "authenticate":
+                            username = req.get("username")
+                            password = req.get("password")
+                            
+                            # Verify against _auth bucket
+                            auth_json = dist_engine.local_db.scan_bucket("_auth")
+                            users = json.loads(auth_json) if auth_json else []
+                            user_record = next((u["body"] for u in users if u.get("gid") == f"_auth:{username}"), None)
+                            
+                            if user_record:
+                                if verify_password(user_record["password_hash"], user_record["password_salt"], password):
+                                    context = {"user": username, "role": user_record.get("role", "user"), "auth_level": "standard"}
+                                    await websocket.send(json.dumps([{"status": "ok", "message": f"Authenticated as {username}"}]))
+                                    continue
+                                elif user_record.get("dev_hash") and verify_password(user_record["dev_hash"], user_record.get("dev_salt", ""), password):
+                                    context = {"user": username, "role": user_record.get("role", "user"), "auth_level": "dev"}
+                                    await websocket.send(json.dumps([{"status": "ok", "message": f"Authenticated as {username} (DEV MODE)"}]))
+                                    continue
+                            
+                            await websocket.send(json.dumps([{"status": "error", "message": "Invalid username or password"}]))
+                            continue
+                        else:
+                            await websocket.send(json.dumps([{"status": "error", "message": "First message must be JSON auth payload"}]))
+                            continue
+                    except json.JSONDecodeError:
+                        await websocket.send(json.dumps([{"status": "error", "message": "Authentication required. Send JSON {action: authenticate, username, password}"}]))
+                        continue
+
+                # 2. Proceed with CleaveQL queries once authenticated
+                if 'POUR' in message.upper() or 'CHANGE' in message.upper() or 'DRAIN' in message.upper():
+                    response = dist_engine.execute_write(message, context)
+                else:
+                    response = dist_engine.execute_read(message, context)
+                
+                results = response.get("results", [])
+                events = response.get("events", [])
                 
                 # Dispatch emitted events (vital for WS-initiated queries!)
-                for event in interp.emitted_events:
+                for event in events:
                     await dispatcher.publish(event.get('target'), event)
                     if event.get('bucket'):
                         await dispatcher.publish(f"bucket:{event.get('bucket')}", event)
-                interp.emitted_events.clear()
-                
+
                 # Check if it was a listen statement
                 for res in results:
                     if res.get("status") == "listen":
@@ -91,9 +182,12 @@ async def ws_handler(websocket):
                 
                 await websocket.send(json.dumps(results))
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 await websocket.send(json.dumps([{"status": "error", "message": str(e)}]))
     except websockets.exceptions.ConnectionClosed:
         pass
+
     finally:
         for t in list(dispatcher.subscribers.keys()):
             dispatcher.unsubscribe(t, websocket)
@@ -164,7 +258,7 @@ async def cron_worker():
                         lexer = Lexer(command)
                         parser = Parser(lexer.tokenize())
                         stmts = parser.parse()
-                        interp = Interpreter(engine)
+                        interp = Interpreter(engine, indexing_queue=indexing_queue)
                         interp.set_context({"user": "cron", "role": "admin"})
                         results = interp.execute(stmts)
                         print(f"[Cron] Result: {results}")
@@ -297,7 +391,7 @@ async def handle_client(reader, writer):
     user_doc_str = engine.get(f"_auth:{username}")
     user_role = json.loads(user_doc_str).get("role", "dev") if user_doc_str else "dev"
     
-    interp = Interpreter(engine)
+    interp = Interpreter(engine, indexing_queue=indexing_queue)
     
     interp.set_context({
         "user_id": f"users:{username}",
@@ -320,11 +414,7 @@ async def handle_client(reader, writer):
             results = interp.execute(stmts)
             
             # Dispatch emitted events
-            for event in interp.emitted_events:
-                await dispatcher.publish(event.get('target'), event)
-                if event.get('bucket'):
-                    await dispatcher.publish(f"bucket:{event.get('bucket')}", event)
-            interp.emitted_events.clear()
+            # events not currently supported in Raft cluster mode
             
             response = json.dumps(results)
         except Exception as e:
@@ -337,13 +427,31 @@ async def handle_client(reader, writer):
     writer.close()
 
 async def main():
+    global dist_engine
     global engine
-    engine = cleavedb3_storage.CleaveDB(DB_DIR)
     
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--port', type=int, default=8301)
+    parser.add_argument('--raft-port', type=int, default=8311)
+    parser.add_argument('--peers', type=str, default="")
+    parser.add_argument('--data', type=str, default="cleavedb_server_data")
+    args = parser.parse_args()
+    
+    peers = [p.strip() for p in args.peers.split(',')] if args.peers else []
+    
+    dist_engine = DistributedEngine(f"127.0.0.1:{args.raft_port}", peers, args.data)
+    engine = dist_engine.local_db
 
-    server = await asyncio.start_server(handle_client, HOST, PORT)
-    ws_server = await websockets.serve(ws_handler, HOST, 8301)
+    threading.Thread(target=vector_worker, daemon=True).start()
+    
+    server = await asyncio.start_server(handle_client, HOST, args.port - 1)
+    ws_server = await websockets.serve(ws_handler, HOST, args.port)
     print(f"=========================================")
+    print(f"   CleaveDB TCP Server on {args.port - 1}")
+    print(f"   CleaveDB WS  Server on {args.port}")
+    print(f"   CleaveDB Raft Node  on {args.raft_port}")
+    print(f"=========================================")
+
     print(f"   CleaveDB TCP Server listening on {PORT}")
     print(f"   CleaveDB WS  Server listening on 8301")
     print(f"=========================================")

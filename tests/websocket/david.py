@@ -6,10 +6,25 @@ import sys
 import time
 import msvcrt
 
-async def chat_client(username):
+async def chat_client(username, password):
     uri = "ws://127.0.0.1:8301"
     try:
         async with websockets.connect(uri) as websocket:
+            # --- AUTHENTICATION PHASE ---
+            auth_payload = {
+                "action": "authenticate",
+                "username": username,
+                "password": password
+            }
+            await websocket.send(json.dumps(auth_payload))
+            auth_response = await websocket.recv()
+            auth_data = json.loads(auth_response)
+            
+            if auth_data[0].get("status") != "ok":
+                print(f"\n[!] Authentication failed: {auth_data[0].get('message')}")
+                return
+            # ----------------------------
+            
             print(f"=================================================")
             print(f" ?? Welcome to CleaveDB Real-Time Chat, {username}!")
             print(f"=================================================")
@@ -153,9 +168,7 @@ async def chat_client(username):
     except ConnectionRefusedError:
         print("Could not connect to CleaveDB!")
 
-import sys
-import time
-
 if __name__ == "__main__":
-    name = "David" if "david" in sys.argv[0].lower() else "Jessy"
-    asyncio.run(chat_client(name))
+    USERNAME = "david"
+    PASSWORD = "perez"
+    asyncio.run(chat_client(USERNAME, PASSWORD))

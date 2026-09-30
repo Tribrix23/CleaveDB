@@ -214,6 +214,23 @@ class MaskStmt(ASTNode):
     condition: str = ""
 
 @dataclass
+
+class GraphNode:
+    def __init__(self, alias: str, bucket: str):
+        self.alias = alias
+        self.bucket = bucket
+
+class GraphEdge:
+    def __init__(self, label: str, direction: str):
+        self.label = label
+        self.direction = direction
+
+class MatchStmt(ASTNode):
+    def __init__(self, nodes: list, edges: list, where=None):
+        self.nodes = nodes
+        self.edges = edges
+        self.where = where
+
 class SeverStmt(ASTNode):
     source_gid: str = ""
     target_gid: str = ""

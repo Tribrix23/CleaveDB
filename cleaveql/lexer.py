@@ -138,12 +138,25 @@ class Lexer:
         if c == '{': return Token(TokenType.LBRACE, c, start_line, start_column)
         if c == '}': return Token(TokenType.RBRACE, c, start_line, start_column)
         if c == '[': return Token(TokenType.LBRACKET, c, start_line, start_column)
-        if c == ']': return Token(TokenType.RBRACKET, c, start_line, start_column)
+        if c == ']':
+            if self.peek() == '-':
+                self.advance()
+                if self.peek() == '>':
+                    self.advance()
+                    return Token(TokenType.EDGE_RIGHT, ']->', start_line, start_column)
+                return Token(TokenType.EDGE_END, ']-', start_line, start_column)
+            return Token(TokenType.RBRACKET, c, start_line, start_column)
         if c == ':': return Token(TokenType.COLON, c, start_line, start_column)
         if c == '(': return Token(TokenType.LPAREN, c, start_line, start_column)
         if c == ')': return Token(TokenType.RPAREN, c, start_line, start_column)
         if c == '*': return Token(TokenType.STAR, c, start_line, start_column)
         
+        if c == '-':
+            if self.peek() == '[':
+                self.advance()
+                return Token(TokenType.EDGE_START, '-[', start_line, start_column)
+            return Token(TokenType.UNKNOWN, c, start_line, start_column)
+            
         if c == '=': return Token(TokenType.EQ, c, start_line, start_column)
         if c == '!':
             if self.peek() == '=':
@@ -154,6 +167,12 @@ class Lexer:
             if self.peek() == '=':
                 self.advance()
                 return Token(TokenType.LTE, '<=', start_line, start_column)
+            if self.peek() == '-':
+                self.advance()
+                if self.peek() == '[':
+                    self.advance()
+                    return Token(TokenType.EDGE_LEFT, '<-[', start_line, start_column)
+                return Token(TokenType.UNKNOWN, '<-', start_line, start_column)
             return Token(TokenType.LT, c, start_line, start_column)
         if c == '>':
             if self.peek() == '=':

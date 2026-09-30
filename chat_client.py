@@ -5,6 +5,7 @@ import uuid
 import sys
 import time
 import msvcrt
+import getpass
 
 async def chat_client(username, password):
     uri = "ws://127.0.0.1:8301"
@@ -169,6 +170,6 @@ async def chat_client(username, password):
         print("Could not connect to CleaveDB!")
 
 if __name__ == "__main__":
-    USERNAME = "jessy"
-    PASSWORD = "perez"
-    asyncio.run(chat_client(USERNAME, PASSWORD))
+    name = "David" if "david" in sys.argv[0].lower() else "Jessy"
+    pw = getpass.getpass(f"Enter password for {name}: ")
+    asyncio.run(chat_client(name, pw))

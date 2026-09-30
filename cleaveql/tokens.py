@@ -106,6 +106,12 @@ class TokenType(Enum):
     DAYS = auto()
        # Alias for BOND
     IF = auto()         # Alias for ONLY WHEN
+    
+    MATCH = auto()
+    EDGE_START = auto()   # -[
+    EDGE_RIGHT = auto()   # ]->
+    EDGE_LEFT = auto()    # <-[
+    EDGE_END = auto()     # ]-
     CANDIDATE = auto()  # Flag to show dormant bonds
     TRACE = auto()      # Alias for SCOOP CHAIN
     REWIND = auto()
@@ -219,6 +225,7 @@ class TokenType(Enum):
 KEYWORDS = {
     "expires": TokenType.EXPIRES,
     "days": TokenType.DAYS,
+    "match": TokenType.MATCH,
     "listen": TokenType.LISTEN,
     'seconds': TokenType.SECONDS,
     'second': TokenType.SECOND,

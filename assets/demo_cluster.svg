@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="240">
+  <rect width="800" height="240" rx="10" fill="#1e1e1e" />
+  <circle cx="20" cy="20" r="6" fill="#ff5f56" />
+  <circle cx="40" cy="20" r="6" fill="#ffbd2e" />
+  <circle cx="60" cy="20" r="6" fill="#27c93f" />
+  
+  <text x="20" y="60" font-family="monospace" font-size="14" fill="#66d9ef">Node 1 (Port 8301) - Leader [Raft Port: 9001]</text>
+  <text x="20" y="85" font-family="monospace" font-size="14" fill="#a6e22e"> > POUR INTO users 'cluster' {"db": "distributed"}</text>
+  <text x="20" y="110" font-family="monospace" font-size="14" fill="#fd971f">   [RAFT] Appending log 0001 to Node 2, Node 3...</text>
+  <text x="20" y="135" font-family="monospace" font-size="14" fill="#27c93f">   [RAFT] Quorum Reached (2/3). Committing to Sled!</text>
+
+  <text x="20" y="175" font-family="monospace" font-size="14" fill="#f92672">Node 2 (Port 8311) - Follower</text>
+  <text x="20" y="200" font-family="monospace" font-size="14" fill="#a6e22e"> > FIND users "cluster"</text>
+  <text x="20" y="225" font-family="monospace" font-size="14" fill="#e6db74">   {"status": "ok", "documents": [{"db": "distributed"}]}</text>
+</svg>

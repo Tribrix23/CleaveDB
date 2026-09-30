@@ -30,8 +30,9 @@ class Interpreter:
                 filtered.append(d)
         return json.dumps(filtered)
 
-    def __init__(self, engine=None):
+    def __init__(self, engine=None, indexing_queue=None):
         self.engine = engine
+        self.indexing_queue = indexing_queue
         self.context = {}
         self.emitted_events = []
         self.security = PolicyEngine()
@@ -43,7 +44,7 @@ class Interpreter:
             from .lexer import Lexer
             pol_data = self._scan_bucket_rls("_security_policies")
             if pol_data:
-                import json
+
                 tenant_id = self.context.get("user", "").split(".")[0]
                 for p_doc in json.loads(pol_data):
                     doc_id = p_doc["gid"].split(":")[1]
@@ -99,6 +100,8 @@ class Interpreter:
             try:
                 results.append(self._execute_stmt(stmt))
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 results.append({"status": "error", "message": str(e)})
         return results
 
@@ -172,6 +175,12 @@ class Interpreter:
             if ttl is not None and isinstance(body, dict):
                 # Put a fast-lookup pointer in _ttl bucket for the cron worker
                 self.engine.pour("_ttl", gid.split(":")[-1], json.dumps({"target": gid, "expires_at": expires_at}))
+                
+            # --- Vector Indexing Queue ---
+            if self.indexing_queue is not None and isinstance(body, dict):
+                text_content = " ".join([str(v) for v in body.values() if isinstance(v, str)])
+                if text_content:
+                    print(f"[Interpreter] Pushing {gid} to vector queue!"); self.indexing_queue.put((gid, text_content))
 
             self.emitted_events.append({"event": "POUR", "target": gid, "bucket": bucket, "data": body})
             
@@ -210,6 +219,12 @@ class Interpreter:
             if ttl is not None and isinstance(body, dict):
                 # Put a fast-lookup pointer in _ttl bucket for the cron worker
                 self.engine.pour("_ttl", gid.split(":")[-1], json.dumps({"target": gid, "expires_at": expires_at}))
+                
+            # --- Vector Indexing Queue ---
+            if self.indexing_queue is not None and isinstance(body, dict):
+                text_content = " ".join([str(v) for v in body.values() if isinstance(v, str)])
+                if text_content:
+                    print(f"[Interpreter] Pushing {gid} to vector queue!"); self.indexing_queue.put((gid, text_content))
 
                 self.emitted_events.append({"event": "POUR", "target": gid, "bucket": bucket, "data": doc})
                 gids.append(gid)
@@ -355,11 +370,14 @@ class Interpreter:
                 query_vec = get_embedding(meaning)
                 temp = []
                 for doc in docs:
-                    text_content = " ".join([str(v) for v in doc['body'].values() if isinstance(v, str)])
-                    if not text_content: continue
+                    emb_str = self.engine.get(f"_embeddings:{doc['gid']}")
+                    if not emb_str:
+                        print(f"[Interpreter] Embedding NOT FOUND for _embeddings:{doc['gid']}")
+                        continue
                     
-                    doc_vec = get_embedding(text_content)
+                    doc_vec = np.array(json.loads(emb_str))
                     similarity = float(np.dot(query_vec, doc_vec))
+                    print(f"[Interpreter] Similarity for {doc['gid']}: {similarity}")
                     
                     if similarity > 0.20:
                         doc['_embedding_distance'] = round(similarity, 3)
@@ -717,6 +735,68 @@ class Interpreter:
                 result = exp.explain(target)
                 return {"status": "ok", "explain": result}
             return {"status": "ok"}
+
+
+        elif stmt_type == "MatchStmt":
+            try:
+
+                results_json = self._scan_bucket_rls(stmt.nodes[0].bucket)
+                if not results_json: return "[]"
+                start_docs = json.loads(results_json)
+                
+                paths = []
+                bonds_str = self.engine.scan_bucket("_bonds")
+                bonds = json.loads(bonds_str) if bonds_str else []
+                
+                def traverse(current_idx, current_gid, current_path):
+                    if current_idx == len(stmt.edges):
+                        paths.append(current_path)
+                        return
+                    edge = stmt.edges[current_idx]
+                    next_node = stmt.nodes[current_idx + 1]
+                    
+                    for b in bonds:
+                        body = b["body"]
+                        if body["label"] == edge.label:
+                            next_gid = None
+                            if edge.direction == "->" and body["source"] == current_gid:
+                                next_gid = body["target"]
+                            elif edge.direction == "<-" and body["target"] == current_gid:
+                                next_gid = body["source"]
+                            elif edge.direction == "-":
+                                if body["source"] == current_gid: next_gid = body["target"]
+                                elif body["target"] == current_gid: next_gid = body["source"]
+                                
+                            if next_gid and next_gid.startswith(next_node.bucket + ":"):
+                                target_doc_str = self.engine.get(next_gid)
+                                if target_doc_str:
+                                    target_doc = {"gid": next_gid, "body": json.loads(target_doc_str)}
+                                    new_path = dict(current_path)
+                                    new_path[next_node.alias] = target_doc
+                                    traverse(current_idx + 1, next_gid, new_path)
+    
+                for doc in start_docs:
+                    traverse(0, doc["gid"], {stmt.nodes[0].alias: doc})
+                    
+                final_results = []
+                for path in paths:
+                    if stmt.where:
+                        flat_doc = {}
+                        for alias, d in path.items():
+                            for k, v in d["body"].items():
+                                flat_doc[f"{alias}.{k}"] = v
+                        
+                        print(f"[MatchStmt] flat_doc={flat_doc}, type={type(flat_doc)}")
+                    if not self._evaluate_where(stmt.where, flat_doc):
+                            continue
+                    final_results.append(path)
+                    
+                return {"status": "ok", "mode": "MATCH", "paths": final_results, "count": len(final_results)}
+    
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                raise e
 
         elif stmt_type == "SuggestStmt":
             return {"status": "ok", "suggestions": [], "note": "Run 'heal all' first to gather statistics"}

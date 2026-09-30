@@ -20,12 +20,120 @@
 - A **Go-based distributed coordinator** with scatter-gather and K-way merge for multi-shard deployments.
 - A **TCP server** (`cleavedb_server.py`) with full authentication, background Cron worker, and **multi-tenant Document-Level Security (DLS)**.
 
-### See it in action:
-<div align="center">
-  <img src="assets/terminal_demo.svg" alt="CleaveDB Terminal Session" width="750"/>
-</div>
+#
 
----
+## 🚀 Quick Start: Connecting to CleaveDB
+
+CleaveDB operates over a **TCP Protocol (port 8300)** and a **WebSocket Protocol (port 8301)**. All client connections must authenticate with a valid username and password before executing CleaveQL queries.
+
+### Python (Raw TCP connection)
+
+`python
+import asyncio
+import json
+
+async def connect_tcp():
+    reader, writer = await asyncio.open_connection('127.0.0.1', 8300)
+    
+    # 1. Authenticate
+    auth_payload = {"action": "login", "username": "david", "password": "perez"}
+    writer.write((json.dumps(auth_payload) + "
+").encode())
+    await writer.drain()
+    
+    response = await reader.readline()
+    if json.loads(response).get("status") != "ok":
+        return print("Auth failed!")
+        
+    # 2. Run Queries (Newline delimited)
+    writer.write(b'FIND users
+')
+    await writer.drain()
+    
+    query_result = await reader.readline()
+    print("TCP Query Result:", query_result.decode())
+
+asyncio.run(connect_tcp())
+`
+
+### Python (websockets library)
+
+`python
+import asyncio
+import websockets
+import json
+
+async def connect_ws():
+    async with websockets.connect("ws://127.0.0.1:8301") as ws:
+        # 1. Authenticate
+        await ws.send(json.dumps({"action": "authenticate", "username": "david", "password": "perez"}))
+        auth_res = json.loads(await ws.recv())
+        
+        if auth_res[0].get("status") != "ok":
+            return print("Auth failed!")
+            
+        # 2. Run Queries
+        await ws.send('POUR INTO users "bot" {"name": "AI"}')
+        print("WS Query Result:", await ws.recv())
+
+asyncio.run(connect_ws())
+`
+
+### Node.js (ws)
+
+`javascript
+const WebSocket = require('ws');
+
+const ws = new WebSocket('ws://127.0.0.1:8301');
+
+ws.on('open', function open() {
+  // 1. Authenticate
+  ws.send(JSON.stringify({
+    action: 'authenticate', 
+    username: 'david', 
+    password: 'perez'
+  }));
+});
+
+let authenticated = false;
+
+ws.on('message', function incoming(data) {
+  const response = JSON.parse(data);
+  
+  if (!authenticated) {
+    if (response[0].status === 'ok') {
+      authenticated = true;
+      // 2. Run Queries
+      ws.send('FIND users');
+    } else {
+      console.error('Auth Failed!');
+    }
+  } else {
+    console.log('Query Result:', response);
+  }
+});
+`
+
+### CLI / Terminal (wscat)
+
+Since CleaveDB runs exclusively over WebSockets for real-time Pub/Sub, standard HTTP curl won't work out of the box. Instead, use a websocket tool like wscat:
+
+`ash
+# Install wscat
+npm install -g wscat
+
+# Connect and authenticate
+wscat -c ws://127.0.0.1:8301
+
+# Send your credentials
+> {"action": "authenticate", "username": "david", "password": "perez"}
+< [{"status": "ok", "message": "Authenticated as david"}]
+
+# Run a query
+> FIND users
+< [{"status": "ok", "documents": [...]}]
+`
+
 
 ## 🏗️ Architecture & Toolchain
 
@@ -772,3 +880,40 @@ dsc/
 │ HEAL ALL / BONDS / INDEXES                               │
 └──────────────────────────────────────────────────────────┘
 ```
+
+---
+
+### 20. Subgraph Pattern Matching (English Syntax)
+
+<div align="center"><img src="assets/demo_pattern.svg" width="800"/></div>
+
+CleaveDB supports an elegant English syntax for traversing complex, multi-hop subgraphs instead of cryptic ASCII symbols (like Cypher).
+
+`sql
+FIND PATTERN IN users AS u LINKED VIA "works_in" TO departments AS d LINKED VIA "located_in" TO cities AS c WHERE d.name = "AI"
+`
+
+This seamlessly returns matching structural paths from the document graph, traversing nodes across different buckets!
+
+---
+
+### 21. Multi-Node Raft Consensus (High Availability Cluster)
+
+<div align="center"><img src="assets/demo_cluster.svg" width="800"/></div>
+
+CleaveDB is fully distributed. Using a custom Python-native **Raft Consensus** implementation powered by pysyncobj, CleaveDB provides Zero-Downtime, Disaster Survival, and High Availability replication.
+
+**Run multiple nodes to form a cluster:**
+`ash
+python cleavedb_server.py --port 8301 --raft-port 9001 --peers 127.0.0.1:9002,127.0.0.1:9003 --data node1
+python cleavedb_server.py --port 8311 --raft-port 9002 --peers 127.0.0.1:9001,127.0.0.1:9003 --data node2
+python cleavedb_server.py --port 8321 --raft-port 9003 --peers 127.0.0.1:9001,127.0.0.1:9002 --data node3
+`
+
+When you send a POUR or CHANGE write command to the cluster:
+1. The Leader node intercepts it.
+2. The command is mathematically appended to the distributed Raft Log.
+3. Once the majority (Quorum) acknowledges writing the WAL, it is committed to memory.
+4. If a node crashes, the cluster seamlessly elects a new leader with no data loss!
+
+---

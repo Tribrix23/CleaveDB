@@ -13,6 +13,30 @@ SECURITY_QUESTIONS = [
 ]
 
 DETAILED_HELP = {
+
+"find pattern": """
+================================================================================
+  FIND PATTERN ?" English Graph Pattern Matching
+================================================================================
+
+  FIND PATTERN performs a recursive Subgraph Pattern Matching query.
+  Unlike traditional SQL JOINs, it traverses the hidden _bonds bucket
+  to reconstruct relationships recursively in memory.
+
+  SYNTAX:
+    FIND PATTERN IN <bucket> AS <alias>
+        LINKED VIA "<label>" [TO|FROM|WITH] <bucket> AS <alias>
+        [LINKED VIA "<label>" [TO|FROM|WITH] <bucket> AS <alias>]*
+    [WHERE <alias.field> = <value>]
+
+  EXAMPLES:
+    FIND PATTERN IN users AS u LINKED VIA "works_in" TO departments AS d LINKED VIA "located_in" TO cities AS c WHERE d.name = "AI"
+
+  DIRECTIONS:
+    TO   -> Outbound edge (source -> target)
+    FROM -> Inbound edge (target -> source)
+    WITH -> Undirected edge (source <-> target)
+""",
 "pour": """
 ================================================================================
   POUR — Insert / Upsert Documents

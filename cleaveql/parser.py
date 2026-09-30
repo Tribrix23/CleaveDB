@@ -26,6 +26,9 @@ class Parser:
         if self.match(TokenType.LISTEN):
             return self.listen_stmt()
         if self.match(TokenType.SCOOP, TokenType.FIND):
+            if self.check(TokenType.IDENTIFIER) and self.peek().lexeme.lower() == "pattern":
+                self.advance()
+                return self.match_pattern_stmt()
             return self.scoop_stmt()
         if self.match(TokenType.TRACE):
             return self.trace_stmt()
@@ -744,7 +747,7 @@ class Parser:
 
     def _parse_predicate(self) -> 'Predicate':
         """Parse field op value."""
-        field = self.consume_identifier("Expected field name in predicate.")
+        field = self.consume_field_path("Expected field name in predicate.")
         if self.match(TokenType.GTE):
             op = ">="
         elif self.match(TokenType.LTE):
@@ -966,6 +969,92 @@ class Parser:
         stmt.interval_seconds = interval
         stmt.command_str = command_str
         return stmt
+
+
+
+    def match_pattern_stmt(self):
+        from .ast import GraphNode, GraphEdge, MatchStmt
+        
+        nodes = []
+        edges = []
+        
+        if self.match(TokenType.IN): pass # Optional IN
+        bucket = self.consume_identifier("Expected bucket name.")
+        self.consume(TokenType.AS, "Expected 'AS' after bucket.")
+        alias = self.consume_identifier("Expected alias.")
+        nodes.append(GraphNode(alias, bucket))
+        
+        while self.match(TokenType.IDENTIFIER) and self.previous().lexeme.lower() == "linked":
+            self.consume_identifier("Expected 'via' or 'by'.") # "via" or "by"
+            label = self.consume_string("Expected edge label string.")
+            
+            direction = None
+            if self.match(TokenType.TO):
+                direction = "->"
+            elif self.match(TokenType.FROM):
+                direction = "<-"
+            else:
+                if self.match(TokenType.IDENTIFIER) and self.previous().lexeme.lower() == "with":
+                    direction = "-"
+                else:
+                    raise self.error(self.peek(), "Expected 'TO', 'FROM', or 'WITH' after edge label.")
+                
+            bucket = self.consume_identifier("Expected bucket name.")
+            self.consume(TokenType.AS, "Expected 'AS' after bucket.")
+            alias = self.consume_identifier("Expected alias.")
+            
+            edges.append(GraphEdge(label, direction))
+            nodes.append(GraphNode(alias, bucket))
+            
+        where = None
+        if self.match(TokenType.WHERE):
+            where = self._parse_where()
+            
+        return MatchStmt(nodes, edges, where)
+
+    def match_stmt(self):
+        from .ast import GraphNode, GraphEdge, MatchStmt
+        
+        nodes = []
+        edges = []
+        
+        def parse_node():
+            self.consume(TokenType.LPAREN, "Expected '(' to start a node pattern.")
+            alias = self.consume_identifier("Expected node alias.")
+            self.consume(TokenType.FROM, "Expected 'from' inside node pattern.")
+            bucket = self.consume_identifier("Expected bucket name.")
+            self.consume(TokenType.RPAREN, "Expected ')' to close node pattern.")
+            return GraphNode(alias, bucket)
+            
+        nodes.append(parse_node())
+        
+        while True:
+            direction = None
+            if self.match(TokenType.EDGE_START):
+                label = self.consume_string("Expected edge label string.")
+                if self.match(TokenType.EDGE_RIGHT):
+                    direction = "->"
+                elif self.match(TokenType.EDGE_END):
+                    direction = "-"
+                else:
+                    raise self.error(self.peek(), "Expected ']->' or ']-' to close edge.")
+            elif self.match(TokenType.EDGE_LEFT):
+                label = self.consume_string("Expected edge label string.")
+                if self.match(TokenType.EDGE_END):
+                    direction = "<-"
+                else:
+                    raise self.error(self.peek(), "Expected ']-' to close left edge.")
+            else:
+                break
+                
+            edges.append(GraphEdge(label, direction))
+            nodes.append(parse_node())
+            
+        where = None
+        if self.match(TokenType.WHERE):
+            where = self._parse_where()
+            
+        return MatchStmt(nodes, edges, where)
 
     def sever_stmt(self) -> SeverStmt:
         source_gid = self.consume_string("Expected source document ID.")
