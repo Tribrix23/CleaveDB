@@ -603,6 +603,34 @@ python cleavedb_server.py          # Starts on 127.0.0.1:8300
 python cleave_cli.py -H 127.0.0.1 -p 8300
 ```
 
+---
+
+### 21. Realtime Subscriptions (LISTEN)
+
+<div align="center"><img src="assets/demo_listen.svg" width="800"/></div>
+
+Turn CleaveDB into a realtime Pub/Sub message broker! Connect a WebSocket client to port 8301 and subscribe to specific documents or entire buckets. Any POUR, CHANGE, or LINK executed on the database will instantly push JSON events to your frontend.
+
+`sql
+LISTEN TO <bucket> ["<target_id>"]
+`
+
+**Examples:**
+- LISTEN TO chat - Subscribe to all events in the chat bucket.
+- LISTEN TO users "david" - Subscribe exclusively to updates on David's profile.
+
+#### Interactive Chat Demo
+To see the full power of real-time CleaveQL subscriptions in action, we included a highly-responsive interactive CLI chat simulation using purely CleaveDB WebSockets (complete with real-time Facebook Messenger style typing indicators!).
+
+<div align="center"><img src="assets/demo_chat.svg" width="800"/></div>
+
+**Try it out yourself:**
+1. Start the server: python cleavedb_server.py
+2. Open terminal 1: python tests/websocket/david.py
+3. Open terminal 2: python tests/websocket/jessy.py
+
+Type a message in one terminal and watch it appear instantly in the other!
+
 ### Client Lifecycle
 1. **Authentication Phase** → `register` / `login` / `forgot`
 2. **Query Phase** → Raw CleaveQL strings, one per line

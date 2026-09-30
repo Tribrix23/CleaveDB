@@ -23,6 +23,8 @@ class Parser:
         return statements
 
     def statement(self) -> Any:
+        if self.match(TokenType.LISTEN):
+            return self.listen_stmt()
         if self.match(TokenType.SCOOP, TokenType.FIND):
             return self.scoop_stmt()
         if self.match(TokenType.TRACE):
@@ -970,3 +972,12 @@ class Parser:
         if self.match(TokenType.STRING): bucket = self.previous().value
         else: bucket = self.consume_identifier("Expected bucket name.")
         return DropSecurityStmt(name=name, bucket=bucket)
+
+    def listen_stmt(self) -> Any:
+        # LISTEN TO <bucket> ["<id>"]
+        self.consume(TokenType.TO, "Expected 'TO' after 'LISTEN'.")
+        bucket = self.consume(TokenType.IDENTIFIER, "Expected bucket name after 'LISTEN TO'.").lexeme
+        target_gid = None
+        if self.match(TokenType.STRING):
+            target_gid = self.previous().lexeme
+        return ListenStmt(target_bucket=bucket, target_gid=target_gid)

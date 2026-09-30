@@ -13,6 +13,7 @@ class TokenType(Enum):
     FOLLOW = auto()   # traverse bonds
     SHAPE = auto()    # create/configure bucket
     PEER = auto()     # explain/inspect
+    LISTEN = auto()   # websocket subscription
     CHANGE = auto()   # partial update
     COUNT = auto()    # count matching documents
     INDEX = auto()    # declare index
@@ -212,6 +213,7 @@ class TokenType(Enum):
     UNKNOWN = auto()
 
 KEYWORDS = {
+    "listen": TokenType.LISTEN,
     'seconds': TokenType.SECONDS,
     'second': TokenType.SECOND,
     'hours': TokenType.HOURS,

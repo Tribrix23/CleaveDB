@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="240">
+  <rect width="100%" height="100%" rx="8" ry="8" fill="#0C0C0C" stroke="#333333" stroke-width="1"/>
+  <rect width="100%" height="24" rx="8" ry="8" fill="#1C1C1C" />
+  <rect width="100%" height="12" y="12" fill="#1C1C1C" />
+  <path d="M 740 12 L 750 12" stroke="#FFFFFF" stroke-width="1.5" />
+  <rect x="765" y="6" width="10" height="10" stroke="#FFFFFF" stroke-width="1.5" fill="none" />
+  <path d="M 790 6 L 800 16 M 800 6 L 790 16" stroke="#FFFFFF" stroke-width="1.5" />
+  <text x="15" y="16" fill="#FFFFFF" font-family="Segoe UI, sans-serif" font-size="11">PowerShell - Real-Time Subscriptions (Split Terminal)</text>
+  
+  <path d="M 400 24 L 400 240" stroke="#333333" stroke-width="1" />
+
+  <!-- Left Side: David -->
+  <g transform="translate(15, 45)" font-family="Consolas, monospace" font-size="13">
+    <text x="0" y="0" fill="#CCCCCC" xml:space="preserve"><tspan fill="#F9F1A5">PS C:\&gt;</tspan> <tspan fill="#E5C07B">python</tspan> david.py</text>
+    <text x="0" y="25" fill="#CCCCCC" xml:space="preserve">======================================</text>
+    <text x="0" y="45" fill="#16C60C" xml:space="preserve">  Welcome to CleaveDB Real-Time Chat!</text>
+    <text x="0" y="65" fill="#CCCCCC" xml:space="preserve">======================================</text>
+    <text x="0" y="95" fill="#CCCCCC" xml:space="preserve"><tspan fill="#61AFEF">[David]:</tspan> hello</text>
+    <text x="0" y="115" fill="#CCCCCC" xml:space="preserve"><tspan fill="#E06C75">[Jessy]:</tspan> hi david! this is so fast</text>
+    <text x="0" y="135" fill="#CCCCCC" xml:space="preserve"><tspan fill="#61AFEF">[David]:</tspan> i know right?!</text>
+    <text x="0" y="160" fill="#909090" xml:space="preserve">Jessy is typing...</text>
+    <text x="0" y="180" fill="#CCCCCC" xml:space="preserve"><tspan fill="#61AFEF">[David]:</tspan> <tspan fill="#FFFFFF">_</tspan></text>
+  </g>
+
+  <!-- Right Side: Jessy -->
+  <g transform="translate(415, 45)" font-family="Consolas, monospace" font-size="13">
+    <text x="0" y="0" fill="#CCCCCC" xml:space="preserve"><tspan fill="#F9F1A5">PS C:\&gt;</tspan> <tspan fill="#E5C07B">python</tspan> jessy.py</text>
+    <text x="0" y="25" fill="#CCCCCC" xml:space="preserve">======================================</text>
+    <text x="0" y="45" fill="#16C60C" xml:space="preserve">  Welcome to CleaveDB Real-Time Chat!</text>
+    <text x="0" y="65" fill="#CCCCCC" xml:space="preserve">======================================</text>
+    <text x="0" y="95" fill="#CCCCCC" xml:space="preserve"><tspan fill="#61AFEF">[David]:</tspan> hello</text>
+    <text x="0" y="115" fill="#CCCCCC" xml:space="preserve"><tspan fill="#E06C75">[Jessy]:</tspan> hi david! this is so fast</text>
+    <text x="0" y="135" fill="#CCCCCC" xml:space="preserve"><tspan fill="#61AFEF">[David]:</tspan> i know right?!</text>
+    <text x="0" y="165" fill="#CCCCCC" xml:space="preserve"><tspan fill="#E06C75">[Jessy]:</tspan> definitely using this in pr<tspan fill="#FFFFFF">_</tspan></text>
+  </g>
+</svg>

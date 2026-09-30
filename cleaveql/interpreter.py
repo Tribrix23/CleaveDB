@@ -33,6 +33,7 @@ class Interpreter:
     def __init__(self, engine=None):
         self.engine = engine
         self.context = {}
+        self.emitted_events = []
         self.security = PolicyEngine()
         
     def set_context(self, context):
@@ -161,6 +162,7 @@ class Interpreter:
                     doc_id = f"{creator}.{doc_id}"
 
             gid = self.engine.pour(bucket, doc_id, json_str)
+            self.emitted_events.append({"event": "POUR", "target": gid, "bucket": bucket, "data": body})
             
             # Auth Cross-Write
             if getattr(stmt, 'secret', None):
@@ -193,6 +195,7 @@ class Interpreter:
                     
                 json_str = json.dumps(doc) if isinstance(doc, dict) else str(doc)
                 gid = self.engine.pour(bucket, doc_id, json_str)
+                self.emitted_events.append({"event": "POUR", "target": gid, "bucket": bucket, "data": doc})
                 gids.append(gid)
             return {"status": "ok", "count": len(gids), "gids": gids}
 
@@ -434,6 +437,11 @@ class Interpreter:
             results = json.loads(results_json) if results_json else []
             return {"status": "ok", "count": len(results)}
 
+        elif stmt_type == "ListenStmt":
+            bucket = getattr(stmt, 'target_bucket', '')
+            gid = getattr(stmt, 'target_gid', None)
+            target = self._namespace_gid(gid) if gid else f"bucket:{bucket}"
+            return {"status": "listen", "target": target}
         elif stmt_type == "ChangeStmt":
             doc_id = getattr(stmt, 'doc_id', None)
             bucket = getattr(stmt, 'bucket', '')
@@ -475,6 +483,7 @@ class Interpreter:
                             else:
                                 body[field] = value
                     self.engine.pour(bucket, doc_id, json.dumps(body))
+                    self.emitted_events.append({"event": "CHANGE" if stmt_type == "ChangeStmt" else "POUR", "target": doc_id, "bucket": bucket, "data": body})
                     return {"status": "ok", "gid": doc_id}
                 return {"status": "error", "message": f"Document '{doc_id}' not found"}
             return {"status": "error", "message": "No doc_id specified"}
@@ -605,6 +614,7 @@ class Interpreter:
                 tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
                 bond_id = f"{tenant}.{str(uuid.uuid4())}" if tenant != "cron" else str(uuid.uuid4())
                 self.engine.pour("_bonds", bond_id, json.dumps(bond_doc))
+                self.emitted_events.append({"event": "LINK", "target": bond_id, "bucket": "_bonds", "data": bond_doc})
                 count += 1
                 
                 if getattr(stmt, 'mutual', False):

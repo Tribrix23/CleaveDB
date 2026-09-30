@@ -1,5 +1,6 @@
 import asyncio
 import json
+import websockets
 import os
 import hashlib
 from cryptography.fernet import Fernet
@@ -35,6 +36,68 @@ engine = None
 
 
 import time
+
+
+class EventDispatcher:
+    def __init__(self):
+        self.subscribers = {} # target_id -> set(websocket)
+
+    async def publish(self, target_id, data):
+        if target_id in self.subscribers:
+            to_remove = set()
+            for ws in self.subscribers[target_id]:
+                try:
+                    await ws.send(json.dumps(data))
+                except Exception:
+                    to_remove.add(ws)
+            self.subscribers[target_id] -= to_remove
+
+    def subscribe(self, target_id, ws):
+        if target_id not in self.subscribers:
+            self.subscribers[target_id] = set()
+        self.subscribers[target_id].add(ws)
+        
+    def unsubscribe(self, target_id, ws):
+        if target_id in self.subscribers and ws in self.subscribers[target_id]:
+            self.subscribers[target_id].remove(ws)
+
+dispatcher = EventDispatcher()
+
+async def ws_handler(websocket):
+    # Completely real functional CleaveQL execution over WebSocket
+    try:
+        async for message in websocket:
+            try:
+                # We expect the client to send a raw CleaveQL query like: 'LISTEN TO users "alice"'
+                # However, they might need context if auth is required, but for this Phase 1 we will allow direct LISTEN execution
+                stmts = Parser(Lexer(message).tokenize()).parse()
+                interp = Interpreter(engine)
+                # Quick empty context for anonymous listeners
+                interp.set_context({"user": "anonymous", "role": "viewer", "auth_level": "standard"})
+                results = interp.execute(stmts)
+                
+                # Dispatch emitted events (vital for WS-initiated queries!)
+                for event in interp.emitted_events:
+                    await dispatcher.publish(event.get('target'), event)
+                    if event.get('bucket'):
+                        await dispatcher.publish(f"bucket:{event.get('bucket')}", event)
+                interp.emitted_events.clear()
+                
+                # Check if it was a listen statement
+                for res in results:
+                    if res.get("status") == "listen":
+                        target = res.get("target")
+                        dispatcher.subscribe(target, websocket)
+                
+                await websocket.send(json.dumps(results))
+            except Exception as e:
+                await websocket.send(json.dumps([{"status": "error", "message": str(e)}]))
+    except websockets.exceptions.ConnectionClosed:
+        pass
+    finally:
+        for t in list(dispatcher.subscribers.keys()):
+            dispatcher.unsubscribe(t, websocket)
+
 
 async def cron_worker():
     print("[Server] Cron Worker started.")
@@ -241,6 +304,14 @@ async def handle_client(reader, writer):
         try:
             stmts = Parser(Lexer(query).tokenize()).parse()
             results = interp.execute(stmts)
+            
+            # Dispatch emitted events
+            for event in interp.emitted_events:
+                await dispatcher.publish(event.get('target'), event)
+                if event.get('bucket'):
+                    await dispatcher.publish(f"bucket:{event.get('bucket')}", event)
+            interp.emitted_events.clear()
+            
             response = json.dumps(results)
         except Exception as e:
             response = json.dumps([{"status": "error", "message": str(e)}])
@@ -255,13 +326,17 @@ async def main():
     global engine
     engine = cleavedb3_storage.CleaveDB(DB_DIR)
     
+
     server = await asyncio.start_server(handle_client, HOST, PORT)
+    ws_server = await websockets.serve(ws_handler, HOST, 8301)
     print(f"=========================================")
-    print(f"   CleaveDB Server listening on {PORT}")
+    print(f"   CleaveDB TCP Server listening on {PORT}")
+    print(f"   CleaveDB WS  Server listening on 8301")
     print(f"=========================================")
-    async with server:
+    async with server, ws_server:
         asyncio.create_task(cron_worker())
-        await server.serve_forever()
+        await asyncio.gather(server.serve_forever(), ws_server.serve_forever())
+
 
 if __name__ == '__main__':
     try:

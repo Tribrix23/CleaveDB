@@ -222,3 +222,8 @@ class SeverStmt(ASTNode):
 class DropSecurityStmt(ASTNode):
     name: str = ""
     bucket: str = ""
+
+@dataclass
+class ListenStmt(ASTNode):
+    target_bucket: str = ""
+    target_gid: Optional[str] = None
