@@ -114,7 +114,6 @@ async def cron_worker():
                 r_data = engine.scan_bucket("_rubbish")
                 if r_data:
                     rubbish = json.loads(r_data)
-                    # We could load a config here. For now, default 3 days = 259200 seconds
                     for r in rubbish:
                         doc = engine.get(r['gid'])
                         if doc:
@@ -123,6 +122,21 @@ async def cron_worker():
                                 engine.delete(r['gid'])
             except Exception as e:
                 print(f"[Cron] Error in rubbish cleanup: {e}")
+                
+            # --- Ephemeral Data TTL Cleanup ---
+            try:
+                ttl_data = engine.scan_bucket("_ttl")
+                if ttl_data:
+                    ttls = json.loads(ttl_data)
+                    for t in ttls:
+                        b = t.get("body", {})
+                        if b.get("expires_at", 0) < current_time:
+                            # It expired! Hard-delete the actual document and the TTL tracker
+                            engine.delete(b.get("target"))
+                            engine.delete(t['gid'])
+                            print(f"[Cron] TTL Sweeper incinerated expired document: {b.get('target')}")
+            except Exception as e:
+                print(f"[Cron] Error in TTL cleanup: {e}")
 
             # Scan the hidden _cron bucket
             cron_data = engine.scan_bucket("_cron")

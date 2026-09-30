@@ -25,6 +25,7 @@ DETAILED_HELP = {
     POUR INTO <bucket> "<id>" {json}
     POUR INTO <bucket> RANDOM {json}
     POUR INTO <bucket> "<id>" {json} WITH SECRET "<password>"
+    POUR INTO <bucket> "<id>" {json} EXPIRES IN <int> [SECONDS|MINUTES|HOURS|DAYS]
     POUR MANY INTO <bucket> [{...}, {...}, ...]
     POUR {json} INSIDE <bucket> "<id>" AT <field.path>
 
@@ -39,6 +40,7 @@ DETAILED_HELP = {
   EXAMPLES:
     POUR INTO users "alice" {"name": "Alice", "age": 28, "role": "admin"}
     POUR INTO events RANDOM {"type": "click", "page": "/home"}
+    POUR INTO verification "token_123" {"code": 5555} EXPIRES IN 5 MINUTES
     POUR INTO users "bob" {"name": "Bob"} WITH SECRET "bobpass123"
     POUR MANY INTO products [{"gid":"p1","name":"Laptop"},{"gid":"p2","name":"Phone"}]
     POUR {"tool": "CleaveDB"} INSIDE users "alice" AT profile.skills
@@ -719,6 +721,7 @@ HELP_TEXT = """
 1. WRITE & UPDATE (Mutations)
   POUR INTO <bucket> "<id>" {json}              Insert/upsert a document.
   POUR INTO <bucket> RANDOM {json}              Insert with auto-generated ID.
+  POUR ... EXPIRES IN 5 MINUTES                 Ephemeral TTL document injection.
   POUR INTO <bucket> "<id>" {json} WITH SECRET "<pw>"
                                                 Insert + register sub-account.
   POUR MANY INTO <bucket> [{...}, {...}]        Bulk insert array of documents.

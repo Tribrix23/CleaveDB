@@ -73,6 +73,7 @@ class PourStmt(ASTNode):
     doc_id: Optional[str] = None
     json_body: Any = None
     secret: Optional[str] = None
+    ttl: Optional[int] = None
 
 @dataclass
 class PourManyStmt(ASTNode):

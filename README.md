@@ -144,8 +144,10 @@ CleaveDB defines **25+ commands** with **170 token types** producing **34 AST no
 
 ```sql
 POUR INTO <bucket> "<id>" {json}
+POUR INTO <bucket> "<id>" {json} EXPIRES IN <int> [SECONDS|MINUTES|HOURS|DAYS]
 POUR INTO <bucket> RANDOM {json}
-POUR INTO <bucket> "<id>" {json} WITH SECRET "<password>"
+POUR INTO <bucket> "<id>" {json}
+POUR INTO <bucket> "<id>" {json} EXPIRES IN <int> [SECONDS|MINUTES|HOURS|DAYS] WITH SECRET "<password>"
 POUR MANY INTO <bucket> [{json}, {json}, ...]
 POUR {json} INSIDE <bucket> "<id>" AT <field.path>
 ```
@@ -630,6 +632,24 @@ To see the full power of real-time CleaveQL subscriptions in action, we included
 3. Open terminal 2: python tests/websocket/jessy.py
 
 Type a message in one terminal and watch it appear instantly in the other!
+
+---
+
+### 22. Ephemeral Data & Time-To-Live (TTL)
+
+<div align="center"><img src="assets/demo_ttl.svg" width="800"/></div>
+
+CleaveDB includes a native background Garbage Collector that can automatically hard-delete documents after a specified time period without relying on external cron jobs or scripts.
+
+`sql
+POUR INTO <bucket> "<id>" {json} EXPIRES IN <int> [SECONDS|MINUTES|HOURS|DAYS]
+`
+
+**Examples:**
+- POUR INTO sessions "token_123" {"user": "alice"} EXPIRES IN 5 MINUTES
+- POUR INTO verification RANDOM {"code": 5555} EXPIRES IN 24 HOURS
+
+The database automatically computes the exact UNIX epoch expiration and injects a hidden _expires_at field into the document. The background cleavedb_server.py cron worker sweeps the indexing buckets every 5 seconds and incinerates expired data in O(1) time.
 
 ### Client Lifecycle
 1. **Authentication Phase** → `register` / `login` / `forgot`

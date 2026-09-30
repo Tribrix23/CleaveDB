@@ -135,6 +135,12 @@ class Interpreter:
             doc_id = getattr(stmt, 'doc_id', None)
             body = getattr(stmt, 'json_body', None)
             
+            # --- TTL Injection ---
+            ttl = getattr(stmt, 'ttl', None)
+            if ttl is not None and isinstance(body, dict):
+                expires_at = int(time.time()) + ttl
+                body["_expires_at"] = expires_at
+            
             # Document Security Level (DSL) Write Check
             if not self.security.check_write(bucket, body, self.context):
                 return {"status": "error", "message": "Security Policy Violation: Write access denied by Document Security Level (DSL)."}
@@ -162,6 +168,11 @@ class Interpreter:
                     doc_id = f"{creator}.{doc_id}"
 
             gid = self.engine.pour(bucket, doc_id, json_str)
+            
+            if ttl is not None and isinstance(body, dict):
+                # Put a fast-lookup pointer in _ttl bucket for the cron worker
+                self.engine.pour("_ttl", gid.split(":")[-1], json.dumps({"target": gid, "expires_at": expires_at}))
+
             self.emitted_events.append({"event": "POUR", "target": gid, "bucket": bucket, "data": body})
             
             # Auth Cross-Write
@@ -195,6 +206,11 @@ class Interpreter:
                     
                 json_str = json.dumps(doc) if isinstance(doc, dict) else str(doc)
                 gid = self.engine.pour(bucket, doc_id, json_str)
+            
+            if ttl is not None and isinstance(body, dict):
+                # Put a fast-lookup pointer in _ttl bucket for the cron worker
+                self.engine.pour("_ttl", gid.split(":")[-1], json.dumps({"target": gid, "expires_at": expires_at}))
+
                 self.emitted_events.append({"event": "POUR", "target": gid, "bucket": bucket, "data": doc})
                 gids.append(gid)
             return {"status": "ok", "count": len(gids), "gids": gids}

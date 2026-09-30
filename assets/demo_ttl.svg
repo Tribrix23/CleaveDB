@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="210">
+  <rect width="100%" height="100%" rx="8" ry="8" fill="#0C0C0C" stroke="#333333" stroke-width="1"/>
+  <rect width="100%" height="24" rx="8" ry="8" fill="#1C1C1C" />
+  <rect width="100%" height="12" y="12" fill="#1C1C1C" />
+  <path d="M 740 12 L 750 12" stroke="#FFFFFF" stroke-width="1.5" />
+  <rect x="765" y="6" width="10" height="10" stroke="#FFFFFF" stroke-width="1.5" fill="none" />
+  <path d="M 790 6 L 800 16 M 800 6 L 790 16" stroke="#FFFFFF" stroke-width="1.5" />
+  <text x="15" y="16" fill="#FFFFFF" font-family="Segoe UI, sans-serif" font-size="11">PowerShell - Ephemeral TTL</text>
+  <g transform="translate(15, 45)" font-family="Consolas, monospace" font-size="13">
+    <text x="0" y="0" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">POUR INTO</tspan> sessions "token_123" {"user": "alice"} <tspan fill="#3B78FF">EXPIRES IN 5 SECONDS</tspan></text>
+    <text x="0" y="20" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[{&quot;status&quot;: &quot;ok&quot;, &quot;gid&quot;: &quot;sessions:david.token_123&quot;}]</tspan></text>
+    <text x="0" y="45" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">FIND IN</tspan> sessions "token_123"</text>
+    <text x="0" y="65" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[{&quot;gid&quot;: &quot;sessions:david.token_123&quot;, &quot;body&quot;: {&quot;user&quot;: &quot;alice&quot;, &quot;_expires_at&quot;: 1729000100}}]</tspan></text>
+    <text x="0" y="90" fill="#CCCCCC" xml:space="preserve">... waiting 5 seconds ...</text>
+    <text x="0" y="115" fill="#CCCCCC" xml:space="preserve"><tspan fill="#909090">[Server Console]: TTL Sweeper incinerated expired document: sessions:david.token_123</tspan></text>
+    <text x="0" y="140" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">FIND IN</tspan> sessions "token_123"</text>
+    <text x="0" y="160" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[]</tspan></text>
+  </g>
+</svg>

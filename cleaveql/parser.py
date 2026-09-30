@@ -370,7 +370,19 @@ class Parser:
                 self.consume(TokenType.SECRET, "Expected 'secret' after 'with'.")
                 secret = self.consume_string("Expected secret string.")
                 
-            return PourStmt(bucket=bucket, doc_id=doc_id, json_body=data, secret=secret)
+
+            ttl = None
+            if self.match(TokenType.EXPIRES):
+                self.consume(TokenType.IN, "Expected 'IN' after 'EXPIRES'.")
+                self.consume(TokenType.INTEGER, "Expected integer TTL value.")
+                ttl_val = int(self.previous().value)
+                if self.match(TokenType.SECONDS): ttl = ttl_val
+                elif self.match(TokenType.MINUTES): ttl = ttl_val * 60
+                elif self.match(TokenType.HOURS): ttl = ttl_val * 3600
+                elif self.match(TokenType.DAYS): ttl = ttl_val * 86400
+                else: raise self.error(self.peek(), "Expected SECONDS, MINUTES, HOURS, or DAYS.")
+                
+            return PourStmt(bucket=bucket, doc_id=doc_id, json_body=data, secret=secret, ttl=ttl)
         elif self.match(TokenType.MANY):
             self.consume(TokenType.INTO, "Expected 'into' after 'pour many'.")
             if self.match(TokenType.STRING): bucket = self.previous().value

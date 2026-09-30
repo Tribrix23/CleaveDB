@@ -100,7 +100,11 @@ class TokenType(Enum):
     POLICY = auto()
     FIND = auto()       # Alias for SCOOP
     UPDATE = auto()     # Alias for CHANGE
-    LINK = auto()       # Alias for BOND
+    LINK = auto()
+
+    EXPIRES = auto()
+    DAYS = auto()
+       # Alias for BOND
     IF = auto()         # Alias for ONLY WHEN
     CANDIDATE = auto()  # Flag to show dormant bonds
     TRACE = auto()      # Alias for SCOOP CHAIN
@@ -213,6 +217,8 @@ class TokenType(Enum):
     UNKNOWN = auto()
 
 KEYWORDS = {
+    "expires": TokenType.EXPIRES,
+    "days": TokenType.DAYS,
     "listen": TokenType.LISTEN,
     'seconds': TokenType.SECONDS,
     'second': TokenType.SECOND,
