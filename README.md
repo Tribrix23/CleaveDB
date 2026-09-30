@@ -609,6 +609,9 @@ python cleave_cli.py -H 127.0.0.1 -p 8300
 3. **Disconnection** → `logout` closes session; `exit` terminates CLI
 
 ### Wire Protocol
+
+<div align="center"><img src="assets/demo_python_sdk.svg" width="800"/></div>
+
 All messages are newline-delimited. Request: raw CleaveQL string + `\n`. Response: JSON array.
 
 ```
