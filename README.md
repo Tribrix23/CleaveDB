@@ -223,7 +223,9 @@ FIND EVERYTHING FROM users SHOW name, email
 
 ---
 
-### 3. `CHANGE` / `UPDATE` — Partial Update Documents
+### 3. CHANGE / UPDATE - Partial Update Documents
+
+<div align="center"><img src="assets/demo_change.svg" width="800"/></div>
 
 ```sql
 CHANGE "<doc_id>" IN <bucket> TO <field> = <value>
@@ -240,7 +242,9 @@ If updating the `secret` field, CleaveDB automatically re-hashes the password in
 
 ---
 
-### 4. `DRAIN` — Soft-Delete Documents
+### 4. DRAIN - Soft-Delete Documents
+
+<div align="center"><img src="assets/demo_drain.svg" width="800"/></div>
 
 Moves documents to the `_rubbish` bin (auto-purged after 3 days by the Cron Worker).
 
@@ -254,7 +258,9 @@ Cascading: if the drained document has bonds marked `ON DELETE CASCADE`, all bon
 
 ---
 
-### 5. `SALVAGE` — Restore from Rubbish
+### 5. SALVAGE - Restore from Rubbish
+
+<div align="center"><img src="assets/demo_salvage.svg" width="800"/></div>
 
 ```sql
 SALVAGE "<doc_id>" FROM _rubbish
@@ -263,7 +269,9 @@ SALVAGE EVERYTHING FROM _rubbish
 
 ---
 
-### 6. `INCINERATE` — Permanently Destroy
+### 6. INCINERATE - Permanently Destroy
+
+<div align="center"><img src="assets/demo_incinerate.svg" width="800"/></div>
 
 ```sql
 INCINERATE "<doc_id>" FROM _rubbish
@@ -313,7 +321,9 @@ LINK "users:alice" TO "file:secret.pdf" AS "can_read" IF target clearance IS "pu
 
 ---
 
-### 8. `SEVER` / `UNLINK` — Destroy Graph Bonds
+### 8. SEVER / UNLINK - Destroy Graph Bonds
+
+<div align="center"><img src="assets/demo_sever.svg" width="800"/></div>
 
 ```sql
 SEVER "<source>" FROM "<target>" AS "<label>"
@@ -322,7 +332,9 @@ SEVER "<source>" FROM "<target>"
 
 ---
 
-### 9. `DROP SECURITY` — Remove Security Policies & Masks
+### 9. DROP SECURITY - Remove Security Policies & Masks
+
+<div align="center"><img src="assets/demo_drop.svg" width="800"/></div>
 
 ```sql
 DROP SECURITY "<name>" ON <bucket>
@@ -333,6 +345,8 @@ Removes both the named policy and any field mask matching that name on the bucke
 ---
 
 ### 10. Graph Traversal — Single-Hop & Multi-Hop
+
+<div align="center"><img src="assets/demo_chain.svg" width="800"/></div>
 
 **Direct lookup (1 hop):**
 ```sql
@@ -365,6 +379,8 @@ FIND "friend" OF "users:alice" AS OF "1690000000"
 ---
 
 ### 11. Data-Level Security (GBAC, RBAC & Masking)
+
+<div align="center"><img src="assets/demo_enforce.svg" width="800"/></div>
 
 CleaveDB has a native policy engine supporting **Graph-Based Access Control (GBAC)**, **Role-Based Access Control (RBAC)**, and **Dynamic Field Masking** — all evaluated inside the interpreter before any data reaches the client.
 
@@ -423,6 +439,8 @@ The **LRU** policy tracks read/write timestamps per document and automatically e
 
 ### 13. AI Semantic Search (`MEANING`)
 
+<div align="center"><img src="assets/demo_semantic.svg" width="800"/></div>
+
 CleaveDB ships with a built-in neural Transformer for vector search — no external services required.
 
 **How it works:**
@@ -462,6 +480,8 @@ REWIND "users:alice" TO yesterday
 
 ### 15. Background Cron Worker
 
+<div align="center"><img src="assets/demo_schedule.svg" width="800"/></div>
+
 CleaveDB runs a background `asyncio` coroutine that executes scheduled tasks — no external job scheduler needed.
 
 ```sql
@@ -476,6 +496,8 @@ The Cron Worker also **auto-purges** documents in `_rubbish` older than 3 days.
 
 ### 16. Bucket Configuration (`SHAPE`)
 
+<div align="center"><img src="assets/demo_shape.svg" width="800"/></div>
+
 ```sql
 SHAPE BUCKET logs COMPRESSION lz4 TTL 86400 MAX DOCUMENTS 10000 VERSIONED
 SHAPE PROJECTION active_users FROM users WHERE status = "active"
@@ -486,6 +508,8 @@ SHAPE FLOW FROM orders TO archive WHEN status = "completed" ACTION MOVE
 
 ### 17. Indexes
 
+<div align="center"><img src="assets/demo_index.svg" width="800"/></div>
+
 ```sql
 INDEX users ON (role, department)
 ```
@@ -494,6 +518,8 @@ Creates a compound B+Tree secondary index for O(log N) lookups.
 ---
 
 ### 18. Diagnostics & Metadata
+
+<div align="center"><img src="assets/demo_diagnose.svg" width="800"/></div>
 
 ```sql
 SHOW BUCKETS                    -- List all active buckets
@@ -514,6 +540,8 @@ SUGGEST BONDS                   -- AI-suggested missing relationships
 
 ### 19. Aggregation Pipeline (`DISTILL`)
 
+<div align="center"><img src="assets/demo_distill.svg" width="800"/></div>
+
 ```sql
 DISTILL FROM employees TOTAL OF salary
 DISTILL FROM scores AVERAGE OF points
@@ -527,6 +555,8 @@ Supported functions: `TOTAL`, `AVERAGE`, `MIN`, `MAX`, `SPREAD`
 ---
 
 ### 20. Graph Traversal (`FOLLOW`)
+
+<div align="center"><img src="assets/demo_follow.svg" width="800"/></div>
 
 Legacy graph API with full traversal control:
 
