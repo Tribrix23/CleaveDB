@@ -130,7 +130,7 @@ class Interpreter:
                 p = json.loads(policy_data)
                 if p.get("algorithm") == "LRU":
                     self.engine.pour("_lru_tracking", f"{bucket}:{doc_id}", str(time.time()))
-                    capacity = 100
+                    capacity = p.get("capacity", 100)
                     b_docs_data = self._scan_bucket_rls(bucket)
                     if b_docs_data:
                         b_docs = json.loads(b_docs_data)
@@ -541,6 +541,10 @@ class Interpreter:
 
         elif stmt_type == "ShapeBucketStmt":
             path = getattr(stmt, 'path', '')
+            max_docs = getattr(stmt, 'max_documents', None)
+            if max_docs is not None and self.engine:
+                policy = {"algorithm": "LRU", "capacity": max_docs, "updated_at": int(time.time())}
+                self.engine.pour("_bucket_policies", path, json.dumps(policy))
             return {"status": "ok", "bucket": path, "message": f"Bucket '{path}' configured"}
 
         elif stmt_type == "ShapeProjectionStmt":

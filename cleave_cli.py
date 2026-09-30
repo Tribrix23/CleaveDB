@@ -1053,8 +1053,12 @@ def main():
                     parts = cmd.strip().split(None, 1)
                     if len(parts) == 2:
                         topic = parts[1].strip().lower().strip('"').strip("'")
+                        # Try exact match first, then try just the first word
+                        first_word = topic.split()[0]
                         if topic in DETAILED_HELP:
                             print(DETAILED_HELP[topic])
+                        elif first_word in DETAILED_HELP:
+                            print(DETAILED_HELP[first_word])
                         else:
                             avail = ", ".join(sorted(DETAILED_HELP.keys()))
                             print(f"\n  No detailed help for '{topic}'.")

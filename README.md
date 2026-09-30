@@ -5,7 +5,7 @@
   [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
   [![Python](https://img.shields.io/badge/Python-3.13+-blue.svg)]()
   [![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)]()
-  [![License](https://img.shields.io/badge/license-MIT-green.svg)]()
+  [![License](https://img.shields.io/badge/license-Custom_Consent-blue.svg)]()
 </div>
 
 <br/>
