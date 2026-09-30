@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="670">
+  <!-- Windows 11 Terminal Window Background -->
+  <rect width="100%" height="100%" rx="8" ry="8" fill="#0C0C0C" stroke="#333333" stroke-width="1"/>
+  
+  <!-- Windows Title Bar -->
+  <rect width="100%" height="32" rx="8" ry="8" fill="#1C1C1C" />
+  <rect width="100%" height="16" y="16" fill="#1C1C1C" /> <!-- cover bottom rounded corners -->
+  
+  <!-- Windows Controls -->
+  <path d="M 740 16 L 750 16" stroke="#FFFFFF" stroke-width="1.5" />
+  <rect x="765" y="10" width="12" height="12" stroke="#FFFFFF" stroke-width="1.5" fill="none" />
+  <path d="M 790 10 L 800 20 M 800 10 L 790 20" stroke="#FFFFFF" stroke-width="1.5" />
+
+  <!-- Terminal Title -->
+  <text x="15" y="21" fill="#FFFFFF" font-family="Segoe UI, sans-serif" font-size="12">Windows PowerShell - cleave-cli</text>
+
+  <!-- Code content -->
+  <g transform="translate(15, 60)" font-family="Consolas, monospace" font-size="14">
+    <text x="0" y="0" fill="#CCCCCC" xml:space="preserve"><tspan fill="#F9F1A5">PS C:\Users\David&gt;</tspan> cleave-cli</text>
+    <text x="0" y="20" fill="#CCCCCC" xml:space="preserve">========================================</text>
+    <text x="0" y="40" fill="#CCCCCC" xml:space="preserve">        Welcome to CleaveDB Shell       </text>
+    <text x="0" y="60" fill="#CCCCCC" xml:space="preserve">========================================</text>
+    <text x="0" y="80" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb-auth&gt;</tspan> login david **</text>
+    <text x="0" y="100" fill="#CCCCCC" xml:space="preserve">--- Login Successful ---</text>
+    <text x="0" y="120" fill="#CCCCCC" xml:space="preserve"></text>
+    <text x="0" y="140" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">POUR INTO</tspan> users &quot;alice&quot; {&quot;name&quot;: &quot;Alice&quot;, &quot;role&quot;: &quot;engineer&quot;}</tspan></text>
+    <text x="0" y="160" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[{&quot;status&quot;: &quot;ok&quot;, &quot;gid&quot;: &quot;users:david.alice&quot;}]</tspan></text>
+    <text x="0" y="180" fill="#CCCCCC" xml:space="preserve"></text>
+    <text x="0" y="200" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">POUR INTO</tspan> users &quot;bob&quot; {&quot;name&quot;: &quot;Bob&quot;, &quot;role&quot;: &quot;manager&quot;}</tspan></text>
+    <text x="0" y="220" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[{&quot;status&quot;: &quot;ok&quot;, &quot;gid&quot;: &quot;users:david.bob&quot;}]</tspan></text>
+    <text x="0" y="240" fill="#CCCCCC" xml:space="preserve"></text>
+    <text x="0" y="260" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">LINK</tspan> &quot;users:alice&quot; <tspan fill="#3B78FF">TO</tspan> &quot;users:bob&quot; <tspan fill="#3B78FF">AS</tspan> &quot;reports_to&quot;</text>
+    <text x="0" y="280" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[{&quot;status&quot;: &quot;ok&quot;, &quot;message&quot;: &quot;1 15-Dimensional Bonds &#x27;reports_to&#x27; created.&quot;}]</tspan></text>
+    <text x="0" y="300" fill="#CCCCCC" xml:space="preserve"></text>
+    <text x="0" y="320" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">FIND THE</tspan> reports_to <tspan fill="#3B78FF">OF</tspan> users &quot;alice&quot;</text>
+    <text x="0" y="340" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[</tspan></text>
+    <text x="0" y="360" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">  {</tspan></text>
+    <text x="0" y="380" fill="#CCCCCC" xml:space="preserve">    &quot;mode&quot;: &quot;CHAIN&quot;,</text>
+    <text x="0" y="400" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">    &quot;documents&quot;: [</tspan></text>
+    <text x="0" y="420" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">      {&quot;gid&quot;: &quot;users:david.bob&quot;, &quot;body&quot;: {&quot;name&quot;: &quot;Bob&quot;, &quot;role&quot;: &quot;manager&quot;}}</tspan></text>
+    <text x="0" y="440" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">    ]</tspan></text>
+    <text x="0" y="460" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">  }</tspan></text>
+    <text x="0" y="480" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">]</tspan></text>
+    <text x="0" y="500" fill="#CCCCCC" xml:space="preserve"></text>
+    <text x="0" y="520" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">FIND</tspan> users <tspan fill="#3B78FF">MEANING</tspan> &quot;software developer&quot; <tspan fill="#3B78FF">LIMIT</tspan> 1</text>
+    <text x="0" y="540" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[</tspan></text>
+    <text x="0" y="560" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">  {&quot;name&quot;: &quot;Alice&quot;, &quot;role&quot;: &quot;engineer&quot;, &quot;_embedding_distance&quot;: 0.842}</tspan></text>
+    <text x="0" y="580" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">]</tspan></text>
+  </g>
+</svg>

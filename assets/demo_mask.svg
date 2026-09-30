@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="230">
+  <rect width="100%" height="100%" rx="8" ry="8" fill="#0C0C0C" stroke="#333333" stroke-width="1"/>
+  <rect width="100%" height="24" rx="8" ry="8" fill="#1C1C1C" />
+  <rect width="100%" height="12" y="12" fill="#1C1C1C" />
+  <path d="M 740 12 L 750 12" stroke="#FFFFFF" stroke-width="1.5" />
+  <rect x="765" y="6" width="10" height="10" stroke="#FFFFFF" stroke-width="1.5" fill="none" />
+  <path d="M 790 6 L 800 16 M 800 6 L 790 16" stroke="#FFFFFF" stroke-width="1.5" />
+  <text x="15" y="16" fill="#FFFFFF" font-family="Segoe UI, sans-serif" font-size="11">PowerShell - MASK</text>
+  <g transform="translate(15, 40)" font-family="Consolas, monospace" font-size="13">
+    <text x="0" y="0" fill="#CCCCCC" xml:space="preserve"><tspan fill="#F9F1A5">PS C:\Users\David&gt;</tspan> cleave-cli</text>
+    <text x="0" y="20" fill="#CCCCCC" xml:space="preserve"></text>
+    <text x="0" y="40" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">MASK</tspan> &quot;salary&quot; <tspan fill="#3B78FF">ON</tspan> &quot;employees&quot; <tspan fill="#3B78FF">IF</tspan> my role != &quot;admin&quot;</text>
+    <text x="0" y="60" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[{&quot;status&quot;: &quot;ok&quot;, &quot;message&quot;: &quot;Field mask policy applied to employees.salary&quot;}]</tspan></text>
+    <text x="0" y="80" fill="#CCCCCC" xml:space="preserve"></text>
+    <text x="0" y="100" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">FIND</tspan> employees &quot;bob&quot;</text>
+    <text x="0" y="120" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[</tspan></text>
+    <text x="0" y="140" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">  {&quot;name&quot;: &quot;Bob&quot;, &quot;salary&quot;: &quot;*** HIDDEN ***&quot;}</tspan></text>
+    <text x="0" y="160" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">]</tspan></text>
+  </g>
+</svg>

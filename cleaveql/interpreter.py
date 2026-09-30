@@ -101,6 +101,20 @@ class Interpreter:
                 results.append({"status": "error", "message": str(e)})
         return results
 
+    def _namespace_gid(self, gid):
+        if not gid:
+            return gid
+        tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
+        if tenant == "cron":
+            return gid
+            
+        parts = gid.split(":", 1)
+        if len(parts) == 2:
+            bucket, doc_id = parts
+            if not doc_id.startswith(f"{tenant}.") and not bucket.startswith("_"):
+                return f"{bucket}:{tenant}.{doc_id}"
+        return gid
+
     def _execute_stmt(self, stmt):
         stmt_type = type(stmt).__name__
 
@@ -185,7 +199,7 @@ class Interpreter:
         elif stmt_type == "ScoopStmt":
             mode = getattr(stmt, 'mode', 'EVERYTHING')
             if mode == "CHAIN":
-                current_gids = [getattr(stmt, 'chain_source', '')]
+                current_gids = [self._namespace_gid(getattr(stmt, 'chain_source', ''))]
                 bonds_json = self._scan_bucket_rls("_bonds")
                 bonds = json.loads(bonds_json) if bonds_json else []
                 labels = getattr(stmt, 'chain_labels', [])
@@ -477,8 +491,8 @@ class Interpreter:
 
 
         elif stmt_type == "SeverStmt":
-            source = getattr(stmt, 'source_gid', '')
-            target = getattr(stmt, 'target_gid', '')
+            source = self._namespace_gid(getattr(stmt, 'source_gid', ''))
+            target = self._namespace_gid(getattr(stmt, 'target_gid', ''))
             label = getattr(stmt, 'label', '')
             count = 0
             
@@ -552,6 +566,8 @@ class Interpreter:
 
         elif stmt_type == "BondStmt":
             
+            source_gid = self._namespace_gid(getattr(stmt, 'source_gid', ''))
+            
             # EXCLUSIVE
             current_time = int(time.time())
             if getattr(stmt, 'exclusive', False):
@@ -559,21 +575,21 @@ class Interpreter:
                 bonds = json.loads(b_data) if b_data else []
                 for b_doc in bonds:
                     b = b_doc.get("body", {})
-                    if b.get("source") == getattr(stmt, "source_gid", "") and b.get("label") == getattr(stmt, "label", ""):
+                    if b.get("source") == source_gid and b.get("label") == getattr(stmt, "label", ""):
                         b["expires_at"] = current_time
                         b_id = b_doc.get("gid", "").split(":")[-1] if ":" in b_doc.get("gid", "") else b_doc.get("gid", "")
                         self.engine.pour("_bonds", b_id, json.dumps(b))
             
             expires = current_time + getattr(stmt, 'expires_at', 0) if getattr(stmt, 'expires_at', None) else None
             
-            target_gids = getattr(stmt, 'target_gids', [getattr(stmt, 'target_gid', '')])
+            target_gids = [self._namespace_gid(g) for g in getattr(stmt, 'target_gids', [getattr(stmt, 'target_gid', '')])]
             
             count = 0
             for target_gid in target_gids:
                 if not target_gid: continue
                 bond_doc = {
                     "created_at": current_time,
-                    "source": getattr(stmt, 'source_gid', ''),
+                    "source": source_gid,
                     "target": target_gid,
                     "label": getattr(stmt, 'label', ''),
                     "condition_subject": getattr(stmt, 'condition_subject', 'target'),
@@ -594,7 +610,7 @@ class Interpreter:
                 if getattr(stmt, 'mutual', False):
                     bond_doc_2 = dict(bond_doc)
                     bond_doc_2["source"] = target_gid
-                    bond_doc_2["target"] = getattr(stmt, 'source_gid', '')
+                    bond_doc_2["target"] = source_gid
                     bond_id_2 = f"{tenant}.{str(uuid.uuid4())}" if tenant != "cron" else str(uuid.uuid4())
                     self.engine.pour("_bonds", bond_id_2, json.dumps(bond_doc_2))
                     count += 1

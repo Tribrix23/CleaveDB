@@ -20,6 +20,11 @@
 - A **Go-based distributed coordinator** with scatter-gather and K-way merge for multi-shard deployments.
 - A **TCP server** (`cleavedb_server.py`) with full authentication, background Cron worker, and **multi-tenant Document-Level Security (DLS)**.
 
+### See it in action:
+<div align="center">
+  <img src="assets/terminal_demo.svg" alt="CleaveDB Terminal Session" width="750"/>
+</div>
+
 ---
 
 ## 🏗️ Architecture & Toolchain
@@ -133,7 +138,9 @@ CleaveDB defines **25+ commands** with **170 token types** producing **34 AST no
 
 ---
 
-### 1. `POUR` — Insert / Upsert Documents
+### 1. POUR - Insert / Upsert Documents
+
+<div align="center"><img src="assets/demo_pour.svg" width="800"/></div>
 
 ```sql
 POUR INTO <bucket> "<id>" {json}
@@ -161,7 +168,9 @@ POUR {"tool": "CleaveDB"} INSIDE users "alice" AT profile.skills
 
 ---
 
-### 2. `FIND` / `SCOOP` — Query & Retrieve Documents
+### 2. FIND / SCOOP - Query & Retrieve Documents
+
+<div align="center"><img src="assets/demo_find.svg" width="800"/></div>
 
 `FIND` is the primary read verb (alias: `SCOOP`). It supports **10 query modes** and **12 chainable modifiers**.
 
@@ -263,7 +272,9 @@ INCINERATE EVERYTHING FROM _rubbish
 
 ---
 
-### 7. `LINK` / `BOND` — 15-Dimensional Graph Relationships
+### 7. LINK / BOND - 15-Dimensional Graph Relationships
+
+<div align="center"><img src="assets/demo_link.svg" width="800"/></div>
 
 CleaveDB bonds are not just static pointers — they are richly configurable relationship objects with up to **15 behavioral dimensions**.
 
@@ -365,6 +376,9 @@ SHAPE POLICY "dept_filter" ON "employees" FOR READ USING department == @user_dep
 ```
 
 #### Field Masking
+
+<div align="center"><img src="assets/demo_mask.svg" width="800"/></div>
+
 ```sql
 MASK "salary" ON "employees" IF my role != "admin"
 MASK "ssn" ON "patients" IF my role != "doctor"
@@ -433,6 +447,8 @@ No keyword overlap needed — the Transformer understands semantic meaning.
 ---
 
 ### 14. Time-Travel Queries (MVCC)
+
+<div align="center"><img src="assets/demo_timetravel.svg" width="800"/></div>
 
 Every document modification shadows a historical snapshot into `_history_<bucket>`.
 
