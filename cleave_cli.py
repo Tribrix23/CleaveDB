@@ -22,22 +22,38 @@ HELP_TEXT = """
   POUR INTO <bucket> "<id>" {json}           - Insert/upsert document (use RANDOM for auto-ID).
   POUR MANY INTO <bucket> [{json}, {json}]   - Bulk insert multiple documents.
   CHANGE <id> IN <bucket> TO <field> = <val> - Update specific fields.
-  DRAIN <bucket> "<id>"                      - Delete a document.
-  DRAIN <bucket> BEFORE "<date>"             - Bulk delete old documents.
+  DRAIN <bucket> "<id>"                      - Move document to _rubbish bin.
+  DRAIN <bucket> BEFORE "<date>"             - Bulk move old documents to _rubbish.
+  SALVAGE "<id>" FROM _rubbish               - Restore specific document from rubbish.
+  SALVAGE EVERYTHING FROM _rubbish           - Restore all documents.
+  INCINERATE "<id>" FROM _rubbish            - Permanently delete document.
+  INCINERATE EVERYTHING FROM _rubbish        - Empty the trash bin.
 
 2. READ & SEARCH (SCOOP Engine)
-  SCOOP EVERYTHING FROM <bucket>
-  SCOOP THE [FIRST|LAST] <N> FROM <bucket>
-  SCOOP THE [HIGHEST|LOWEST] <N> <field> FROM <bucket>
+  FIND <bucket>                           - (Alias: SCOOP EVERYTHING FROM <bucket>)
+  FIND <bucket> [Modifiers...]            - Native English document querying.
   
-  [Modifiers - chainable]
+  [Modifiers - chainable in any order]
+  ... WHERE <field> <op> <value>          - Evaluate expressions (<, >, =, AND, OR).
   ... WHOSE <field> IS <value>            - Exact field match filter.
-  ... MEANING "<text>"                    - AI Vector Semantic Search (Hardware-accelerated).
-  ... MENTIONING "<text>"                 - Full Text Search (Substring/BM25).
-  ... ARRANGED BY <field> GOING [UP|DOWN] - Sort results.
-  ... YIELD <field1>, <field2>            - Return specific fields only.
+  ... WITH <field1>, <field2>             - Native Joins (Alias: INCLUDE).
+  ... SORTED BY <field> [DESC|ASC]        - Sort results (Alias: ARRANGED BY).
+  ... LIMIT <n>                           - Restrict number of results.
+  ... SHOW <field1>, <field2>             - Return specific fields (Alias: YIELD).
+  ... MEANING "<text>"                    - AI Vector Semantic Search.
+  ... MENTIONING "<text>"                 - Full Text Search.
 
-3. ANALYTICS & AGGREGATION
+3. GRAPH RELATIONS & TRAVERSAL (15D BONDS)
+  BOND "<source_id>" TO "<target_id>" AS "<label>" - Create a directional relationship.
+  FIND "<label>" OF "<source_id>"                  - Query direct relationships.
+  TRACE "<label>" FROM "<source_id>"               - Traverse deep nested graph links.
+
+4. AUTOMATION & TIME TRAVEL
+  TIME TRAVEL <bucket> AS OF "<date>"     - Read historical state (requires Versioned bucket).
+  SET CRON "<schedule>" DO <command>      - Register scheduled background tasks.
+  SHOW CRON                               - List running background jobs.
+
+5. ANALYTICS & AGGREGATION
   SCOOP THE TALLY OF <bucket>             - Total document count.
   SCOOP ONLY UNIQUE <field> FROM <bucket> - Returns distinct field values.
   SCOOP TOTAL <field> GROUPED BY <field> FROM <bucket> - Grouped summation.
@@ -143,7 +159,7 @@ def do_login(f):
     resp = json.loads(resp_str)
     if resp.get("status") == "ok":
         print(f"\n[+] {resp.get('message')}\n")
-        return True
+        return resp
     else:
         print(f"\n[-] Error: {resp.get('message')}\n")
         return False
@@ -192,77 +208,97 @@ def main():
     parser.add_argument("-p", "--port", type=int, default=8300, help="Server port number")
     args = parser.parse_args()
 
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.connect((args.host, args.port))
-    except ConnectionRefusedError:
-        print(f"Error: Could not connect to CleaveDB server at {args.host}:{args.port}")
-        print("Is the server running?")
-        sys.exit(1)
-
-    f = s.makefile('rw')
-    
-    print("========================================")
-    print("        Welcome to CleaveDB Shell       ")
-    print("========================================")
-    print("Not logged in. Type a command to begin.")
-    print("  login    - Log into an existing account")
-    print("  register - Create a new user account")
-    print("  forgot   - Recover a lost password")
-    print("  exit     - Close the shell")
-    
-    authenticated = False
-    while not authenticated:
+    while True:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            cmd = input("\ncleavedb-auth> ").strip().lower()
-            if cmd in ['exit', 'quit']:
+            s.connect((args.host, args.port))
+        except ConnectionRefusedError:
+            print(f"Error: Could not connect to CleaveDB server at {args.host}:{args.port}")
+            print("Is the server running?")
+            sys.exit(1)
+
+        f = s.makefile('rw')
+        
+        print("========================================")
+        print("        Welcome to CleaveDB Shell       ")
+        print("========================================")
+        print("Not logged in. Type a command to begin.")
+        print("  login    - Log into an existing account")
+        print("  register - Create a new user account")
+        print("  forgot   - Recover a lost password")
+        print("  exit     - Close the shell")
+
+        auth_data = False
+        while not auth_data:
+            try:
+                cmd = input("\ncleavedb-auth> ").strip().lower()
+                if cmd in ['exit', 'quit']:
+                    s.close()
+                    sys.exit(0)
+                elif cmd == 'register':
+                    do_register(f)
+                elif cmd == 'login':
+                    auth_data = do_login(f)
+                elif cmd == 'forgot':
+                    do_forgot(f)
+                elif cmd:
+                    print("Unknown command. Please type 'login', 'register', 'forgot', or 'exit'.")
+            except (EOFError, KeyboardInterrupt):
+                print("\nExiting...")
+                sys.exit(0)
+                
+        print("========================================")
+        print("Type your CleaveQL commands.")
+        print("Type 'logout' to switch users, or 'exit' to close.")
+        print("========================================")
+        
+        RED = "\033[91m"
+        RESET = "\033[0m"
+        
+        if auth_data.get("auth_level") == "dev":
+            prompt = f"{RED}root@cleavedb{RESET}> "
+        else:
+            prompt = f"{auth_data.get('username', 'user')}@cleavedb> "
+            
+        while True:
+            try:
+                cmd = input(prompt).strip()
+                if cmd.lower() in ['exit', 'quit']:
+                    s.close()
+                    sys.exit(0)
+                if cmd.lower() == 'logout':
+                    print("Logged out successfully.\n")
+                    s.close()
+                    break
+                if cmd.lower() in ['?', 'help']:
+                    print(HELP_TEXT)
+                    continue
+                if cmd.lower() in ['cls', 'clear']:
+                    import os
+                    os.system('cls' if os.name == 'nt' else 'clear')
+                    continue
+                if not cmd:
+                    continue
+                
+                f.write(cmd + "\n")
+                f.flush()
+                
+                response_str = f.readline().strip()
+                if not response_str:
+                    print("Server closed connection.")
+                    break
+                    
+                try:
+                    response_json = json.loads(response_str)
+                    print(json.dumps(response_json, indent=2))
+                except:
+                    print(response_str)
+                    
+            except (EOFError, KeyboardInterrupt):
+                print("\nExiting...")
                 s.close()
                 sys.exit(0)
-            elif cmd == 'register':
-                do_register(f)
-            elif cmd == 'login':
-                authenticated = do_login(f)
-            elif cmd == 'forgot':
-                do_forgot(f)
-            elif cmd:
-                print("Unknown command. Please type 'login', 'register', 'forgot', or 'exit'.")
-        except (EOFError, KeyboardInterrupt):
-            print("\nExiting...")
-            sys.exit(0)
-            
-    print("========================================")
-    print("Type your CleaveQL commands.")
-    print("Type 'exit' or 'quit' to close.")
-    print("========================================")
-    while True:
-        try:
-            cmd = input("cleavedb> ").strip()
-            if cmd.lower() in ['exit', 'quit']:
-                break
-            if cmd.lower() in ['?', 'help']:
-                print(HELP_TEXT)
-                continue
-            if not cmd:
-                continue
-            
-            f.write(cmd + "\n")
-            f.flush()
-            
-            response_str = f.readline().strip()
-            if not response_str:
-                print("Server closed connection.")
-                break
                 
-            try:
-                response_json = json.loads(response_str)
-                print(json.dumps(response_json, indent=2))
-            except:
-                print(response_str)
-                
-        except (EOFError, KeyboardInterrupt):
-            print("\nExiting...")
-            break
-    
     s.close()
     print("Goodbye.")
 

@@ -17,26 +17,57 @@ class PolicyEngine:
             'condition': condition_ast
         })
         
-    def _evaluate_condition(self, condition_tokens, document: dict, context: dict) -> bool:
+    def _evaluate_condition(self, condition_tokens, document: dict, context: dict, engine=None) -> bool:
         if not condition_tokens:
             return True
             
-        expr_str = "".join([t.lexeme for t in condition_tokens])
-        
-        # Support == and !=
+        expr_str = " ".join([t.lexeme for t in condition_tokens])
         import re
         
-        m1 = re.match(r'^([a-zA-Z_]+)(==|!=)@([a-zA-Z_]+)$', expr_str)
+        # DSL Role Traversal: "my role = "admin""
+        role_match = re.search(r'my role\s*(!=|==|=)\s*"?([a-zA-Z0-9_]+)"?', expr_str, re.IGNORECASE)
+        if role_match:
+            op = role_match.group(1)
+            target_role = role_match.group(2)
+            user_role = context.get("role", "viewer")
+            if op in ("=", "=="):
+                return user_role == target_role
+            elif op == "!=":
+                return user_role != target_role
+                
+        # DSL Bond Traversal: "bonded as \"owner\" to my user_id"
+        bond_match = re.search(r'bonded as "?([a-zA-Z0-9_]+)"? to my ([a-zA-Z_]+)', expr_str)
+        if bond_match and engine:
+            label = bond_match.group(1)
+            ctx_key = bond_match.group(2)
+            user_id = context.get(ctx_key)
+            doc_id = document.get("id") or document.get("_id") or document.get("gid", "")
+            
+            # Scan bonds
+            bonds_data = engine.scan_bucket("_bonds")
+            if bonds_data:
+                import json
+                bonds = json.loads(bonds_data)
+                for b_doc in bonds:
+                    b = b_doc.get("body", {})
+                    # Is doc linked to user_id?
+                    if b.get("label") == label:
+                        if b.get("target") == doc_id and b.get("source") == user_id: return True
+                        if b.get("target") == user_id and b.get("source") == doc_id: return True
+            return False
+            
+        m1 = re.match(r'^([a-zA-Z_]+)(==|!=)@([a-zA-Z_]+)$', "".join([t.lexeme for t in condition_tokens]))
         if m1:
             field = m1.group(1)
             op = m1.group(2)
             ctx_key = m1.group(3)
-            val1 = document.get(field)
+            body = document.get("body", document)
+            val1 = body.get(field)
             val2 = context.get(ctx_key)
             if op == '==': return val1 == val2
             if op == '!=': return val1 != val2
             
-        m2 = re.match(r'^@([a-zA-Z_]+)(==|!=)"?([a-zA-Z0-9_]+)"?$', expr_str)
+        m2 = re.match(r'^@([a-zA-Z_]+)(==|!=)"?([a-zA-Z0-9_]+)"?$', "".join([t.lexeme for t in condition_tokens]))
         if m2:
             ctx_key = m2.group(1)
             op = m2.group(2)
@@ -58,7 +89,7 @@ class PolicyEngine:
             'condition': condition_ast
         })
 
-    def apply_masks(self, bucket: str, document: dict, context: dict) -> dict:
+    def apply_masks(self, bucket: str, document: dict, context: dict, engine=None) -> dict:
         if str(context.get("bypass_dls", "false")).lower() == "true":
             return document
         if not hasattr(self, 'masks') or bucket not in self.masks:
@@ -68,13 +99,13 @@ class PolicyEngine:
         masked_doc = copy.deepcopy(document)
         for mask in self.masks[bucket]:
             # If the condition evaluates to True, we APPLY the mask (redact it)
-            if self._evaluate_condition(mask['condition'], masked_doc, context):
+            if self._evaluate_condition(mask['condition'], masked_doc, context, engine):
                 field = mask['field']
                 if field in masked_doc:
-                    masked_doc[field] = "***MASKED***"
+                    del masked_doc[field]
         return masked_doc
 
-    def check_read(self, bucket: str, document: dict, context: dict) -> bool:
+    def check_read(self, bucket: str, document: dict, context: dict, engine=None) -> bool:
 
         if bucket not in self.policies:
             return True
@@ -83,9 +114,9 @@ class PolicyEngine:
         if not policies:
             return True
             
-        # RLS standard: grant access if ANY policy passes
+        # DLS standard: grant access if ANY policy passes
         for policy in policies:
-            if self._evaluate_condition(policy['condition'], document, context):
+            if self._evaluate_condition(policy['condition'], document, context, engine):
                 return True
         return False
         
@@ -97,7 +128,7 @@ class PolicyEngine:
         if not policies:
             return True
             
-        # RLS standard: grant access if ANY policy passes
+        # DLS standard: grant access if ANY policy passes
         for policy in policies:
             if self._evaluate_condition(policy['condition'], document, context):
                 return True

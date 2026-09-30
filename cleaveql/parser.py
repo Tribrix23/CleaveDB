@@ -4,7 +4,9 @@ from .ast import *
 import json
 
 class ParseError(Exception):
-    pass
+    def __init__(self, message=""):
+        self.message = message
+        super().__init__(self.message)
 
 class Parser:
     def __init__(self, tokens: List[Token]):
@@ -21,28 +23,46 @@ class Parser:
         return statements
 
     def statement(self) -> Any:
-        if self.match(TokenType.SCOOP):
+        if self.match(TokenType.SCOOP, TokenType.FIND):
             return self.scoop_stmt()
+        if self.match(TokenType.TRACE):
+            return self.trace_stmt()
         if self.match(TokenType.COUNT):
             return self.scoop_stmt() # Fallback for legacy count
         if self.match(TokenType.DISTILL):
             return self.distill_stmt()
         if self.match(TokenType.FOLLOW):
             return self.follow_stmt()
+        if self.match(TokenType.BOND, TokenType.LINK):
+            return self.bond_stmt()
+        if self.match(TokenType.UNLINK, TokenType.SEVER):
+            return self.sever_stmt()
+        if self.match(TokenType.DROP):
+            return self.drop_stmt()
+        if self.match(TokenType.MASK):
+            return self.mask_stmt()
         if self.match(TokenType.POUR):
             return self.pour_stmt()
         if self.match(TokenType.SET):
             return self.set_context_stmt()
-        if self.match(TokenType.CHANGE):
+        if self.match(TokenType.CHANGE, TokenType.UPDATE):
             return self.change_stmt()
         if self.match(TokenType.DRAIN):
             return self.drain_stmt()
+        if self.match(TokenType.SALVAGE):
+            return self.salvage_stmt()
+        if self.match(TokenType.INCINERATE):
+            return self.incinerate_stmt()
         if self.match(TokenType.SHAPE):
             return self.shape_stmt()
-        if self.match(TokenType.BOND):
-            return self.bond_stmt()
         if self.match(TokenType.INDEX):
             return self.index_stmt()
+        if self.match(TokenType.AUTHENTICATE):
+            return self.authenticate_stmt()
+        if self.match(TokenType.REWIND):
+            return self.rewind_stmt()
+        if self.match(TokenType.ENFORCE):
+            return self.policy_stmt()
         if self.match(TokenType.HEAL):
             return self.heal_stmt()
         if self.match(TokenType.SHOW):
@@ -67,9 +87,35 @@ class Parser:
         related_source = None
         target_field = None
         
-        # Check for SCOOP RELATED "label" FROM "doc"
+        show_candidates = False
+        if self.match(TokenType.CANDIDATE):
+            show_candidates = True
+        
+        # Check for FIND "label" OF "source" (Alias for SCOOP RELATED)
+        if self.check(TokenType.STRING):
+            # It's a graph relationship query
+            related_label = self.consume_string("Expected relationship label.")
+            self.consume(TokenType.OF, "Expected 'of'.")
+            related_source = self.consume_string("Expected source document ID.")
+            stmt = ScoopStmt(line=self.previous().line, column=self.previous().column)
+            stmt.mode = "RELATED"
+            stmt.related_label = related_label
+            stmt.related_source = related_source
+            stmt.show_candidates = show_candidates
+            
+            if self.match(TokenType.AS):
+                self.consume(TokenType.OF, "Expected 'of' after 'as'.")
+                if self.match(TokenType.STRING):
+                    stmt.as_of = self.previous().value
+                else:
+                    stmt.as_of = self.consume_identifier("Expected 'yesterday' or timestamp.")
+            return stmt
+
+        # Check for SCOOP RELATED "label" FROM "doc" (Legacy)
         if self.match(TokenType.RELATED):
             mode = "RELATED"
+            if self.match(TokenType.CANDIDATE):
+                show_candidates = True
             related_label = self.consume_string("Expected relationship label (string).")
             self.consume(TokenType.FROM, "Expected 'from'.")
             related_source = self.consume_string("Expected source document ID.")
@@ -77,6 +123,7 @@ class Parser:
             stmt.mode = mode
             stmt.related_label = related_label
             stmt.related_source = related_source
+            stmt.show_candidates = show_candidates
             return stmt
             
         if self.match(TokenType.ONLY):
@@ -129,64 +176,68 @@ class Parser:
                 stmt.chain_source = f"{bucket}:{doc_id}"
                 return stmt
         elif self.match(TokenType.EVERYTHING):
-            self.consume(TokenType.FROM, "Expected 'from' after scoop modifiers.")
+            if self.match(TokenType.FROM): pass
         else:
-            if not self.check(TokenType.IDENTIFIER):
-                self.consume(TokenType.FROM, "Expected 'from'.")
-            elif self.peek().lexeme.lower() == 'from':
-                self.consume(TokenType.FROM, "Expected 'from'.")
-        
+            if self.match(TokenType.FROM): pass
+            
         bucket = self.consume_identifier("Expected bucket name.")
         
         where = None
-        if self.match(TokenType.WHERE):
-            where = self._parse_where()
-            
         whose_field = None
         whose_value = None
-        if self.match(TokenType.WHOSE):
-            whose_field = self.consume_identifier("Expected field after 'whose'.")
-            self.consume(TokenType.IS, "Expected 'is'.")
-            whose_value = self.consume_value("Expected value.")
-            
         mentioning = None
-        if self.match(TokenType.MENTIONING):
-            mentioning = self.consume_string("Expected search string after mentioning.")
-            
         meaning = None
-        if self.match(TokenType.MEANING):
-            meaning = self.consume_string("Expected search string after meaning.")
-            
         matching = None
-        if self.match(TokenType.MATCHING):
-            match_str = self.consume_string("Expected JSON object string after matching.")
-            import json
-            matching = json.loads(match_str)
-            
         include = []
-        if self.match(TokenType.INCLUDE):
-            include.append(self.consume_identifier("Expected field to include."))
-            while self.match(TokenType.COMMA):
-                include.append(self.consume_identifier("Expected field after comma."))
-                
         arrange_field = None
         arrange_dir = "ASC"
-        if self.match(TokenType.ARRANGED):
-            self.consume(TokenType.BY, "Expected 'by' after arranged")
-            arrange_field = self.consume_identifier("Expected field")
-            if self.match(TokenType.GOING):
-                if self.match(TokenType.UP): arrange_dir = "ASC"
-                elif self.match(TokenType.DOWN): arrange_dir = "DESC"
-
         limit = None
-        if self.match(TokenType.LIMIT):
-            limit = self.consume(TokenType.INTEGER, "Expected number after limit.").value
-            
         group_by = None
-        if self.match(TokenType.GROUPED):
-            self.consume(TokenType.BY, "Expected 'by' after 'grouped'.")
-            group_by = self.consume_identifier("Expected field for group by.")
-            
+        as_of = None
+
+        while True:
+            if self.match(TokenType.WHERE):
+                where = self._parse_where()
+            elif self.match(TokenType.WHOSE):
+                whose_field = self.consume_identifier("Expected field after 'whose'.")
+                self.consume(TokenType.IS, "Expected 'is'.")
+                whose_value = self.consume_value("Expected value.")
+            elif self.match(TokenType.MENTIONING):
+                mentioning = self.consume_string("Expected search string after mentioning.")
+            elif self.match(TokenType.MEANING):
+                meaning = self.consume_string("Expected search string after meaning.")
+            elif self.match(TokenType.MATCHING):
+                match_str = self.consume_string("Expected JSON object string after matching.")
+                import json
+                matching = json.loads(match_str)
+            elif self.match(TokenType.INCLUDE, TokenType.WITH):
+                include.append(self.consume_identifier("Expected field to include."))
+                while self.match(TokenType.COMMA):
+                    include.append(self.consume_identifier("Expected field after comma."))
+            elif self.match(TokenType.YIELD, TokenType.SHOW):
+                yield_fields.append(self.consume_identifier("Expected field to yield."))
+                while self.match(TokenType.COMMA):
+                    yield_fields.append(self.consume_identifier("Expected field after comma."))
+            elif self.match(TokenType.ARRANGED, TokenType.ORDER, TokenType.SORTED):
+                if self.match(TokenType.BY): pass
+                arrange_field = self.consume_identifier("Expected field")
+                if self.match(TokenType.GOING): pass
+                if self.match(TokenType.UP, TokenType.ASC): arrange_dir = "ASC"
+                elif self.match(TokenType.DOWN, TokenType.DESC): arrange_dir = "DESC"
+            elif self.match(TokenType.LIMIT):
+                limit = self.consume(TokenType.INTEGER, "Expected number after limit.").value
+            elif self.match(TokenType.GROUPED):
+                self.consume(TokenType.BY, "Expected 'by' after 'grouped'.")
+                group_by = self.consume_identifier("Expected field for group by.")
+            elif self.match(TokenType.AS):
+                self.consume(TokenType.OF, "Expected 'of' after 'as'.")
+                if self.match(TokenType.STRING):
+                    as_of = self.previous().value
+                else:
+                    as_of = self.consume_identifier("Expected 'yesterday' or timestamp.")
+            else:
+                break
+                
         stmt = ScoopStmt(line=self.previous().line, column=self.previous().column)
         stmt.bucket = bucket
         stmt.where = where
@@ -205,15 +256,32 @@ class Parser:
         stmt.arrange_field = arrange_field
         stmt.arrange_dir = arrange_dir
         
-        as_of = None
-        if self.match(TokenType.AS):
-            self.consume(TokenType.OF, "Expected 'of' after 'as'.")
-            if self.match(TokenType.STRING):
-                as_of = self.previous().value
-            else:
-                as_of = self.consume_identifier("Expected 'yesterday' or timestamp.")
         stmt.as_of = as_of
         
+        return stmt
+
+    def trace_stmt(self) -> ScoopStmt:
+        # TRACE "manager" FROM "bob" -> Equivalent to CHAIN "manager" OF THE "manager" OF "bob"
+        rel_chain = [self.consume_string("Expected relationship label (e.g. \"manager\").")]
+        
+        # Support deep traces: TRACE "manager", "department" FROM "bob"
+        while self.match(TokenType.COMMA):
+            rel_chain.append(self.consume_string("Expected relationship label after comma."))
+            
+        self.consume(TokenType.FROM, "Expected 'from'.")
+        
+        # In TRACE, we might not require the bucket prefix if they just provide the GID string, 
+        # but let's see if we can extract it or default it. Let's assume they provide the raw GID.
+        # Wait, the current CHAIN logic uses bucket and doc_id separately.
+        # "scoop chain ... of target_bucket 'id'"
+        # TRACE allows TRACE "manager" FROM "employees:bob"
+        
+        source = self.consume_string("Expected source document ID (e.g. \"employees:bob\").")
+        
+        stmt = ScoopStmt(line=self.previous().line, column=self.previous().column)
+        stmt.mode = "CHAIN"
+        stmt.chain_labels = rel_chain
+        stmt.chain_source = source
         return stmt
 
     def distill_stmt(self) -> DistillStmt:
@@ -275,7 +343,8 @@ class Parser:
                 
             # If the next token is IDENTIFIER and lexeme is "inside"
             if self.match(TokenType.IDENTIFIER) and self.previous().lexeme.lower() == "inside":
-                bucket = self.consume_identifier("Expected bucket name.")
+                if self.match(TokenType.STRING): bucket = self.previous().value
+                else: bucket = self.consume_identifier("Expected bucket name.")
                 doc_id = self.consume_doc_id("Expected document ID.")
                 if self.match(TokenType.IDENTIFIER) and self.previous().lexeme.lower() == "at":
                     field = self.consume_identifier("Expected field path.")
@@ -283,7 +352,8 @@ class Parser:
                     return ChangeStmt(bucket=bucket, doc_id=doc_id, assignments=[(field, data)])
         
         if self.match(TokenType.INTO):
-            bucket = self.consume_identifier("Expected bucket name.")
+            if self.match(TokenType.STRING): bucket = self.previous().value
+            else: bucket = self.consume_identifier("Expected bucket name.")
             
             # Support auto-generated RANDOM IDs natively
             if self.match(TokenType.RANDOM):
@@ -292,24 +362,45 @@ class Parser:
                 doc_id = self.consume_doc_id("Expected document ID or RANDOM.")
                 
             data = self.consume_json("Expected JSON object.")
-            return PourStmt(bucket=bucket, doc_id=doc_id, json_body=data)
+            
+            secret = None
+            if self.match(TokenType.WITH):
+                self.consume(TokenType.SECRET, "Expected 'secret' after 'with'.")
+                secret = self.consume_string("Expected secret string.")
+                
+            return PourStmt(bucket=bucket, doc_id=doc_id, json_body=data, secret=secret)
         elif self.match(TokenType.MANY):
             self.consume(TokenType.INTO, "Expected 'into' after 'pour many'.")
-            bucket = self.consume_identifier("Expected bucket name.")
+            if self.match(TokenType.STRING): bucket = self.previous().value
+            else: bucket = self.consume_identifier("Expected bucket name.")
             data = self.consume_json("Expected JSON array.")
             return PourManyStmt(bucket=bucket, json_array=data)
         else:
             raise self.error(self.peek(), "Expected 'into' or 'many' after 'pour'.")
 
     def change_stmt(self) -> ChangeStmt:
-        bucket = self.consume_identifier("Expected bucket name.")
-        doc_id = self.consume_doc_id("Expected document ID.")
-        self.consume(TokenType.SET, "Expected 'set' after document ID.")
+        if self.check(TokenType.STRING):
+            # Format: CHANGE "id" IN bucket TO field = value
+            doc_id = self.consume_string("Expected document ID.")
+            if self.match(TokenType.IN, TokenType.INTO): pass
+            else: self.consume(TokenType.INTO, "Expected 'in' or 'into'.")
+            if self.match(TokenType.STRING): bucket = self.previous().value
+            else: bucket = self.consume_identifier("Expected bucket name.")
+            if self.match(TokenType.TO, TokenType.SET): pass
+        else:
+            # Format: CHANGE bucket "id" SET field TO value
+            if self.match(TokenType.STRING): bucket = self.previous().value
+            else: bucket = self.consume_identifier("Expected bucket name.")
+            doc_id = self.consume_doc_id("Expected document ID.")
+            self.consume(TokenType.SET, "Expected 'set' after document ID.")
         
         updates = []
         while True:
             field = self.consume_identifier("Expected field name.")
-            self.consume(TokenType.TO, "Expected 'to' after field name.")
+            if self.match(TokenType.TO): pass
+            elif self.match(TokenType.EQ): pass
+            else: self.consume(TokenType.TO, "Expected 'to' or '=' after field name.")
+            
             value = self.consume_value("Expected value.")
             updates.append((field, value))
             
@@ -330,6 +421,22 @@ class Parser:
         else:
             doc_id = self.consume_doc_id("Expected document ID.")
             return DrainStmt(bucket=bucket, doc_id=doc_id)
+
+    def salvage_stmt(self) -> Any:
+        if self.match(TokenType.EVERYTHING):
+            if self.match(TokenType.FROM): self.consume_identifier("ignore _rubbish")
+            return SalvageStmt(everything=True)
+        doc_id = self.consume_doc_id("Expected document ID to salvage.")
+        if self.match(TokenType.FROM): self.consume_identifier("ignore _rubbish")
+        return SalvageStmt(doc_id=doc_id)
+        
+    def incinerate_stmt(self) -> Any:
+        if self.match(TokenType.EVERYTHING):
+            if self.match(TokenType.FROM): self.consume_identifier("ignore _rubbish")
+            return IncinerateStmt(everything=True)
+        doc_id = self.consume_doc_id("Expected document ID to incinerate.")
+        if self.match(TokenType.FROM): self.consume_identifier("ignore _rubbish")
+        return IncinerateStmt(doc_id=doc_id)
 
     def shape_stmt(self) -> Any:
         if self.match(TokenType.BUCKET):
@@ -355,7 +462,8 @@ class Parser:
         elif self.match(TokenType.PROJECTION):
             path = self.consume_identifier("Expected projection path.")
             self.consume(TokenType.FROM, "Expected 'from' after projection path.")
-            bucket = self.consume_identifier("Expected bucket name.")
+            if self.match(TokenType.STRING): bucket = self.previous().value
+            else: bucket = self.consume_identifier("Expected bucket name.")
             where = None
             if self.match(TokenType.WHERE):
                 where = self.expression()
@@ -364,7 +472,8 @@ class Parser:
         elif self.match(TokenType.POLICY):
             name = self.consume_identifier("Expected policy name.")
             self.consume(TokenType.ON, "Expected 'on' after policy name.")
-            bucket = self.consume_identifier("Expected bucket name.")
+            if self.match(TokenType.STRING): bucket = self.previous().value
+            else: bucket = self.consume_identifier("Expected bucket name.")
             self.consume(TokenType.FOR, "Expected 'for' after bucket name.")
             
             action = 'all'
@@ -382,7 +491,8 @@ class Parser:
         elif self.match(TokenType.MASK):
             field = self.consume_identifier("Expected field name to mask.")
             self.consume(TokenType.ON, "Expected 'on' after field name.")
-            bucket = self.consume_identifier("Expected bucket name.")
+            if self.match(TokenType.STRING): bucket = self.previous().value
+            else: bucket = self.consume_identifier("Expected bucket name.")
             self.consume(TokenType.USING, "Expected 'using' after bucket name.")
             condition = self.expression()
             from .ast import MaskStmt
@@ -411,18 +521,23 @@ class Parser:
     def bond_stmt(self) -> BondStmt:
         # We matched BOND in statement()
         source_gid = self.consume_string("Expected source document ID.")
-        self.consume(TokenType.TO, "Expected 'to'.")
+        if self.match(TokenType.TO, TokenType.AND):
+            pass
+        else:
+            raise self.error(self.peek(), "Expected 'to' or 'and'.")
         
-        # Support Polymorphic ANY, but resolve gracefully to string for now
+        target_gids = []
         if self.match(TokenType.ANY):
             self.consume(TokenType.LPAREN, "Expected '(' after ANY.")
-            target_gid = "ANY(" + self.consume_identifier("Expected ANY arguments.") + ")"
+            target_gids.append(self.consume_string("Expected ANY arguments (string IDs)."))
             while self.match(TokenType.COMMA):
-                target_gid = target_gid[:-1] + "," + self.consume_identifier("Expected ANY args.") + ")"
+                target_gids.append(self.consume_string("Expected ANY args."))
             self.consume(TokenType.RPAREN, "Expected ')'.")
         else:
-            target_gid = self.consume_string("Expected target document ID.")
-            
+            target_gids.append(self.consume_string("Expected target document ID."))
+            while self.match(TokenType.COMMA):
+                target_gids.append(self.consume_string("Expected target document ID after comma."))
+                
         mutual = False
         if self.match(TokenType.AS):
             if self.match(TokenType.MUTUAL):
@@ -433,16 +548,34 @@ class Parser:
             
         stmt = BondStmt(line=self.previous().line, column=self.previous().column)
         stmt.source_gid = source_gid
-        stmt.target_gid = target_gid
+        stmt.target_gids = target_gids
         stmt.label = label
         stmt.mutual = mutual
         
         # Modifier Loop
-        while not self.is_at_end() and self.peek().type not in [TokenType.SCOOP, TokenType.POUR, TokenType.EOF, TokenType.CHANGE, TokenType.BOND]:
-            if self.match(TokenType.ONLY):
-                self.consume(TokenType.WHEN, "Expected 'when'.")
-                stmt.condition_field = self.consume_identifier("Expected field.")
-                self.consume(TokenType.IS, "Expected 'is'.")
+        while not self.is_at_end() and self.peek().type not in [TokenType.SCOOP, TokenType.POUR, TokenType.EOF, TokenType.CHANGE, TokenType.BOND, TokenType.LINK]:
+            if self.match(TokenType.IF) or self.match(TokenType.ONLY):
+                if self.previous().type == TokenType.ONLY:
+                    self.consume(TokenType.WHEN, "Expected 'when'.")
+                    
+                subject = "target"
+                field = self.consume_field_path("Expected field.")
+                if field.lower() in ["target", "source", "their", "its", "his", "her", "my"]:
+                    next_type = self.peek().type
+                    if next_type == TokenType.IDENTIFIER or next_type not in (
+                        TokenType.EOF, TokenType.EQ, TokenType.NEQ, TokenType.GT, TokenType.GTE,
+                        TokenType.LT, TokenType.LTE, TokenType.COMMA, TokenType.LPAREN, TokenType.RPAREN,
+                        TokenType.LBRACE, TokenType.RBRACE, TokenType.LBRACKET, TokenType.RBRACKET,
+                        TokenType.INTEGER, TokenType.FLOAT, TokenType.STRING
+                    ):
+                        subject = "source" if field.lower() in ["source", "my"] else "target"
+                        field = self.consume_field_path("Expected field.")
+                    
+                stmt.condition_subject = subject
+                stmt.condition_field = field
+                
+                if self.match(TokenType.IS, TokenType.EQ): pass
+                else: self.consume(TokenType.IS, "Expected 'is' or '='.")
                 stmt.condition_value = self.consume_value("Expected value.")
             elif self.match(TokenType.WITH):
                 if self.match(TokenType.AFFINITY):
@@ -471,6 +604,80 @@ class Parser:
                 break
                 
         return stmt
+
+    def authenticate_stmt(self):
+        self.consume(TokenType.AS, "Expected 'as'.")
+        if self.match(TokenType.STRING): user_id = self.previous().value
+        else: user_id = self.consume_doc_id("Expected user ID.")
+        return AuthenticateStmt(user_id, line=self.previous().line, column=self.previous().column)
+
+    def rewind_stmt(self):
+        doc_id = self.consume_doc_id("Expected document ID to rewind (e.g. \"people:alice\").")
+        self.consume(TokenType.TO, "Expected 'to'.")
+        if self.match(TokenType.STRING):
+            target_time = self.previous().value
+        else:
+            target_time = self.consume_identifier("Expected 'yesterday' or timestamp.")
+        return RewindStmt(doc_id, target_time, line=self.previous().line, column=self.previous().column)
+        
+    def mask_stmt(self) -> MaskStmt:
+        field = self.consume_string("Expected string field name.")
+        self.consume(TokenType.ON, "Expected 'on'.")
+        if self.match(TokenType.STRING): bucket = self.previous().value
+        else: bucket = self.consume_identifier("Expected bucket name.")
+        
+        self.consume(TokenType.IF, "Expected 'if'.")
+        
+        # Build raw condition string for now
+        cond_tokens = []
+        while not self.is_at_end() and self.peek().type != TokenType.EOF:
+            cond_tokens.append(self.advance())
+        
+        return MaskStmt(field=field, bucket=bucket, condition=cond_tokens)
+
+    def policy_stmt(self):
+        if self.check(TokenType.SECURITY):
+            self.consume(TokenType.SECURITY, "Expected 'security'.")
+            if self.match(TokenType.POLICY): pass
+            name = self.consume_string("Expected policy name.")
+            self.consume(TokenType.ON, "Expected 'on'.")
+            if self.match(TokenType.STRING): bucket = self.previous().value
+            else: bucket = self.consume_identifier("Expected bucket name.")
+            self.consume(TokenType.TO, "Expected 'to'.")
+            self.consume(TokenType.ALLOW, "Expected 'allow'.")
+            action = self.consume_identifier("Expected 'read' or 'write'.")
+            self.consume(TokenType.IF, "Expected 'if'.")
+            condition = []
+            while not self.is_at_end() and self.peek().type != TokenType.EOF:
+                condition.append(self.advance())
+            stmt = PolicyStmt(bucket, None, line=self.previous().line, column=self.previous().column)
+            stmt.name = name
+            stmt.action = action
+            stmt.condition = condition
+            return stmt
+
+        self.consume(TokenType.POLICY, "Expected 'policy'.")
+        self.consume(TokenType.ON, "Expected 'on'.")
+        if self.match(TokenType.STRING): bucket = self.previous().value
+        else: bucket = self.consume_identifier("Expected bucket name.")
+        self.consume(TokenType.TO, "Expected 'to'.")
+        if self.match(TokenType.OVERWRITE):
+            self.consume(TokenType.CURRENT, "Expected 'current'.")
+            algorithm = "OVERWRITE_CURRENT"
+        elif self.match(TokenType.REPLACE):
+            if self.match(TokenType.OLDEST):
+                self.consume(TokenType.UPDATES, "Expected 'updates'.")
+                algorithm = "REPLACE_OLDEST"
+            elif self.match(TokenType.LEAST):
+                self.consume(TokenType.RECENTLY, "Expected 'recently'.")
+                self.consume(TokenType.USED, "Expected 'used'.")
+                algorithm = "LRU"
+            else:
+                raise self.error(self.peek(), "Expected 'oldest' or 'least'.")
+        else:
+            raise self.error(self.peek(), "Expected 'overwrite' or 'replace'.")
+            
+        return PolicyStmt(bucket, algorithm, line=self.previous().line, column=self.previous().column)
 
     def index_stmt(self) -> IndexStmt:
         bucket = self.consume_identifier("Expected bucket name.")
@@ -591,7 +798,14 @@ class Parser:
             return self.advance().lexeme
         raise self.error(self.peek(), message)
         
+    def consume_field_path(self, message: str) -> str:
+        path = self.consume_identifier(message)
+        while self.match(TokenType.DOT):
+            path += "." + self.consume_identifier("Expected identifier after dot.")
+        return path
+
     def consume_doc_id(self, message: str) -> str:
+        self.match(TokenType.COLON) # Optional colon support
         if self.match(TokenType.IDENTIFIER, TokenType.STRING):
             return self.previous().value or self.previous().lexeme
         raise self.error(self.peek(), message)
@@ -676,8 +890,9 @@ class Parser:
         return expr_tokens
 
     def error(self, token: Token, message: str) -> ParseError:
-        self.errors.append(f"Error at '{token.lexeme}': {message}")
-        return ParseError()
+        err_msg = f"Error at '{token.lexeme}': {message}"
+        self.errors.append(err_msg)
+        return ParseError(err_msg)
 
     def synchronize(self):
         self.advance()
@@ -737,3 +952,21 @@ class Parser:
         stmt.interval_seconds = interval
         stmt.command_str = command_str
         return stmt
+
+    def sever_stmt(self) -> SeverStmt:
+        source_gid = self.consume_string("Expected source document ID.")
+        self.consume(TokenType.FROM, "Expected 'from'.")
+        target_gid = self.consume_string("Expected target document ID.")
+        if self.match(TokenType.AS):
+            label = self.consume_string("Expected label string.")
+        else:
+            label = ""
+        return SeverStmt(source_gid=source_gid, target_gid=target_gid, label=label)
+
+    def drop_stmt(self) -> DropSecurityStmt:
+        self.consume(TokenType.SECURITY, "Expected 'security'.")
+        name = self.consume_string("Expected policy name.")
+        self.consume(TokenType.ON, "Expected 'on'.")
+        if self.match(TokenType.STRING): bucket = self.previous().value
+        else: bucket = self.consume_identifier("Expected bucket name.")
+        return DropSecurityStmt(name=name, bucket=bucket)

@@ -44,6 +44,23 @@ async def cron_worker():
             continue
             
         try:
+            current_time = int(time.time())
+            
+            # --- Rubbish Cleanup ---
+            try:
+                r_data = engine.scan_bucket("_rubbish")
+                if r_data:
+                    rubbish = json.loads(r_data)
+                    # We could load a config here. For now, default 3 days = 259200 seconds
+                    for r in rubbish:
+                        doc = engine.get(r['gid'])
+                        if doc:
+                            body = json.loads(doc)
+                            if current_time - body.get("deleted_at", current_time) > 259200:
+                                engine.delete(r['gid'])
+            except Exception as e:
+                print(f"[Cron] Error in rubbish cleanup: {e}")
+
             # Scan the hidden _cron bucket
             cron_data = engine.scan_bucket("_cron")
             if not cron_data:
@@ -71,8 +88,7 @@ async def cron_worker():
                         parser = Parser(lexer.tokenize())
                         stmts = parser.parse()
                         interp = Interpreter(engine)
-                        # Assume cron runs as admin
-                        interp.context = {"user": "cron", "role": "admin"}
+                        interp.set_context({"user": "cron", "role": "admin"})
                         results = interp.execute(stmts)
                         print(f"[Cron] Result: {results}")
                     except Exception as e:
@@ -87,6 +103,7 @@ async def handle_client(reader, writer):
     
     authenticated = False
     username = None
+    auth_level = None
     
     # 1. Shell Auth Loop
     while not authenticated:
@@ -103,10 +120,7 @@ async def handle_client(reader, writer):
                 users_json = engine.scan_bucket("_auth")
                 user_count = len(json.loads(users_json)) if users_json else 0
                 
-                if user_count >= 1:
-                    writer.write(b'{"status": "error", "message": "Registration is locked. An account already exists. Only one user is allowed."}\n')
-                    await writer.drain()
-                    continue
+                # Registration limit removed for multi-tenancy!
 
                 u = req.get("username")
                 is_first = True
@@ -141,9 +155,18 @@ async def handle_client(reader, writer):
                     if verify_password(user_data["password_hash"], user_data["password_salt"], p):
                         authenticated = True
                         username = u
-                        writer.write(b'{"status": "ok", "message": "Login successful!"}\n')
+                        auth_level = "standard"
+                        writer.write(f'{{"status": "ok", "message": "Login successful! (Standard Access)", "auth_level": "standard", "username": "{u}"}}\n'.encode())
                         await writer.drain()
-                        print(f"[Server] User '{username}' logged in.")
+                        print(f"[Server] User '{username}' logged in (Standard).")
+                        continue
+                    elif user_data.get("dev_hash") and verify_password(user_data["dev_hash"], user_data.get("dev_salt", ""), p):
+                        authenticated = True
+                        username = u
+                        auth_level = "dev"
+                        writer.write(f'{{"status": "ok", "message": "Login successful! (Dev Superuser Override)", "auth_level": "dev", "username": "{u}"}}\n'.encode())
+                        await writer.drain()
+                        print(f"[Server] User '{username}' logged in (Dev).")
                         continue
                         
                 writer.write(b'{"status": "error", "message": "Invalid username or password"}\n')
@@ -194,14 +217,17 @@ async def handle_client(reader, writer):
         return
 
     # 2. Database Query Loop
-    interp = Interpreter(engine)
     user_doc_str = engine.get(f"_auth:{username}")
     user_role = json.loads(user_doc_str).get("role", "dev") if user_doc_str else "dev"
     
-    interp.context = {
+    interp = Interpreter(engine)
+    
+    interp.set_context({
+        "user_id": f"users:{username}",
         "user": username,
-        "role": user_role
-    }
+        "role": user_role,
+        "auth_level": auth_level
+    })
 
     while True:
         data = await reader.readline()

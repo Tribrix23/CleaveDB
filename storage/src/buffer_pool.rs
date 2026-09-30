@@ -329,7 +329,7 @@ fn read_page_from_file(file_path: &Path, page_id: PageId) -> StorageResult<Page>
 
     let decrypted = crate::crypto::decrypt_data(&enc_buf);
     let mut buf = [0u8; PAGE_SIZE];
-    buf.copy_from_slice(&decrypted);
+    buf.copy_from_slice(&decrypted[..PAGE_SIZE]); // Extract exact PAGE_SIZE
 
     Page::from_bytes(buf)
 }
@@ -346,7 +346,10 @@ fn write_page_to_file(file_path: &Path, page_id: PageId, page: &Page) -> Storage
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| StorageError::Io(e))?;
 
-    let encrypted = crate::crypto::encrypt_data(page.to_bytes());
+    let mut encrypted = crate::crypto::encrypt_data(page.to_bytes());
+    if encrypted.len() < enc_size {
+        encrypted.resize(enc_size, 0); // Pad with zeroes if crypto is disabled
+    }
     file.write_all(&encrypted)
         .map_err(|e| StorageError::Io(e))?;
 

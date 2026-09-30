@@ -7,6 +7,7 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"net"
 	"time"
 	"unsafe"
 )
@@ -23,10 +24,35 @@ func ScatterGather(query *C.char, numShards C.int) *C.char {
 
 	for i := 0; i < n; i++ {
 		go func(shardID int) {
-			// Mock shard query execution using the actual query string
+			// Distributed Scatter: Send concurrent TCP requests to shard nodes
+			// In a real cluster, each shardID maps to a different IP.
+			// Here we route all shards to the local CleaveDB server port 8300
+			conn, err := net.DialTimeout("tcp", "127.0.0.1:8300", 2*time.Second)
+			if err != nil {
+				// Fallback to direct string if server isn't up
+				results <- fmt.Sprintf(`{"status": "error", "shard": %d, "error": "unreachable"}`, shardID)
+				return
+			}
+			defer conn.Close()
+
+			fmt.Fprintf(conn, "%s\n", qStr)
+
+			var responseBuf []byte
+			buf := make([]byte, 4096)
+			conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+			for {
+				nBytes, err := conn.Read(buf)
+				if nBytes > 0 {
+					responseBuf = append(responseBuf, buf[:nBytes]...)
+				}
+				if err != nil {
+					break 
+				}
+			}
+
 			select {
 			case <-ctx.Done():
-			case results <- fmt.Sprintf("shard_%d:%s", shardID, qStr):
+			case results <- string(responseBuf):
 			}
 		}(i)
 	}
@@ -35,7 +61,7 @@ func ScatterGather(query *C.char, numShards C.int) *C.char {
 	for i := 0; i < n; i++ {
 		select {
 		case <-ctx.Done():
-			return C.CString("timeout")
+			return C.CString(`{"status": "error", "message": "coordinator timeout"}`)
 		case res := <-results:
 			collected = append(collected, res)
 		}
@@ -55,7 +81,6 @@ func StartBackgroundWorkers() {
 	go func() {
 		for {
 			time.Sleep(10 * time.Second)
-			fmt.Println("[Go Coordinator] Background workers ran")
 		}
 	}()
 }

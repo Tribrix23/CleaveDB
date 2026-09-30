@@ -94,13 +94,43 @@ class TokenType(Enum):
     ONLY = auto()
     EVERYTHING = auto()
     YIELD = auto()
+    SALVAGE = auto()
+    INCINERATE = auto()
     POLICY = auto()
+    FIND = auto()       # Alias for SCOOP
+    UPDATE = auto()     # Alias for CHANGE
+    LINK = auto()       # Alias for BOND
+    IF = auto()         # Alias for ONLY WHEN
+    CANDIDATE = auto()  # Flag to show dormant bonds
+    TRACE = auto()      # Alias for SCOOP CHAIN
+    REWIND = auto()
+    ENFORCE = auto()
+    OVERWRITE = auto()
+    CURRENT = auto()
+    REPLACE = auto()
+    UPDATES = auto()
+    LEAST = auto()
+    RECENTLY = auto()
+    USED = auto()
+    SECURITY = auto()
+    ALLOW = auto()
+    BONDED = auto()
+    AUTHENTICATE = auto()
+    DESC = auto()       # Alias for DOWN
+    ASC = auto()        # Alias for UP
+    SORTED = auto()     # Alias for ARRANGED
     MASK = auto()
     FOR = auto()
     USING = auto()
     READ = auto()
     WRITE = auto()
     CONTEXT = auto()
+    SECRET = auto()
+    MY = auto()
+    ROLE = auto()
+    UNLINK = auto()
+    SEVER = auto()
+    DROP = auto()
 
 
     # Sort keywords
@@ -199,17 +229,45 @@ KEYWORDS = {
     'read': TokenType.READ,
     'write': TokenType.WRITE,
     'context': TokenType.CONTEXT,
+    'secret': TokenType.SECRET,
+    'my': TokenType.MY,
+    'role': TokenType.ROLE,
+    'unlink': TokenType.UNLINK,
+    'sever': TokenType.SEVER,
+    'drop': TokenType.DROP,
 
     'scoop': TokenType.SCOOP,
+    'find': TokenType.FIND,
+    'trace': TokenType.TRACE,
+    'desc': TokenType.DESC,
+    'asc': TokenType.ASC,
+    'sorted': TokenType.SORTED,
     'pour': TokenType.POUR,
     'drain': TokenType.DRAIN,
     'flow': TokenType.FLOW,
     'bond': TokenType.BOND,
+    'link': TokenType.LINK,
+    'if': TokenType.IF,
+    'candidate': TokenType.CANDIDATE,
     'distill': TokenType.DISTILL,
+    'rewind': TokenType.REWIND,
+    'enforce': TokenType.ENFORCE,
+    'overwrite': TokenType.OVERWRITE,
+    'current': TokenType.CURRENT,
+    'replace': TokenType.REPLACE,
+    'updates': TokenType.UPDATES,
+    'least': TokenType.LEAST,
+    'recently': TokenType.RECENTLY,
+    'used': TokenType.USED,
+    'security': TokenType.SECURITY,
+    'allow': TokenType.ALLOW,
+    'bonded': TokenType.BONDED,
+    'authenticate': TokenType.AUTHENTICATE,
     'follow': TokenType.FOLLOW,
     'shape': TokenType.SHAPE,
     'peer': TokenType.PEER,
     'change': TokenType.CHANGE,
+    'update': TokenType.UPDATE,
     'count': TokenType.COUNT,
     'index': TokenType.INDEX,
     'heal': TokenType.HEAL,
@@ -287,6 +345,8 @@ KEYWORDS = {
     'only': TokenType.ONLY,
     'everything': TokenType.EVERYTHING,
     'yield': TokenType.YIELD,
+    'salvage': TokenType.SALVAGE,
+    'incinerate': TokenType.INCINERATE,
     'newest': TokenType.NEWEST,
     'oldest': TokenType.OLDEST,
     'relevance': TokenType.RELEVANCE,

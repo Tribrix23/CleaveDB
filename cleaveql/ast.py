@@ -72,6 +72,7 @@ class PourStmt(ASTNode):
     bucket: str = ""
     doc_id: Optional[str] = None
     json_body: Any = None
+    secret: Optional[str] = None
 
 @dataclass
 class PourManyStmt(ASTNode):
@@ -91,6 +92,16 @@ class DrainStmt(ASTNode):
     where: Optional[WhereClause] = None
     before: Optional[str] = None
 
+@dataclass
+class SalvageStmt(ASTNode):
+    doc_id: Optional[str] = None
+    everything: bool = False
+    
+@dataclass
+class IncinerateStmt(ASTNode):
+    doc_id: Optional[str] = None
+    everything: bool = False
+
 # Declaration statements
 @dataclass
 class ShapeBucketStmt(ASTNode):
@@ -108,12 +119,10 @@ class ShapeProjectionStmt(ASTNode):
 
 @dataclass
 class BondStmt(ASTNode):
-    name: str = ""
-    from_field: str = ""
-    to_bucket: str = ""
-    strength: str = "" # soft, firm, strict
-    on_delete: str = "" # keep, restrict, cascade
-    cardinality: str = "" # one, many
+    source_gid: str = ""
+    target_gid: str = ""
+    mutual: bool = False
+    label: str = ""
 
 @dataclass
 class IndexStmt(ASTNode):
@@ -173,3 +182,43 @@ class MaskStmt(ASTNode):
 class CronStmt(ASTNode):
     interval_seconds: int = 0
     command_str: str = ''
+
+class RewindStmt:
+    def __init__(self, doc_id, target_time, line=0, column=0):
+        self.type = "RewindStmt"
+        self.doc_id = doc_id
+        self.target_time = target_time
+        self.line = line
+        self.column = column
+
+class PolicyStmt:
+    def __init__(self, bucket, algorithm, line=0, column=0):
+        self.type = "PolicyStmt"
+        self.bucket = bucket
+        self.algorithm = algorithm
+        self.line = line
+        self.column = column
+
+class AuthenticateStmt:
+    def __init__(self, user_id, line=0, column=0):
+        self.type = "AuthenticateStmt"
+        self.user_id = user_id
+        self.line = line
+        self.column = column
+
+@dataclass
+class MaskStmt(ASTNode):
+    field: str = ""
+    bucket: str = ""
+    condition: str = ""
+
+@dataclass
+class SeverStmt(ASTNode):
+    source_gid: str = ""
+    target_gid: str = ""
+    label: str = ""
+
+@dataclass
+class DropSecurityStmt(ASTNode):
+    name: str = ""
+    bucket: str = ""
