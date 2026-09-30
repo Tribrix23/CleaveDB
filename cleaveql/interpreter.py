@@ -170,8 +170,13 @@ class Interpreter:
             if isinstance(documents, str):
                 documents = json.loads(documents)
             gids = []
+            tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else None
             for doc in documents:
                 doc_id = doc.pop('_id', doc.pop('gid', None)) if isinstance(doc, dict) else None
+                
+                if tenant and tenant != "cron" and doc_id and not doc_id.startswith(f"{tenant}.") and doc_id != tenant:
+                    doc_id = f"{tenant}.{doc_id}"
+                    
                 json_str = json.dumps(doc) if isinstance(doc, dict) else str(doc)
                 gid = self.engine.pour(bucket, doc_id, json_str)
                 gids.append(gid)
@@ -185,7 +190,7 @@ class Interpreter:
                 bonds = json.loads(bonds_json) if bonds_json else []
                 labels = getattr(stmt, 'chain_labels', [])
                 
-                for label in labels:
+                for label in reversed(labels):
                     next_gids = set()
                     for gid in current_gids:
                         for b in bonds:
@@ -577,14 +582,17 @@ class Interpreter:
                     "exclusive": getattr(stmt, 'exclusive', False),
                     "expires_at": expires
                 }
-                self.engine.pour("_bonds", str(uuid.uuid4()), json.dumps(bond_doc))
+                tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
+                bond_id = f"{tenant}.{str(uuid.uuid4())}" if tenant != "cron" else str(uuid.uuid4())
+                self.engine.pour("_bonds", bond_id, json.dumps(bond_doc))
                 count += 1
                 
                 if getattr(stmt, 'mutual', False):
                     bond_doc_2 = dict(bond_doc)
                     bond_doc_2["source"] = target_gid
                     bond_doc_2["target"] = getattr(stmt, 'source_gid', '')
-                    self.engine.pour("_bonds", str(uuid.uuid4()), json.dumps(bond_doc_2))
+                    bond_id_2 = f"{tenant}.{str(uuid.uuid4())}" if tenant != "cron" else str(uuid.uuid4())
+                    self.engine.pour("_bonds", bond_id_2, json.dumps(bond_doc_2))
                     count += 1
                 
             return {"status": "ok", "message": f"{count} 15-Dimensional Bonds '{getattr(stmt, 'label', '')}' created."}

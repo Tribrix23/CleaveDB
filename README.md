@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>🧬 CleaveDB 3.0</h1>
+  <h1>🧬 CleaveDB 3.5</h1>
   <p><strong>The polyglot, AVX-512 accelerated, non-relational database with Transformer attention layers.</strong></p>
   
   [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
@@ -10,24 +10,25 @@
 
 <br/>
 
-**CleaveDB 3.0** is a ground-up, hybrid NoSQL document database that eliminates the complexity of traditional SQL `JOIN`s, external vector search services, and opaque graph databases. It ships with:
+**CleaveDB 3.5** is a ground-up, hybrid NoSQL document database that eliminates the complexity of traditional SQL `JOIN`s, external vector search services, and opaque graph databases. It ships with:
 
 - A high-performance **Rust storage engine** built entirely from scratch — no SQLite, no RocksDB, no external storage libraries.
 - **AVX-512 / AVX2 C++ SIMD extensions** wired directly into the Rust engine for hardware-accelerated math operations.
 - A **Python interpreter frontend** (via PyO3 bindings) that runs the **CleaveQL** query language.
 - **Real neural Transformer embeddings** for semantic search via a quantized ONNX model, using ~22MB of RAM.
-- A **TCP server** (`cleavedb_server.py`) with a full authentication shell, background Cron worker, and live query execution.
+- A **Go-based distributed coordinator** with scatter-gather and K-way merge for multi-shard deployments.
+- A **TCP server** (`cleavedb_server.py`) with full authentication, background Cron worker, and **multi-tenant Row-Level Security (RLS)**.
 
 ---
 
-## 🏗️ Architecture Overview
+## 🏗️ Architecture & Toolchain
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                  CleaveQL (Python Layer)                │
 │   Lexer ──► Parser ──► AST ──► Interpreter             │
 │         attention/sra.py  ─── ONNX Q8 Transformer      │
-│         cleaveql/security.py ── Row Level Security      │
+│         cleaveql/security.py ── GBAC / RLS / Masking   │
 │         cleaveql/cost_model.py ── Query Cost Estimation │
 └────────────────────────┬────────────────────────────────┘
                          │  PyO3 FFI
@@ -36,544 +37,546 @@
 │   BPlusTree ── WAL (Group Commit) ── Buffer Pool        │
 │   Bloom Filter ── LZ4 Page Compression ── AES-256-GCM  │
 │   SIMD FFI: AVX-512 dot_product, softmax, gelu, matmul │
+│   Coordinator FFI ─── Go ScatterGather / K-Way Merge   │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### Storage Engine Internals (Rust)
-The Rust engine is built from the following hand-crafted components:
+### Toolchain Components
 
-| Module | Description |
-|---|---|
-| `page` | 16KB fixed-size pages with CRC32 checksums |
-| `buffer_pool` | CLOCK-sweep page cache with pin/unpin semantics |
-| `wal` | Write-ahead log with group commit (lock-free `SegQueue`) |
-| `btree` | Persistent B+Tree for documents, indexes, and bond edges |
-| `bloom` | Bloom filter for fast key existence checks |
-| `crypto` | AES-256-GCM encryption for fields at rest (via `sha2` + `aes-gcm`) |
-| `simd_ffi` | FFI bindings to C++ AVX-512/AVX2 routines (dot product, matmul, softmax, gelu, layer norm, sigmoid) |
-
-### Transformer Attention Layers (Python / `attention/`)
-
-| Module | Description |
-|---|---|
-| `attention/sra.py` | **Semantic Relevance Attention** — Real ONNX Q8_0 embedding model for `MEANING` queries |
-| `attention/__init__.py` | Manages the four planned attention layers: QUA, SRA, BDA, AQP |
+| Layer | Technology | Component | Description |
+|---|---|---|---|
+| **Storage** | Rust 2021 | `storage/src/` | Hand-built B+Tree, 16KB pages with CRC32, CLOCK-sweep buffer pool, WAL with group commit, Bloom filters, AES-256-GCM at-rest encryption |
+| **SIMD** | C++ (AVX-512/AVX2) | `simd/src/` | Hardware-accelerated dot product (4× unrolled FMA), softmax, GELU, sigmoid, layer norm, matrix multiply. Auto-fallback to scalar on unsupported CPUs |
+| **Coordinator** | Go 1.21 | `coordinator/src/` | Scatter-gather across shards with goroutine concurrency, K-way merge via min-heap in O(N log K), C-shared FFI export |
+| **Interpreter** | Python 3.13 | `cleaveql/` | Recursive-descent parser producing 34 AST node types, security policy engine (GBAC + RBAC + RLS + Masking) |
+| **AI Search** | ONNX Runtime | `attention/sra.py` | Semantic Relevance Attention — quantized `all-MiniLM-L6-v2` Transformer generating 384-dim embeddings, cosine similarity ranking |
+| **Bindings** | PyO3 / Maturin | `storage/src/python.rs` | Zero-copy Rust↔Python bridge exposing `pour`, `get`, `scan_bucket`, `delete`, `heal`, `show` |
 
 ---
 
 ## 🚀 Getting Started
 
 ### Requirements
-- Python 3.13+
-- Rust 2021 Edition (`cargo`)
-- C++ build tools (for SIMD extensions)
+- Python 3.13+, Rust 2021 (`cargo`), C++ build tools
 - `onnxruntime`, `tokenizers`, `huggingface_hub`, `numpy`
 
 ### Installation
 ```bash
-# 1. Build the Rust storage engine
-cd storage
-maturin develop --release
+# Full build (SIMD + Go coordinator + Rust engine + Python bindings)
+python build.py
 
-# 2. Install Python dependencies
+# Or manual steps:
+cd storage && maturin develop --release
 pip install onnxruntime tokenizers huggingface_hub numpy
 
-# 3. Start the TCP server
+# Start the TCP server
 python cleavedb_server.py
 
-# 4. Or use the CLI directly
+# Connect with the CLI
 python cleave_cli.py
 ```
 
-### Connecting
-The server runs on `localhost:5001` (TCP). The CLI handles the connection automatically.
+---
+
+## 🔒 Authentication & Multi-Tenancy
+
+CleaveDB enforces authentication before any query. Every client must `register` or `login` through the CLI shell.
+
+### Registration
+```
+cleavedb-auth> register
+Username: david
+Password: ********
+Dev Password (superuser override): ********
+Security Question: What was the name of your first pet?
+Answer: rover
+```
+Passwords are hashed with **PBKDF2-HMAC-SHA256** (100,000 iterations, 16-byte random salt). Security questions and answers are encrypted at rest with **AES-256-GCM** via a Fernet key (`cleavedb.key`).
+
+### Login (Dual Privilege Levels)
+```
+cleavedb-auth> login
+Username: david
+Password: ********           → Standard user prompt: david@cleavedb>
+Password: <dev_password>     → Dev superuser prompt: root@cleavedb>
+```
+- **Standard users** can read/write their own data.
+- **Dev superusers** can additionally access hidden system buckets (`_auth`, `_cron`, `_bonds`, `_security_policies`).
+
+### Password Recovery
+```
+cleavedb-auth> forgot
+Username: david
+→ Server returns decrypted security question
+Answer: rover
+New Password: ********
+```
+
+### Multi-Tenant Isolation
+Every document, bond, and security policy is **automatically namespaced** with the creator's tenant ID:
+
+```
+david@cleavedb> POUR INTO products "laptop" {"price": 999}
+→ Stored as: products:david.laptop
+
+john@cleavedb> FIND products
+→ Returns: [] (zero results — John cannot see David's data)
+```
+
+Row-Level Security (RLS) filtering is enforced at the engine level on every scan. Even a Dev Superuser logged in as John **cannot** see David's documents.
 
 ---
 
-## 🔒 Authentication Shell
+## 📖 Complete CleaveQL Reference
 
-Before any query can be executed, every client must authenticate. The server enforces a full credential system backed by the Rust B+Tree.
-
-### First-Time Registration
-Only **one account** can ever be registered. After that, registration is permanently locked. The first account is always granted the `admin` role.
-
-```json
-{ "action": "register", "username": "alice", "password": "MyStr0ng!", "dev_password": "DevPass!", "question": "What is your dog's name?", "answer": "rover" }
-```
-
-### Login
-```json
-{ "action": "login", "username": "alice", "password": "MyStr0ng!" }
-```
-
-### Password Recovery (2-Step)
-**Step 1:** Retrieve your encrypted security question from the database:
-```json
-{ "action": "forgot_step1", "username": "alice" }
-```
-**Step 2:** Submit your answer and set a new password:
-```json
-{ "action": "forgot_step2", "username": "alice", "answer": "rover", "new_password": "NewStr0ng!" }
-```
-
-> **How it works:** Passwords are hashed with a random salt using SHA-256. Security questions and answers are encrypted at rest using the database's AES-256-GCM cipher before being stored in the hidden `_auth` bucket inside the B+Tree.
+CleaveDB defines **25+ commands** with **170 token types** producing **34 AST node types**. Every query reads like natural English.
 
 ---
 
-## 📖 The CleaveQL Language
+### 1. `POUR` — Insert / Upsert Documents
 
-CleaveQL is designed to read like a human conversation, not like machine code. Every query maps to a concrete AST node which is executed directly by the Python interpreter against the Rust engine.
+```sql
+POUR INTO <bucket> "<id>" {json}
+POUR INTO <bucket> RANDOM {json}
+POUR INTO <bucket> "<id>" {json} WITH SECRET "<password>"
+POUR MANY INTO <bucket> [{json}, {json}, ...]
+POUR {json} INSIDE <bucket> "<id>" AT <field.path>
+```
 
----
+| Modifier | Description |
+|---|---|
+| `RANDOM` | Auto-generates a cryptographic 64-bit hex ID |
+| `WITH SECRET "<pw>"` | Hashes password via PBKDF2 and creates an `_auth` entry — registers a sub-user account |
+| `MANY` | Bulk-inserts an array of documents in one statement |
+| `INSIDE ... AT <path>` | Injects JSON into a nested field path of an existing document |
 
-### POUR — Insert / Upsert Documents
-
-`POUR` is the primary write verb. It inserts or fully replaces a document in a bucket (collection).
-
-**Using a Specific ID:**
-When you know exactly what you want the document's key to be, provide it as a quoted string. CleaveDB will always upsert — if the ID already exists, it will overwrite it completely.
+**Examples:**
 ```sql
 POUR INTO users "alice" {"name": "Alice", "age": 28, "role": "admin"}
-POUR INTO products "prod-001" {"name": "Laptop", "price": 999}
-```
-
-**Using a Random / Auto-Generated ID:**
-When you don't care what the ID is (e.g., ingesting a stream of events), use `RANDOM`. CleaveDB generates a cryptographically random 64-bit hex ID guaranteed to be unique.
-```sql
 POUR INTO events RANDOM {"type": "click", "page": "/home"}
--- Result gid: "events:406312a2755e5c92"
-
-POUR INTO products RANDOM {"name": "Thick Wool Coat", "price": 79}
--- Result gid: "products:8823f15f25735fa7"
-```
-
-**Bulk Insert (POUR MANY):**
-Insert multiple documents in a single statement:
-```sql
-POUR MANY INTO users [
-  {"name": "Bob"},
-  {"name": "Charlie"},
-  {"name": "Diana"}
-]
+POUR INTO users "bob" {"name": "Bob", "role": "viewer"} WITH SECRET "bobpass123"
+POUR MANY INTO products [{"gid": "p1", "name": "Laptop"}, {"gid": "p2", "name": "Phone"}]
+POUR {"tool": "CleaveDB"} INSIDE users "alice" AT profile.skills
 ```
 
 ---
 
-### SCOOP — Query / Retrieve Documents
+### 2. `FIND` / `SCOOP` — Query & Retrieve Documents
 
-`SCOOP` is the primary read verb. Every query variation begins with `SCOOP`.
+`FIND` is the primary read verb (alias: `SCOOP`). It supports **10 query modes** and **12 chainable modifiers**.
 
-**Retrieve Everything:**
+#### Query Modes
+
+| Mode | Syntax | Description |
+|---|---|---|
+| `EVERYTHING` | `FIND <bucket>` | Default — returns all matching documents |
+| `FIRST` | `FIND THE FIRST <n> FROM <bucket>` | First N documents |
+| `LAST` | `FIND THE LAST <n> FROM <bucket>` | Last N documents |
+| `TALLY` | `FIND THE TALLY OF <bucket>` | Document count |
+| `TOTAL` | `FIND THE TOTAL <field> FROM <bucket> GROUPED BY <field>` | Grouped summation |
+| `HIGHEST` | `FIND THE HIGHEST <n> <field> FROM <bucket>` | Top N by field (descending) |
+| `LOWEST` | `FIND THE LOWEST <n> <field> FROM <bucket>` | Bottom N by field (ascending) |
+| `UNIQUE` | `FIND ONLY UNIQUE <field> FROM <bucket>` | Distinct values for a field |
+| `RELATED` | `FIND "<label>" OF "<source_id>"` | Direct graph bond traversal |
+| `CHAIN` | `FIND THE <rel1> OF THE <rel2> OF <bucket> "<id>"` | Multi-hop deep graph traversal |
+
+#### Chainable Modifiers (combine in any order)
+
+| Modifier | Syntax | Description |
+|---|---|---|
+| `WHERE` | `WHERE <field> <op> <value> [AND/OR ...]` | Boolean predicate filtering (`=`, `!=`, `>`, `<`, `>=`, `<=`) |
+| `WHOSE` | `WHOSE <field> IS <value>` | Exact field match (easy English) |
+| `MENTIONING` | `MENTIONING "<text>"` | Full-text keyword substring search |
+| `MEANING` | `MEANING "<text>"` | AI vector semantic search (ONNX Transformer) |
+| `MATCHING` | `MATCHING "<json>"` | JSON structural template matching |
+| `INCLUDE` / `WITH` | `WITH <field1>, <field2>` | Eager join of related documents |
+| `YIELD` / `SHOW` | `SHOW <field1>, <field2>` | Field projection (return only these fields) |
+| `ARRANGED BY` | `ARRANGED BY <field> GOING UP/DOWN` | Sort results (aliases: `SORTED BY`, `ORDER BY`, `ASC`/`DESC`) |
+| `LIMIT` | `LIMIT <n>` | Restrict number of results |
+| `GROUPED BY` | `GROUPED BY <field>` | Grouping for aggregations |
+| `AS OF` | `AS OF "<timestamp>"` / `AS OF yesterday` | Time-travel historical query |
+| `CANDIDATE` | `FIND CANDIDATE "<label>" OF "<id>"` | Include dormant conditional bonds |
+
+**Examples:**
 ```sql
-SCOOP EVERYTHING FROM users
-```
-
-**Filter with WHOSE:**
-Filter documents by a field value using the easy English `WHOSE ... IS ...` clause.
-```sql
-SCOOP EVERYTHING FROM users WHOSE role IS "admin"
-SCOOP EVERYTHING FROM products WHOSE category IS "electronics"
-```
-
-**Full-Text Search with MENTIONING:**
-Find documents where any field contains a specific substring anywhere in its body.
-```sql
-SCOOP EVERYTHING FROM articles MENTIONING "quantum computing"
-```
-
-**Retrieve a Specific Document:**
-```sql
-SCOOP users "alice"
-```
-
-**Limit Results:**
-```sql
-SCOOP EVERYTHING FROM users LIMIT 10
+FIND products
+FIND products WHERE price > 50 AND category = "Electronics"
+FIND products WHOSE category IS "Books" ARRANGED BY price GOING DOWN LIMIT 5
+FIND products MENTIONING "wireless headphones"
+FIND products MEANING "something warm for cold weather" LIMIT 3
+FIND THE TALLY OF users
+FIND THE HIGHEST 5 salary FROM employees
+FIND ONLY UNIQUE department FROM employees
+FIND THE TOTAL revenue FROM sales GROUPED BY region
+FIND THE FIRST 10 FROM logs
+FIND EVERYTHING FROM users SHOW name, email
 ```
 
 ---
 
-### CHANGE — Partial Update
+### 3. `CHANGE` / `UPDATE` — Partial Update Documents
 
-`CHANGE` performs a **partial update** (patch) on an existing document. It modifies only the specified field and leaves all other fields untouched.
-
-**Update a Single Field:**
 ```sql
-CHANGE users "alice" SET age TO 29
-CHANGE products "prod-001" SET price TO 1099
+CHANGE "<doc_id>" IN <bucket> TO <field> = <value>
+CHANGE <bucket> "<doc_id>" SET <field> TO <value>
+CHANGE <bucket> "<doc_id>" SET <field1> TO <val1>, <field2> TO <val2>
 ```
 
-**Set a Field to a JSON Object:**
-```sql
-CHANGE users "alice" SET address TO {"city": "New York", "zip": "10001"}
-```
-
----
-
-### DRAIN — Delete Documents
-
-`DRAIN` removes a document from the database.
-
-**Delete a Single Document:**
-```sql
-DRAIN FROM users "alice"
-```
-
----
-
-## ✨ Feature Deep Dives
-
----
-
-### Feature 1: Hardware-Efficient AI Semantic Search (`MEANING`)
-
-Most databases require you to set up a completely separate vector search service (like Pinecone or Weaviate) alongside your main database. CleaveDB eliminates this entirely.
-
-**How it works:**
-1. When the server starts, `attention/sra.py` (Semantic Relevance Attention) automatically downloads and caches the `all-MiniLM-L6-v2` model from HuggingFace (~22MB).
-2. The model is in ONNX quantized (Q8_0) format, executed by the `onnxruntime` `CPUExecutionProvider`.
-3. On AVX-512/AVX2 capable CPUs, `onnxruntime` transparently uses hardware SIMD vector instructions for the tensor math, the same way the Rust engine's `simd_ffi` module does.
-4. When a `MEANING` query arrives, the engine embeds the search phrase **once** (< 5ms), then computes the cosine similarity against document text content.
-5. Every returned document receives an `_embedding_distance` score from `0.0` to `1.0` indicating how semantically similar it is to the query. Results are automatically sorted highest-to-lowest.
-
-**Usage:**
-```sql
--- Insert products
-POUR INTO products RANDOM {"name": "Thick Wool Coat", "category": "Clothing"}
-POUR INTO products RANDOM {"name": "Summer Beach Towel", "category": "Accessories"}
-POUR INTO products RANDOM {"name": "Hiking Boots", "category": "Footwear"}
-
--- Semantic search — no keywords, no schema, just meaning
-SCOOP EVERYTHING FROM products MEANING "something warm for cold weather"
-```
-
-**Live Result:**
-```json
-{
-  "documents": [
-    { "gid": "products:8823...", "body": { "name": "Thick Wool Coat" }, "_embedding_distance": 0.375 },
-    { "gid": "products:fe28...", "body": { "name": "Summer Beach Towel" }, "_embedding_distance": 0.339 }
-  ],
-  "count": 2
-}
-```
-The Wool Coat correctly scores **higher** than the Beach Towel because the Transformer model understands the semantic relationship between "Coat", "Wool", and "cold weather" — without any explicit keyword overlap.
-
----
-
-### Feature 2: Self-Documenting Engine (`DESCRIBE`)
-
-You never need to leave your terminal to look up documentation. CleaveDB can describe itself.
-
-**Profile a Bucket (Pandas-style):**
-Instantly compute statistics about any bucket — document count, field coverage, data types.
-```sql
-DESCRIBE users
--- Result: "Bucket 'users' (4 docs). Stats computed successfully."
-```
-
-**Read the Built-in Tutorials:**
-Ask the database to explain any keyword or feature to you.
-```sql
-DESCRIBE MEANING
--- Result: "TUTORIAL: Semantic Search (MEANING)\nUse SCOOP EVERYTHING FROM bucket MEANING text"
-```
-
----
-
-### Feature 3: Nested Pipelines — Sub-Scoops & Sub-Pours
-
-SQL sub-queries are notoriously hard to read. CleaveDB uses parenthesized sub-scoops that evaluate inner-first, and the result of the inner query is directly injected into the outer statement's target field.
-
-**Dynamically Build a Nested Array from another Bucket:**
-The following query finds every user whose `role` is `"developer"` and injects the entire list directly into the `new_hires` field of the `devs` team — in a single atomic statement.
+**Sub-Scoop injection** — dynamically set a field from another query's result:
 ```sql
 CHANGE teams "devs" SET new_hires TO (SCOOP EVERYTHING FROM users WHOSE role IS "developer")
 ```
 
-The `teams:devs` document now looks like:
+If updating the `secret` field, CleaveDB automatically re-hashes the password in `_auth`.
+
+---
+
+### 4. `DRAIN` — Soft-Delete Documents
+
+Moves documents to the `_rubbish` bin (auto-purged after 3 days by the Cron Worker).
+
+```sql
+DRAIN <bucket> "<doc_id>"
+DRAIN <bucket> WHERE <predicates>
+DRAIN <bucket> BEFORE "<datetime>"
+```
+
+Cascading: if the drained document has bonds marked `ON DELETE CASCADE`, all bonded targets are also drained.
+
+---
+
+### 5. `SALVAGE` — Restore from Rubbish
+
+```sql
+SALVAGE "<doc_id>" FROM _rubbish
+SALVAGE EVERYTHING FROM _rubbish
+```
+
+---
+
+### 6. `INCINERATE` — Permanently Destroy
+
+```sql
+INCINERATE "<doc_id>" FROM _rubbish
+INCINERATE EVERYTHING FROM _rubbish
+```
+
+---
+
+### 7. `LINK` / `BOND` — 15-Dimensional Graph Relationships
+
+CleaveDB bonds are not just static pointers — they are richly configurable relationship objects with up to **15 behavioral dimensions**.
+
+```sql
+LINK "<source>" TO "<target>" AS "<label>"
+LINK "<source>" TO "<target>" AS MUTUAL "<label>"
+LINK "<source>" TO ANY("<t1>", "<t2>") AS "<label>"
+```
+
+#### All Bond Modifiers
+
+| Modifier | Syntax | Description |
+|---|---|---|
+| `MUTUAL` | `AS MUTUAL "<label>"` | Creates bidirectional bonds (both directions) |
+| `EXCLUSIVELY` | `EXCLUSIVELY` | Expires all prior active bonds with the same source + label |
+| `CASCADE` | `ON DELETE CASCADE` | Automatically deletes target when source is drained |
+| `CONFIDENCE` | `WITH CONFIDENCE <float>` | Probabilistic edge weight (0.0–1.0) |
+| `AFFINITY` | `WITH AFFINITY <float>` | Relationship strength weight (0.0–1.0) |
+| `EXPIRING IN` | `EXPIRING IN <n> HOURS/MINUTES` | Ephemeral time-bound bond with TTL |
+| `CONDITION` | `IF <subject> <field> IS <value>` | Conditional/dormant bond — only active when condition is true |
+| `THROUGH` | `THROUGH "<node>"` | Routes edge through an intermediate node |
+| `ANY` | `TO ANY("<id1>", "<id2>")` | Multi-target — creates bonds to multiple targets |
+
+Condition subjects: `source`, `target`, `their`, `its`, `his`, `her`, `my`
+
+**Examples:**
+```sql
+LINK "users:alice" TO "users:bob" AS MUTUAL "friend"
+LINK "users:alice" TO "session:s1" AS "active_session" EXPIRING IN 1 HOUR
+LINK "order:5521" TO "users:alice" ON DELETE CASCADE
+LINK "doc:1" TO "topic:ai" AS "tagged" WITH CONFIDENCE 0.94
+LINK "users:bob" TO "product:shoes" AS "interested" WITH AFFINITY 0.87
+LINK "users:alice" TO "project:x" AS "member" EXCLUSIVELY
+LINK "users:alice" TO "file:secret.pdf" AS "can_read" IF target clearance IS "public"
+```
+
+---
+
+### 8. `SEVER` / `UNLINK` — Destroy Graph Bonds
+
+```sql
+SEVER "<source>" FROM "<target>" AS "<label>"
+SEVER "<source>" FROM "<target>"
+```
+
+---
+
+### 9. `DROP SECURITY` — Remove Security Policies & Masks
+
+```sql
+DROP SECURITY "<name>" ON <bucket>
+```
+
+Removes both the named policy and any field mask matching that name on the bucket — from memory and from persistent storage.
+
+---
+
+### 10. Graph Traversal — Single-Hop & Multi-Hop
+
+**Direct lookup (1 hop):**
+```sql
+FIND "friend" OF "users:alice"
+```
+
+**Deep chain traversal (N hops):**
+```sql
+FIND THE friend OF THE friend OF users "alice"
+FIND THE manages OF THE manages OF THE manages OF org "ceo"
+```
+
+**Alternative chain syntax:**
+```sql
+TRACE "friend", "friend" FROM "users:alice"
+```
+
+**Bond metadata query:**
+```sql
+FIND RELATED "friend" FROM "users:alice"
+FIND CANDIDATE "can_read" OF "users:bob"
+```
+
+**Time-travel bonds:**
+```sql
+FIND "friend" OF "users:alice" AS OF yesterday
+FIND "friend" OF "users:alice" AS OF "1690000000"
+```
+
+---
+
+### 11. Data-Level Security (GBAC, RBAC & Masking)
+
+CleaveDB has a native policy engine supporting **Graph-Based Access Control (GBAC)**, **Role-Based Access Control (RBAC)**, and **Dynamic Field Masking** — all evaluated inside the interpreter before any data reaches the client.
+
+#### Security Policies
+```sql
+ENFORCE SECURITY "owner_only" ON "documents" TO ALLOW read IF bonded as "owner" to my user_id
+ENFORCE SECURITY "role_gate" ON "reports" TO ALLOW write IF my role = "admin"
+SHAPE POLICY "dept_filter" ON "employees" FOR READ USING department == @user_department
+```
+
+#### Field Masking
+```sql
+MASK "salary" ON "employees" IF my role != "admin"
+MASK "ssn" ON "patients" IF my role != "doctor"
+SHAPE MASK email ON users USING role != @role
+```
+Masked fields are **completely stripped** from the JSON response — never sent over the wire.
+
+#### Dynamic Removal
+```sql
+DROP SECURITY "owner_only" ON "documents"
+DROP SECURITY "salary" ON "employees"
+```
+
+#### Session Context
+```sql
+SET user = "alice"
+SET role = "admin"
+AUTHENTICATE AS "bob"
+```
+
+#### Security Condition Patterns
+| Pattern | Example | Description |
+|---|---|---|
+| **RBAC** | `IF my role = "admin"` | Checks session role against literal |
+| **GBAC** | `IF bonded as "owner" to my user_id` | Checks live graph bond between document and session user |
+| **Field Match** | `IF department == @user_department` | Compares document field to context variable |
+| **Context Match** | `IF @role != "viewer"` | Compares context variable to literal |
+
+---
+
+### 12. Memory Eviction Policies
+
+```sql
+ENFORCE POLICY ON <bucket> TO OVERWRITE CURRENT
+ENFORCE POLICY ON <bucket> TO REPLACE OLDEST UPDATES
+ENFORCE POLICY ON <bucket> TO REPLACE LEAST RECENTLY USED
+```
+
+The **LRU** policy tracks read/write timestamps per document and automatically evicts the least-recently-used document when a bucket reaches capacity (100 docs).
+
+---
+
+### 13. AI Semantic Search (`MEANING`)
+
+CleaveDB ships with a built-in neural Transformer for vector search — no external services required.
+
+**How it works:**
+1. On first use, `attention/sra.py` downloads and caches the quantized `all-MiniLM-L6-v2` ONNX model (~22MB).
+2. When a `MEANING` query arrives, the engine embeds the search phrase into a 384-dimensional vector (<5ms).
+3. Cosine similarity is computed against every document's text content.
+4. Results are ranked by `_embedding_distance` (0.0–1.0) and filtered at a 0.20 threshold.
+
+```sql
+FIND products MEANING "something warm for cold weather" LIMIT 3
+```
 ```json
 {
-  "team_name": "Engineers",
-  "new_hires": [
-    { "gid": "users:u2", "body": { "age": 65, "role": "developer" } }
+  "documents": [
+    { "gid": "products:david.coat", "body": {"name": "Thick Wool Coat"}, "_embedding_distance": 0.57 },
+    { "gid": "products:david.scarf", "body": {"name": "Winter Scarf"}, "_embedding_distance": 0.49 }
   ]
 }
 ```
+No keyword overlap needed — the Transformer understands semantic meaning.
 
-**Pour into a Nested Field Deep Inside an Existing Document:**
+---
+
+### 14. Time-Travel Queries (MVCC)
+
+Every document modification shadows a historical snapshot into `_history_<bucket>`.
+
 ```sql
-POUR {"tool": "CleaveDB"} INSIDE users "alice" AT path.to.skills
+FIND EVERYTHING FROM users AS OF yesterday
+FIND "friend" OF "users:alice" AS OF "1690000000"
+REWIND "users:alice" TO yesterday
 ```
 
 ---
 
-### Feature 4: Time-Travel Queries — MVCC (`AS OF YESTERDAY`)
+### 15. Background Cron Worker
 
-Every time a document is modified, CleaveDB shadows a copy of the previous state into a hidden bucket named `_history_<bucket>`. This gives you a native MVCC (Multi-Version Concurrency Control) ledger. You can rewind the database and query it as it existed in the past.
+CleaveDB runs a background `asyncio` coroutine that executes scheduled tasks — no external job scheduler needed.
 
-**Workflow:**
 ```sql
--- Original state: Alice is 28
-POUR INTO users "alice" {"name": "Alice", "age": 28}
-
--- Some time later, update the record
-CHANGE users "alice" SET age TO 99
-
--- Now travel back to see the historical snapshot
-SCOOP EVERYTHING FROM users AS OF YESTERDAY
-```
-
-The time-travel query reads from `_history_users` and returns the documents as they existed before the most recent changes.
-
----
-
-### Feature 5: Deep Graph Traversal (Easy English)
-
-NoSQL databases typically require your application code to manually loop over related documents across multiple queries. CleaveDB resolves entire relationship chains natively in a single query.
-
-**Step 1: Bond Your Documents:**
-```sql
-POUR INTO users "alice" {"name": "Alice"}
-POUR INTO users "bob" {"name": "Bob"}
-POUR INTO users "charlie" {"name": "Charlie"}
-
--- Alice is friends with Bob
-BOND "users:alice" TO "users:bob" AS "friend"
--- Bob is friends with Charlie  
-BOND "users:bob" TO "users:charlie" AS "friend"
-```
-
-**Step 2: Traverse at Depth 1 (Direct Friends):**
-```sql
-SCOOP THE friend OF users "alice"
--- Returns: Bob
-```
-
-**Step 3: Traverse at Depth 2 (Friends of Friends):**
-Simply chain the English naturally. The engine recursively evaluates each hop.
-```sql
-SCOOP THE friend OF THE friend OF users "alice"
--- Returns: Charlie (and Alice, because the MUTUAL bond makes Bob→Alice reciprocal)
-```
-
-**You can chain as deep as your graph needs:**
-```sql
-SCOOP THE manages OF THE manages OF THE manages OF org "ceo"
-```
-
-**Retrieve All Bonds by Label (Legacy syntax still supported):**
-```sql
-SCOOP RELATED "friend" FROM "users:alice"
-```
-
----
-
-### Feature 6: 15-Dimensional Graph Bonds
-
-A `BOND` in CleaveDB is not just a static pointer. It is a richly configurable relationship object with up to 15 behavioral dimensions enforced natively by the engine.
-
-**Basic Labeled Bond:**
-```sql
-BOND "users:alice" TO "users:bob" AS "friend"
-```
-
-**Mutual / Bidirectional Bond:**
-Traversal works in **both** directions automatically.
-```sql
-BOND "users:alice" TO "users:bob" AS MUTUAL "friend"
-```
-
-**Time-Bound / Ephemeral Bond:**
-The bond automatically expires and is no longer traversable after the time elapses.
-```sql
-BOND "users:alice" TO "session:s1" AS "active_session" EXPIRING IN 1 HOUR
-BOND "users:alice" TO "promo:summer" AS "eligible" EXPIRING IN 30 DAYS
-```
-
-**Cascading Constraint:**
-When the source document is deleted, the engine will automatically cascade and remove all linked targets.
-```sql
-BOND "order:5521" TO "users:alice" ON DELETE CASCADE
-```
-
-**Probabilistic Bond:**
-Attach a confidence or affinity score to the relationship. Useful for recommendation engines and knowledge graphs.
-```sql
-BOND "document:1" TO "topic:ai"      AS "tagged"     WITH CONFIDENCE 0.94
-BOND "users:bob"  TO "product:shoes" AS "interested" WITH AFFINITY 0.87
-```
-
-**All bond metadata is stored inside the hidden `_bonds` bucket in the B+Tree**, making the full relationship graph queryable and inspectable at any time.
-
----
-
-### Feature 7: Conversational Analytics
-
-CleaveDB translates human-readable aggregation phrases directly into internal map-reduce pipelines — no SQL `GROUP BY`, `COUNT(*)`, or `SUM()` required.
-
-**Count Total Documents in a Bucket (TALLY):**
-```sql
-SCOOP THE TALLY OF users
--- Returns: { "mode": "TALLY", "count": 4, "documents": [...all docs...] }
-```
-
-**Get Distinct Values for a Field (UNIQUE):**
-Equivalent to SQL `SELECT DISTINCT`. Returns only one representative document per unique value.
-```sql
-SCOOP ONLY UNIQUE department FROM employees
--- Returns: Engineering, Sales (deduplicated)
-```
-
-**Sum a Numeric Field Grouped by Another Field (TOTAL ... GROUPED BY):**
-Equivalent to SQL `SELECT department, SUM(salary) GROUP BY department`.
-```sql
-SCOOP THE TOTAL salary FROM employees GROUPED BY department
--- Returns:
--- { "department": "Engineering", "salary": 80000 }
--- { "department": "Sales",       "salary": 110000 }
-```
-
-**Retrieve the Top N Documents by a Field (HIGHEST):**
-```sql
-SCOOP THE HIGHEST 5 salary FROM employees
--- Returns top 5 employees sorted by salary descending
-```
-
-**Retrieve the Bottom N Documents by a Field (LOWEST):**
-```sql
-SCOOP THE LOWEST 3 score FROM leaderboards
--- Returns bottom 3 entries sorted by score ascending
-```
-
----
-
-### Feature 8: Easy English Sorting
-
-Forget `ORDER BY field ASC/DESC`. CleaveDB uses the most natural way to express order.
-
-**Ascending (Lowest First):**
-```sql
-SCOOP EVERYTHING FROM leaderboards ARRANGED BY score GOING UP
--- Bob(12) → John(45) → Alice(88)
-```
-
-**Descending (Highest First):**
-```sql
-SCOOP EVERYTHING FROM leaderboards ARRANGED BY score GOING DOWN
--- Alice(88) → John(45) → Bob(12)
-```
-
-Sorting can be combined with filtering:
-```sql
-SCOOP EVERYTHING FROM employees WHOSE department IS "Sales" ARRANGED BY salary GOING DOWN
-```
-
----
-
-### Feature 9: Native Background Cron Workers (`EVERY ... DO`)
-
-CleaveDB eliminates the need for external job schedulers (like `cron`, Celery, or Airflow) for database-level recurring tasks. Scheduled tasks are saved directly into the hidden `_cron` bucket inside the B+Tree and executed by a real `asyncio` background coroutine running inside `cleavedb_server.py`.
-
-**Schedule a Recurring Task:**
-```sql
--- Run a count every 5 seconds
 EVERY 5 SECONDS DO (SCOOP THE TALLY OF users)
-
--- Hourly data maintenance
-EVERY 1 HOUR DO (SCOOP EVERYTHING FROM sessions WHOSE expired IS true)
+EVERY 1 HOUR DO (DRAIN sessions WHERE expired = true)
+EVERY DAY AT MIDNIGHT DO (INCINERATE EVERYTHING FROM _rubbish)
 ```
 
-**How it works:**
-1. The statement saves a job record to `_cron` with an `interval`, `last_run`, and `command` string.
-2. The `cron_worker()` coroutine inside `cleavedb_server.py` wakes up every second.
-3. It scans `_cron`, calculates `current_time - last_run >= interval`, and if true, parses and executes the stored CleaveQL command through the full Lexer → Parser → Interpreter pipeline as the `admin` user.
-4. `last_run` is updated immediately before execution to prevent duplicate runs.
+The Cron Worker also **auto-purges** documents in `_rubbish` older than 3 days.
 
-Each job is assigned a unique `job_id` returned in the response:
-```json
-{
-  "status": "ok",
-  "message": "Scheduled task added to background worker. Will execute every 5 seconds.",
-  "job_id": "2b04d1d2"
-}
+---
+
+### 16. Bucket Configuration (`SHAPE`)
+
+```sql
+SHAPE BUCKET logs COMPRESSION lz4 TTL 86400 MAX DOCUMENTS 10000 VERSIONED
+SHAPE PROJECTION active_users FROM users WHERE status = "active"
+SHAPE FLOW FROM orders TO archive WHEN status = "completed" ACTION MOVE
 ```
 
 ---
 
-### Feature 10: Row Level Security & Field Masking
+### 17. Indexes
 
-CleaveDB has a native policy engine (`cleaveql/security.py`) that enforces row-level access control and field-level data masking directly inside the interpreter — before any data is returned to the client.
-
-**Set the Current User Context:**
 ```sql
-SET CONTEXT user = "alice"
-SET CONTEXT role = "admin"
+INDEX users ON (role, department)
 ```
-
-**Declare a Row-Level Security Policy:**
-A policy evaluates a condition against each document and the current context. Only documents where the condition is `true` are returned.
-```sql
--- Users can only see their own data
-POLICY ON users FOR READ WHERE owner == @user
-```
-
-**Declare a Field Mask:**
-Redact a sensitive field from any user who doesn't match a condition.
-```sql
--- Mask the salary field for all non-admin users
-MASK salary ON employees WHERE @role != "admin"
-```
-A masked field is returned as `"***MASKED***"` — the data is never sent over the wire to unauthorized clients.
+Creates a compound B+Tree secondary index for O(log N) lookups.
 
 ---
 
-### Feature 11: SHOW & HEAL (Index Management)
+### 18. Diagnostics & Metadata
 
-**Show Bucket Metadata:**
 ```sql
-SHOW users
--- Returns bucket statistics from the B+Tree engine
-```
-
-**Declare an Index:**
-```sql
-INDEX users ON role
-```
-
-**Repair / Rebuild an Index:**
-```sql
-HEAL users
--- Triggers the engine's heal() method to rebuild corrupted or stale indexes
+SHOW BUCKETS                    -- List all active buckets
+SHOW BONDS                      -- List all graph bonds
+SHOW INDEXES                    -- List all indexes
+SHOW STATS                      -- Engine statistics
+DESCRIBE users                  -- Bucket document count and field stats
+DESCRIBE MEANING                -- Built-in tutorial for semantic search
+HEAL ALL                        -- Rebuild all indexes and bonds
+HEAL BONDS                      -- Repair bond graph structure
+HEAL INDEXES                    -- Rebuild secondary indexes
+PEER INTO (FIND products)       -- Print internal execution plan
+PEER INTO ATTENTION             -- Inspect attention mechanism stats
+SUGGEST BONDS                   -- AI-suggested missing relationships
 ```
 
 ---
 
-## 🔧 TCP Server Reference
+### 19. Aggregation Pipeline (`DISTILL`)
 
-The server is started with:
+```sql
+DISTILL FROM employees TOTAL OF salary
+DISTILL FROM scores AVERAGE OF points
+DISTILL FROM products MIN OF price
+DISTILL FROM products MAX OF price
+DISTILL FROM metrics SPREAD OF latency
+```
+
+Supported functions: `TOTAL`, `AVERAGE`, `MIN`, `MAX`, `SPREAD`
+
+---
+
+### 20. Graph Traversal (`FOLLOW`)
+
+Legacy graph API with full traversal control:
+
+```sql
+FOLLOW "users:alice" THROUGH "friend" DIRECTION BOTH DEPTH 3 LIMIT 10
+FOLLOW "users:alice" DIRECTION OUT DEPTH 1
+```
+
+| Modifier | Description |
+|---|---|
+| `THROUGH <bond>` | Traverse only bonds with this label |
+| `DIRECTION OUT/IN/BOTH` | Edge traversal direction |
+| `DEPTH <n>` | Maximum hop depth |
+| `LIMIT <n>` | Maximum returned documents |
+
+---
+
+## 📊 Complete Language Alias Table
+
+CleaveQL provides natural-language aliases so you can write queries the way you think:
+
+| Alias | Canonical | Context |
+|---|---|---|
+| `FIND` | `SCOOP` | Query verb |
+| `TRACE` | `SCOOP CHAIN` | Multi-hop traversal |
+| `COUNT` | `SCOOP TALLY` | Document counting |
+| `UPDATE` | `CHANGE` | Partial mutation |
+| `LINK` | `BOND` | Create relationship |
+| `UNLINK` | `SEVER` | Destroy relationship |
+| `SORTED BY` | `ARRANGED BY` | Result ordering |
+| `ORDER BY` | `ARRANGED BY` | Result ordering |
+| `ASC` | `GOING UP` | Sort direction |
+| `DESC` | `GOING DOWN` | Sort direction |
+| `WITH <fields>` | `INCLUDE <fields>` | Eager joins |
+| `SHOW <fields>` | `YIELD <fields>` | Field projection |
+| `IF` | `ONLY WHEN` | Bond conditions |
+
+---
+
+## 🔧 TCP Server & Wire Protocol
+
 ```bash
-python cleavedb_server.py
+python cleavedb_server.py          # Starts on 127.0.0.1:8300
+python cleave_cli.py -H 127.0.0.1 -p 8300
 ```
 
-It runs on `localhost:5001` by default. Every client connection goes through the following lifecycle:
-
-1. **Authentication Phase:** The client must send a `register` or `login` JSON action. The server will not process any queries until the client is authenticated.
-2. **Query Phase:** After successful login, the client sends raw CleaveQL query strings (one per line). Each query is parsed, planned, and executed. The result is returned as a JSON array.
-3. **Disconnection:** When the TCP stream closes, the session ends. The Cron Worker continues running independently in the background.
+### Client Lifecycle
+1. **Authentication Phase** → `register` / `login` / `forgot`
+2. **Query Phase** → Raw CleaveQL strings, one per line
+3. **Disconnection** → `logout` closes session; `exit` terminates CLI
 
 ### Wire Protocol
-All messages are newline-delimited JSON (`\n`).
+All messages are newline-delimited. Request: raw CleaveQL string + `\n`. Response: JSON array.
 
-**Request:** A raw CleaveQL string, e.g.:
 ```
-SCOOP EVERYTHING FROM users\n
+→  FIND THE TALLY OF users\n
+←  [{"status": "ok", "mode": "TALLY", "count": 42}]
 ```
 
-**Response:** A JSON array:
-```json
-[{"status": "ok", "mode": "EVERYTHING", "documents": [...], "count": 4}]
-```
+### CLI Built-in Commands
+| Command | Description |
+|---|---|
+| `help` / `?` | Print the complete CleaveQL manual |
+| `logout` | Close session, return to login screen |
+| `cls` / `clear` | Clear terminal screen |
+| `exit` / `quit` | Close connection and exit |
 
 ---
 
@@ -581,7 +584,7 @@ SCOOP EVERYTHING FROM users\n
 
 ```
 dsc/
-├── storage/                  # Rust storage engine (maturin)
+├── storage/                  # Rust storage engine (maturin + PyO3)
 │   └── src/
 │       ├── lib.rs            # Module root & public exports
 │       ├── page.rs           # 16KB page with CRC32 checksum
@@ -591,22 +594,84 @@ dsc/
 │       ├── bloom.rs          # Bloom filter
 │       ├── crypto.rs         # AES-256-GCM at-rest encryption
 │       ├── simd_ffi.rs       # AVX-512/AVX2 C++ FFI bindings
+│       ├── coordinator_ffi.rs# Go coordinator FFI bindings
+│       ├── engine/           # Database, ShardManager, InvertedIndex
+│       │   ├── operations.rs # put/get/delete with bond enforcement
+│       │   └── volcano.rs    # Volcano-model query executor
 │       └── python.rs         # PyO3 Python bindings
 │
-├── cleaveql/                 # Python query language frontend
-│   ├── lexer.py              # Tokenizer
+├── cleaveql/                 # CleaveQL query language frontend
+│   ├── lexer.py              # Tokenizer (170 token types)
 │   ├── tokens.py             # Token type enum
-│   ├── parser.py             # Recursive descent parser → AST
+│   ├── parser.py             # Recursive descent parser → 34 AST nodes
 │   ├── ast.py                # AST node definitions
-│   ├── interpreter.py        # AST executor against Rust engine
-│   ├── security.py           # Row-level security & field masking
+│   ├── interpreter.py        # AST executor with RLS & auto-namespacing
+│   ├── security.py           # GBAC + RBAC + Field Masking policy engine
+│   ├── cost_model.py         # Query cost estimation
 │   └── repl.py               # Interactive REPL
 │
 ├── attention/                # AI Transformer attention modules
 │   ├── sra.py                # Semantic Relevance Attention (ONNX Q8_0)
-│   └── __init__.py
+│   └── __init__.py           # QUA, SRA, BDA, AQP layer registry
 │
-├── cleavedb_server.py        # TCP server, auth shell, cron worker
-├── cleave_cli.py             # Command-line client
-└── build.py                  # Build script
+├── coordinator/              # Go distributed coordinator
+│   └── src/
+│       ├── main.go           # ScatterGather, FreeCString, BackgroundWorkers
+│       └── merge.go          # K-Way merge via min-heap O(N log K)
+│
+├── simd/                     # C++ SIMD vector extensions
+│   └── src/
+│       ├── math_ops.cpp      # dot_product (AVX-512 4× unrolled FMA, AVX2, scalar)
+│       ├── activations.cpp   # GELU, sigmoid, softmax
+│       ├── matmul.cpp        # Matrix multiplication
+│       ├── bloom.cpp         # SIMD-accelerated Bloom filter
+│       └── attention.cpp     # Attention score computation
+│
+├── benchmarks/               # Performance benchmark suite
+│   └── run.py
+│
+├── cleavedb_server.py        # TCP server, auth shell, cron worker, multi-tenant RLS
+├── cleave_cli.py             # Command-line client with colored prompts
+├── build.py                  # Multi-language build orchestrator
+└── README.md
+```
+
+---
+
+## 📋 Quick Reference Card
+
+```
+┌─────────────────────── MUTATIONS ────────────────────────┐
+│ POUR INTO bucket "id" {json}                             │
+│ POUR INTO bucket "id" {json} WITH SECRET "pw"            │
+│ POUR MANY INTO bucket [{...}, {...}]                     │
+│ CHANGE bucket "id" SET field TO value                    │
+│ DRAIN bucket "id"                                        │
+│ SALVAGE "id" FROM _rubbish                               │
+│ INCINERATE "id" FROM _rubbish                            │
+├─────────────────────── QUERIES ──────────────────────────┤
+│ FIND bucket [WHERE/WHOSE/MENTIONING/MEANING] [LIMIT n]  │
+│ FIND THE TALLY OF bucket                                 │
+│ FIND THE HIGHEST n field FROM bucket                     │
+│ FIND THE LOWEST n field FROM bucket                      │
+│ FIND ONLY UNIQUE field FROM bucket                       │
+│ FIND THE TOTAL field FROM bucket GROUPED BY field        │
+│ FIND EVERYTHING FROM bucket ARRANGED BY field GOING DOWN │
+├─────────────────────── GRAPH ────────────────────────────┤
+│ LINK "src" TO "tgt" AS [MUTUAL] "label" [modifiers]     │
+│ SEVER "src" FROM "tgt" AS "label"                        │
+│ FIND "label" OF "source_id"                              │
+│ FIND THE rel1 OF THE rel2 OF bucket "id"                 │
+├─────────────────────── SECURITY ─────────────────────────┤
+│ ENFORCE SECURITY "name" ON "bucket" TO ALLOW r/w IF cond │
+│ MASK "field" ON "bucket" IF condition                    │
+│ DROP SECURITY "name" ON "bucket"                         │
+├─────────────────────── INFRA ────────────────────────────┤
+│ EVERY n SECONDS DO (command)                             │
+│ SHAPE BUCKET name [COMPRESSION/TTL/MAX/VERSIONED]        │
+│ INDEX bucket ON (field1, field2)                          │
+│ SHOW BUCKETS / BONDS / INDEXES / STATS                   │
+│ DESCRIBE bucket                                          │
+│ HEAL ALL / BONDS / INDEXES                               │
+└──────────────────────────────────────────────────────────┘
 ```

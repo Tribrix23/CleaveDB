@@ -6,7 +6,7 @@ from .interpreter import Interpreter
 from .formatter import Formatter
 
 def start_repl(engine=None):
-    print("CleaveDB 3.0 REPL")
+    print("CleaveDB 3.5 REPL")
     print("Type 'exit' or 'quit' to leave. Type 'help' for commands.\n")
     
     analyzer = SemanticAnalyzer()
@@ -62,46 +62,21 @@ def start_repl(engine=None):
 
 def print_help():
     help_text = """================================================================================
-  CleaveDB 3.0 Manual (CleaveQL) - Complete Comprehensive Reference
+  CleaveDB 3.5 Manual (CleaveQL) - Complete Reference
 ================================================================================
 
-1. WRITE & UPDATE (Mutations)
-  POUR INTO <bucket> "<id>" {json}           - Insert/upsert document.
-  POUR MANY INTO <bucket> [{json}, {json}]   - Bulk insert documents.
-  CHANGE <id> IN <bucket> TO <field> = <val> - Update specific fields.
-  DRAIN <bucket> "<id>"                      - Move document to _rubbish bin.
-  DRAIN <bucket> BEFORE "<date>"             - Bulk move old documents to _rubbish.
-  SALVAGE "<id>" FROM _rubbish               - Restore specific document from rubbish.
-  SALVAGE EVERYTHING FROM _rubbish           - Restore all documents.
-  INCINERATE "<id>" FROM _rubbish            - Permanently delete document.
-  INCINERATE EVERYTHING FROM _rubbish        - Empty the trash bin.
+ MUTATIONS: POUR INTO, POUR MANY, CHANGE, DRAIN, SALVAGE, INCINERATE
+ QUERIES:   FIND (10 modes: EVERYTHING, FIRST, LAST, TALLY, HIGHEST,
+            LOWEST, UNIQUE, TOTAL, RELATED, CHAIN)
+ MODIFIERS: WHERE, WHOSE, MENTIONING, MEANING, MATCHING, WITH/INCLUDE,
+            SHOW/YIELD, ARRANGED BY, LIMIT, GROUPED BY, AS OF, CANDIDATE
+ GRAPH:     LINK/BOND (MUTUAL, CASCADE, EXCLUSIVELY, CONFIDENCE, AFFINITY,
+            EXPIRING IN, CONDITION, THROUGH, ANY), SEVER/UNLINK, FOLLOW
+ SECURITY:  ENFORCE SECURITY, MASK, DROP SECURITY, SET, AUTHENTICATE AS
+ ANALYTICS: TALLY, HIGHEST, LOWEST, UNIQUE, TOTAL, DISTILL
+ INFRA:     SHAPE BUCKET/PROJECTION/FLOW, INDEX, EVERY...DO
+ DIAG:      SHOW BUCKETS/BONDS/INDEXES/STATS, DESCRIBE, HEAL, PEER, SUGGEST
 
-2. READ & SEARCH (SCOOP Engine)
-  FIND <bucket>                           - (Alias: SCOOP EVERYTHING FROM <bucket>)
-  FIND <bucket> [Modifiers...]            - Native English document querying.
-  
-  [Modifiers - chainable in any order]
-  ... WHERE <field> <op> <value>          - Evaluate expressions (<, >, =, AND, OR).
-  ... WHOSE <field> IS <value>            - Exact field match filter.
-  ... WITH <field1>, <field2>             - Native Joins (Alias: INCLUDE).
-  ... SORTED BY <field> [DESC|ASC]        - Sort results (Alias: ARRANGED BY).
-  ... LIMIT <n>                           - Restrict number of results.
-  ... SHOW <field1>, <field2>             - Return specific fields (Alias: YIELD).
-  ... MEANING "<text>"                    - AI Vector Semantic Search.
-  ... MENTIONING "<text>"                 - Full Text Search.
-
-3. GRAPH RELATIONS & TRAVERSAL (15D BONDS)
-  BOND "<source_id>" TO "<target_id>" AS "<label>" - Create a directional relationship.
-  FIND "<label>" OF "<source_id>"                  - Query direct relationships.
-  TRACE "<label>" FROM "<source_id>"               - Traverse deep nested links.
-
-4. AUTOMATION & TIME TRAVEL
-  TIME TRAVEL <bucket> AS OF "<date>"     - Read historical state.
-  SET CRON "<schedule>" DO <command>      - Register scheduled background tasks.
-  SHOW CRON                               - List running background jobs.
-
-5. ANALYTICS & AGGREGATION
-  SCOOP THE TALLY OF <bucket>             - Total document count.
-  SCOOP ONLY UNIQUE <field> FROM <bucket> - Returns distinct field values.
-================================================================================"""
+ Type 'help' in the CLI shell for the full detailed manual.
+================================================================================""" 
     print(help_text)

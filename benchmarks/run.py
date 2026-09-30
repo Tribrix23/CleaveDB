@@ -29,7 +29,7 @@ def print_report(name, latencies_us):
 
 def run_benchmarks():
     print("=" * 60)
-    print("CleaveDB 3.0 Benchmark Suite")
+    print("CleaveDB 3.5 Benchmark Suite")
     print("=" * 60)
 
     print("\n[1] Workload Generation")
