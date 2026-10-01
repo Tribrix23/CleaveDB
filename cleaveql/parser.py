@@ -802,8 +802,10 @@ class Parser:
             op = ">"
         elif self.match(TokenType.LT):
             op = "<"
-        elif self.match(TokenType.EQ):
+        elif self.match(TokenType.EQ, TokenType.IS):
             op = "="
+            if self.match(TokenType.NOT):
+                op = "!="
         else:
             raise self.error(self.peek(), "Expected comparison operator.")
         value = self.consume_value("Expected value in predicate.")

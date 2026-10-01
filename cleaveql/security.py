@@ -25,14 +25,14 @@ class PolicyEngine:
         import re
         
         # DSL Role Traversal: "my role = "admin""
-        role_match = re.search(r'my role\s*(!=|==|=)\s*"?([a-zA-Z0-9_]+)"?', expr_str, re.IGNORECASE)
+        role_match = re.search(r'my role\s*(is not|is|!=|==|=)\s*"?([a-zA-Z0-9_]+)"?', expr_str, re.IGNORECASE)
         if role_match:
             op = role_match.group(1)
             target_role = role_match.group(2)
             user_role = context.get("role", "viewer")
-            if op in ("=", "=="):
+            if op.lower() in ("=", "==", "is"):
                 return user_role == target_role
-            elif op == "!=":
+            elif op.lower() in ("!=", "is not"):
                 return user_role != target_role
                 
         # DSL Bond Traversal: "bonded as \"owner\" to my user_id"
@@ -56,7 +56,7 @@ class PolicyEngine:
                         if b.get("target") == user_id and b.get("source") == doc_id: return True
             return False
             
-        m1 = re.match(r'^([a-zA-Z_]+)(==|!=)@([a-zA-Z_]+)$', "".join([t.lexeme for t in condition_tokens]))
+        m1 = re.match(r'^([a-zA-Z_]+)(==|!=|isnot|is)@([a-zA-Z_]+)$', "".join([t.lexeme for t in condition_tokens]).lower())
         if m1:
             field = m1.group(1)
             op = m1.group(2)
@@ -64,17 +64,17 @@ class PolicyEngine:
             body = document.get("body", document)
             val1 = body.get(field)
             val2 = context.get(ctx_key)
-            if op == '==': return val1 == val2
-            if op == '!=': return val1 != val2
+            if op in ('==', 'is'): return str(val1).lower() == str(val2).lower()
+            if op in ('!=', 'isnot'): return str(val1).lower() != str(val2).lower()
             
-        m2 = re.match(r'^@([a-zA-Z_]+)(==|!=)"?([a-zA-Z0-9_]+)"?$', "".join([t.lexeme for t in condition_tokens]))
+        m2 = re.match(r'^@([a-zA-Z_]+)(==|!=|isnot|is)"?([a-zA-Z0-9_]+)"?$', "".join([t.lexeme for t in condition_tokens]).lower())
         if m2:
             ctx_key = m2.group(1)
             op = m2.group(2)
             val1 = context.get(ctx_key)
             val2 = m2.group(3)
-            if op == '==': return val1 == val2
-            if op == '!=': return val1 != val2
+            if op in ('==', 'is'): return str(val1).lower() == str(val2).lower()
+            if op in ('!=', 'isnot'): return str(val1).lower() != str(val2).lower()
             
         return False
 

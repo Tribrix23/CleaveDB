@@ -22,6 +22,41 @@
 
 #
 
+## ?? Installation & Build Instructions
+
+CleaveDB is built for extreme performance using hardware-accelerated memory access and vector search, so it compiles a core engine out of **Rust** and **C++ SIMD**. 
+
+### 1. Prerequisites
+You will need:
+- **Python 3.10+**
+- **Rust Toolchain** (Install via `rustup` from [rustup.rs](https://rustup.rs/) - takes ~1 minute)
+- *(Optional)* **Go** (Only needed if compiling the distributed cluster coordinator logic)
+
+### 2. Install Python Dependencies
+```bash
+pip install -r requirements.txt
+```
+*(This installs everything from `websockets` and `numpy` for the AI semantic search, up to `maturin`, which is the Rust-to-Python compiler tool).*
+
+### 3. Run the Master Build Script
+CleaveDB comes with a master `build.py` orchestrator script. Simply run:
+```bash
+python build.py
+```
+
+**What `build.py` automatically does in the background:**
+1. Compiles the **C++ SIMD** layers.
+2. Compiles the optional **Go Coordinator** into a shared library.
+3. Compiles the **Rust Sled Storage Engine**.
+4. Uses `maturin` to bind the Rust engine into a Python module (`cleavedb3_storage`) and installs it to your local environment.
+
+Once it prints `Build complete! CleaveDB 3.5 is ready.`, you can immediately start the server with:
+```bash
+python cleavedb_server.py
+```
+
+#
+
 ## 🚀 Quick Start: Connecting to CleaveDB
 
 CleaveDB operates over a **TCP Protocol (port 8300)** and a **WebSocket Protocol (port 8301)**. All client connections must authenticate with a valid username and password before executing CleaveQL queries.
@@ -112,9 +147,18 @@ ws.on('message', function incoming(data) {
 });
 ```
 
-### CLI / Terminal (`wscat`)
+### CLI / Terminal (HTTP & WebSockets)
 
-Since CleaveDB runs exclusively over WebSockets for real-time Pub/Sub, standard HTTP `curl` won't work out of the box. Instead, use a websocket tool like `wscat`:
+CleaveDB operates over **both** HTTP (port `8302`) and WebSockets (port `8301`).
+
+For standard REST and raw CleaveQL via HTTP, you can use `curl`:
+```bash
+curl -X POST http://127.0.0.1:8302/api/v1/query \
+  -H "Authorization: Basic ZGF2aWQ6cGVyZXo=" \
+  -d "FIND THE TALLY OF users"
+```
+
+For real-time Pub/Sub subscriptions (like `LISTEN TO users`), use a websocket tool like `wscat`:
 
 ```bash
 # Install wscat
@@ -505,7 +549,7 @@ SHAPE POLICY "dept_filter" ON "employees" FOR READ USING department == @user_dep
 <div align="center"><img src="assets/demo_mask.svg" width="800"/></div>
 
 ```sql
-MASK "salary" ON "employees" IF my role != "admin"
+MASK "salary" ON "employees" IF my role IS NOT "admin"
 MASK "ssn" ON "patients" IF my role != "doctor"
 SHAPE MASK email ON users USING role != @role
 ```
@@ -711,6 +755,32 @@ Execute background CleaveQL queries automatically in response to database mutati
 
 ```sql
 ON POUR INTO purchases RUN 'POUR INTO audit "$gid" {"action": "item_purchased", "item": "$item"}'
+```
+
+
+### Phase 2: Native HTTP REST API (`http://localhost:8302/api/v1`)
+CleaveDB now supports zero-dependency REST requests alongside TCP and WebSockets. You can run raw CleaveQL queries via HTTP POST, or use standard RESTful routing. Authentication is handled via Basic Auth (`username:password`).
+
+**1. Raw CleaveQL via HTTP:**
+```bash
+curl -X POST http://127.0.0.1:8302/api/v1/query \
+  -H "Authorization: Basic ZGF2aWQ6cGVyZXo=" \
+  -d "FIND THE TALLY OF users"
+```
+
+**2. Standard RESTful CRUD Operations:**
+- **GET** `/api/v1/users` -> `FIND users`
+- **GET** `/api/v1/users/alice` -> `FIND users "alice"`
+- **POST** `/api/v1/users` -> `POUR INTO users RANDOM {body}`
+- **PUT** `/api/v1/users/alice` -> `POUR INTO users "alice" {body}`
+- **PATCH** `/api/v1/users/alice` -> `CHANGE users "alice" SET {body}`
+- **DELETE** `/api/v1/users/alice` -> `DRAIN users "alice"`
+
+Example POST:
+```bash
+curl -X POST http://127.0.0.1:8302/api/v1/users \
+  -H "Authorization: Basic ZGF2aWQ6cGVyZXo=" \
+  -d '{"name": "API User", "age": 25}'
 ```
 
 ## ⚔️ Complete Language Alias Table

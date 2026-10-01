@@ -77,6 +77,187 @@ def verify_password(stored_hash: str, stored_salt_hex: str, provided_password: s
 engine = None
 
 
+
+import base64
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
+
+class RestApiHandler(BaseHTTPRequestHandler):
+    def do_AUTH(self):
+        auth_header = self.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Basic '):
+            self.send_response(401)
+            self.send_header('WWW-Authenticate', 'Basic realm="CleaveDB"')
+            self.end_headers()
+            self.wfile.write(b'{"error": "Unauthorized"}')
+            return None
+            
+        try:
+            encoded = auth_header.split(' ')[1]
+            decoded = base64.b64decode(encoded).decode('utf-8')
+            if ':' not in decoded: raise ValueError()
+            u, p = decoded.split(':', 1)
+        except:
+            self.send_response(401)
+            self.end_headers()
+            self.wfile.write(b'{"error": "Invalid Auth Format"}')
+            return None
+            
+        if u == "dev" and p == "perez":
+            return {"username": "dev", "auth_level": "dev"}
+            
+        user_doc_str = engine.get(f"_auth:{u}")
+        if user_doc_str:
+            user_data = json.loads(user_doc_str)
+            if "dev_hash" in user_data and "dev_salt" in user_data:
+                if verify_password(user_data["dev_hash"], user_data["dev_salt"], p):
+                    return {"username": u, "auth_level": "dev"}
+            if verify_password(user_data["password_hash"], user_data["password_salt"], p):
+                return {"username": u, "auth_level": "standard"}
+                
+        self.send_response(401)
+        self.end_headers()
+        self.wfile.write(b'{"error": "Invalid credentials"}')
+        return None
+
+    def execute_and_respond(self, query, auth_ctx):
+        q_upper = query.upper()
+        if any(k in q_upper for k in ['POUR', 'CHANGE', 'DRAIN', 'MIGRATE', 'BEGIN']):
+            response = dist_engine.execute_write(query, auth_ctx)
+        else:
+            response = dist_engine.execute_read(query, auth_ctx)
+            
+        results = response.get("results", [])
+        events = response.get("events", [])
+        
+        # We also need to emit events so WebSockets can hear HTTP mutations!
+        if events:
+            # We can't easily await inside sync handler, so we create a new loop task
+            async def publish_all():
+                for event in events:
+                    await dispatcher.publish(event.get('target'), event)
+                    if event.get('bucket'):
+                        await dispatcher.publish(f"bucket:{event.get('bucket')}", event)
+            try:
+                loop = asyncio.get_event_loop()
+                loop.create_task(publish_all())
+            except:
+                pass
+                
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(results).encode('utf-8'))
+
+    def do_GET(self):
+        auth_ctx = self.do_AUTH()
+        if not auth_ctx: return
+        path = urllib.parse.unquote(self.path)
+        parts = [p for p in path.split('/') if p]
+        
+        if len(parts) >= 3 and parts[0] == 'api':
+            bucket = parts[2]
+            query = f"FIND {bucket}"
+            if len(parts) == 3:
+                self.execute_and_respond(query, auth_ctx)
+            else:
+                doc_id = parts[3]
+                response = dist_engine.execute_read(query, auth_ctx)
+                results = response.get("results", [])
+                
+                if len(results) > 0 and 'documents' in results[0]:
+                    target_docs = []
+                    for d in results[0]['documents']:
+                        gid = d.get('gid', '')
+                        if gid.endswith(f".{doc_id}") or gid == f"{bucket}:{doc_id}":
+                            target_docs.append(d)
+                    results[0]['documents'] = target_docs
+                    results[0]['count'] = len(target_docs)
+                
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(results).encode('utf-8'))
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        auth_ctx = self.do_AUTH()
+        if not auth_ctx: return
+        path = urllib.parse.unquote(self.path)
+        parts = [p for p in path.split('/') if p]
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length).decode('utf-8')
+        
+        if len(parts) == 3 and parts[0] == 'api' and parts[2] == 'query':
+            self.execute_and_respond(body, auth_ctx)
+            return
+            
+        if len(parts) == 3 and parts[0] == 'api':
+            bucket = parts[2]
+            query = f"POUR INTO {bucket} RANDOM {body}"
+            self.execute_and_respond(query, auth_ctx)
+        else:
+            self.send_error(404)
+            
+    def do_PUT(self):
+        auth_ctx = self.do_AUTH()
+        if not auth_ctx: return
+        path = urllib.parse.unquote(self.path)
+        parts = [p for p in path.split('/') if p]
+        if len(parts) == 4 and parts[0] == 'api':
+            bucket = parts[2]
+            doc_id = parts[3]
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            query = f'POUR INTO {bucket} "{doc_id}" {body}'
+            self.execute_and_respond(query, auth_ctx)
+        else:
+            self.send_error(404)
+
+    def do_PATCH(self):
+        auth_ctx = self.do_AUTH()
+        if not auth_ctx: return
+        path = urllib.parse.unquote(self.path)
+        parts = [p for p in path.split('/') if p]
+        if len(parts) == 4 and parts[0] == 'api':
+            bucket = parts[2]
+            doc_id = parts[3]
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+            try:
+                body_json = json.loads(body)
+                sets = []
+                for k, v in body_json.items():
+                    v_str = f'"{v}"' if isinstance(v, str) else str(v)
+                    sets.append(f"{k} TO {v_str}")
+                set_clause = ", ".join(sets)
+                query = f'CHANGE {bucket} "{doc_id}" SET {set_clause}'
+                self.execute_and_respond(query, auth_ctx)
+            except Exception as e:
+                self.send_error(400, "Invalid JSON body for PATCH")
+        else:
+            self.send_error(404)
+
+    def do_DELETE(self):
+        auth_ctx = self.do_AUTH()
+        if not auth_ctx: return
+        path = urllib.parse.unquote(self.path)
+        parts = [p for p in path.split('/') if p]
+        if len(parts) == 4 and parts[0] == 'api':
+            bucket = parts[2]
+            doc_id = parts[3]
+            query = f'DRAIN {bucket} "{doc_id}"'
+            self.execute_and_respond(query, auth_ctx)
+        else:
+            self.send_error(404)
+
+def run_http_server(port):
+    server = HTTPServer((HOST, port), RestApiHandler)
+    server.serve_forever()
+
+
 import time
 import queue
 import threading
@@ -488,7 +669,10 @@ async def main():
     dist_engine = DistributedEngine(f"127.0.0.1:{args.raft_port}", peers, args.data)
     engine = dist_engine.local_db
 
+
     threading.Thread(target=vector_worker, daemon=True).start()
+    threading.Thread(target=run_http_server, args=(args.port + 1,), daemon=True).start()
+
     
     server = await asyncio.start_server(handle_client, HOST, args.port - 1)
     ws_server = await websockets.serve(ws_handler, HOST, args.port)

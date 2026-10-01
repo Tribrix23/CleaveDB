@@ -9,7 +9,7 @@
   <g transform="translate(15, 40)" font-family="Consolas, monospace" font-size="13">
     <text x="0" y="0" fill="#CCCCCC" xml:space="preserve"><tspan fill="#F9F1A5">PS C:\Users\David&gt;</tspan> cleave-cli</text>
     <text x="0" y="20" fill="#CCCCCC" xml:space="preserve"></text>
-    <text x="0" y="40" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">ENFORCE SECURITY</tspan> &quot;role_gate&quot; <tspan fill="#3B78FF">ON</tspan> &quot;reports&quot; <tspan fill="#3B78FF">TO ALLOW</tspan> read <tspan fill="#3B78FF">IF</tspan> my role == &quot;admin&quot;</text>
+    <text x="0" y="40" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">ENFORCE SECURITY</tspan> &quot;role_gate&quot; <tspan fill="#3B78FF">ON</tspan> &quot;reports&quot; <tspan fill="#3B78FF">TO ALLOW</tspan> read <tspan fill="#3B78FF">IF</tspan> my role IS &quot;admin&quot;</text>
     <text x="0" y="60" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[{&quot;status&quot;: &quot;ok&quot;, &quot;message&quot;: &quot;Policy role_gate applied to reports&quot;}]</tspan></text>
   </g>
 </svg>
