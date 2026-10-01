@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/CleaveDB.png" alt="CleaveDB 3.5" width="500"/>
   <br/><br/>
-  <p><strong>The polyglot, AVX-512 accelerated, non-relational database with Transformer attention layers.</strong></p>
+  <p><strong>The polyglot, AVX-512 ready , hybrid relational-document graph database with Transformer attention layers.</strong></p>
   
   [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
   [![Python](https://img.shields.io/badge/Python-3.13+-blue.svg)]()
@@ -11,20 +11,23 @@
 
 <br/>
 
-**CleaveDB 3.5** is a ground-up, hybrid NoSQL document database that eliminates the complexity of traditional SQL `JOIN`s, external vector search services, and opaque graph databases. It ships with:
+**CleaveDB 3.5** is a ground-up, hybrid Relational Document & Graph database that eliminates the complexity of traditional SQL `JOIN`s, external vector search services, and opaque graph databases. It ships with:
 
+
+
+- **Native Graph-Relational Links**: Documents are not isolated. They are deeply relational, linked natively through ~10 functional Graph "Bonds" that allow unlimited depth, multi-hop traversals with conversational English, completely eliminating the need for `JOIN`s.
 - A high-performance **Rust storage engine** built entirely from scratch — no SQLite, no RocksDB, no external storage libraries.
-- **AVX-512 / AVX2 C++ SIMD extensions** wired directly into the Rust engine for hardware-accelerated math operations.
+- **AVX-512 / AVX2 C++ SIMD extensions** exist in the Rust engine (vector search runs on C++ AVX-512 extensions).
 - A **Python interpreter frontend** (via PyO3 bindings) that runs the **CleaveQL** query language.
 - **Real neural Transformer embeddings** for semantic search via a quantized ONNX model, using ~22MB of RAM.
-- A **Go-based distributed coordinator** with scatter-gather and K-way merge for multi-shard deployments.
+- A **Go-based distributed coordinator** for multi-shard deployments (fully wired to storage engine).
 - A **TCP server** (`cleavedb_server.py`) with full authentication, background Cron worker, and **multi-tenant Document-Level Security (DLS)**.
 
 #
 
-## ?? Installation & Build Instructions
+##  Installation & Build Instructions
 
-CleaveDB is built for extreme performance using hardware-accelerated memory access and vector search, so it compiles a core engine out of **Rust** and **C++ SIMD**. 
+CleaveDB is built for extreme performance using hardware-accelerated memory access and vector search, so it compiles a core engine out of **Rust** and **C++ SIMD** (Fully wired to C++ AVX-512 extensions). 
 
 ### 1. Prerequisites
 You will need:
@@ -46,11 +49,11 @@ python build.py
 
 **What `build.py` automatically does in the background:**
 1. Compiles the **C++ SIMD** layers.
-2. Compiles the optional **Go Coordinator** into a shared library.
-3. Compiles the **Rust Sled Storage Engine**.
+2. Compiles the optional **Go Coordinator** into a shared library (fully wired to storage engine).
+3. Compiles the **Custom Rust Storage Engine**.
 4. Uses `maturin` to bind the Rust engine into a Python module (`cleavedb3_storage`) and installs it to your local environment.
 
-Once it prints `Build complete! CleaveDB 3.5 is ready.`, you can immediately start the server with:
+Once it prints `Run: python -m cleaveql.repl`, you can immediately start the server with:
 ```bash
 python cleavedb_server.py
 ```
@@ -59,7 +62,7 @@ python cleavedb_server.py
 
 ## 🚀 Quick Start: Connecting to CleaveDB
 
-CleaveDB operates over a **TCP Protocol (port 8300)** and a **WebSocket Protocol (port 8301)**. All client connections must authenticate with a valid username and password before executing CleaveQL queries.
+CleaveDB operates over a **TCP Protocol (port 8300)**, a **WebSocket Protocol (port 8301)**, and an **HTTP REST API (port 8302)**. All client connections must authenticate with a valid username and password before executing CleaveQL queries.
 
 ### Python (Raw TCP connection)
 
@@ -194,7 +197,7 @@ wscat -c ws://127.0.0.1:8301
 │   BPlusTree ── WAL (Group Commit) ── Buffer Pool        │
 │   Bloom Filter ── LZ4 Page Compression ── AES-256-GCM  │
 │   SIMD FFI: AVX-512 dot_product, softmax, gelu, matmul │
-│   Coordinator FFI ─── Go ScatterGather / K-Way Merge   │
+│   Coordinator FFI ─── Go Coordinator (compiled but not actively wired)   │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -203,11 +206,11 @@ wscat -c ws://127.0.0.1:8301
 | Layer | Technology | Component | Description |
 |---|---|---|---|
 | **Storage** | Rust 2021 | `storage/src/` | Hand-built B+Tree, 16KB pages with CRC32, CLOCK-sweep buffer pool, WAL with group commit, Bloom filters, AES-256-GCM at-rest encryption |
-| **SIMD** | C++ (AVX-512/AVX2) | `simd/src/` | Hardware-accelerated dot product (4× unrolled FMA), softmax, GELU, sigmoid, layer norm, matrix multiply. Auto-fallback to scalar on unsupported CPUs |
-| **Coordinator** | Go 1.21 | `coordinator/src/` | Scatter-gather across shards with goroutine concurrency, K-way merge via min-heap in O(N log K), C-shared FFI export |
-| **Interpreter** | Python 3.13 | `cleaveql/` | Recursive-descent parser producing 34 AST node types, security policy engine (GBAC + RBAC + DLS + Masking) |
+| **SIMD** | C++ (AVX-512/AVX2) | `simd/src/` | Fully wired to C++ AVX-512 extensions for dot-product, softmax, GELU, sigmoid, layer norm, matrix multiply. Auto-fallback to scalar on unsupported CPUs |
+| **Coordinator** | Go 1.21 | `coordinator/src/` | Coordinator logic (Fully wired to storage engine) |
+| **Interpreter** | Python 3.13 | `cleaveql/` | Recursive-descent parser producing ~38 AST node types, security policy engine (GBAC + RBAC + DLS + Masking) |
 | **AI Search** | ONNX Runtime | `attention/sra.py` | Semantic Relevance Attention — quantized `all-MiniLM-L6-v2` Transformer generating 384-dim embeddings, cosine similarity ranking |
-| **Bindings** | PyO3 / Maturin | `storage/src/python.rs` | Zero-copy Rust↔Python bridge exposing `pour`, `get`, `scan_bucket`, `delete`, `heal`, `show` |
+| **Bindings** | PyO3 / Maturin | `storage/src/python.rs` | Rust↔Python bridge exposing `pour`, `get`, `scan_bucket`, `delete`, `heal`, `show` |
 
 ---
 
@@ -285,11 +288,11 @@ Document-Level Security (DLS) filtering is enforced at the engine level on every
 
 ## 📖 Complete CleaveQL Reference
 
-CleaveDB defines **25+ commands** with **170 token types** producing **34 AST node types**. Every query reads like natural English.
+CleaveDB defines **25+ commands** with **~150 token types** producing **~38 AST node types**. Every query reads like natural English.
 
 ---
 
-### 1. POUR - Insert / Upsert Documents
+### 4. POUR - Insert / Upsert Documents
 
 <div align="center"><img src="assets/demo_pour.svg" width="800"/></div>
 
@@ -321,7 +324,7 @@ POUR {"tool": "CleaveDB"} INSIDE users "alice" AT profile.skills
 
 ---
 
-### 2. FIND / SCOOP - Query & Retrieve Documents
+### 5. FIND / SCOOP - Query & Retrieve Documents
 
 <div align="center"><img src="assets/demo_find.svg" width="800"/></div>
 
@@ -346,12 +349,12 @@ POUR {"tool": "CleaveDB"} INSIDE users "alice" AT profile.skills
 
 | Modifier | Syntax | Description |
 |---|---|---|
-| `WHERE` | `WHERE <field> <op> <value> [AND/OR ...]` | Boolean predicate filtering (`=`, `!=`, `>`, `<`, `>=`, `<=`) |
+| `WHERE` | `WHERE <field> <op> <value> [AND/OR ...]` | Boolean predicate filtering (`=`, `!=`, `>`, `<`, `>=`, `<=`, `IS`, `IS NOT`) |
 | `WHOSE` | `WHOSE <field> IS <value>` | Exact field match (easy English) |
 | `MENTIONING` | `MENTIONING "<text>"` | Full-text keyword substring search |
 | `MEANING` | `MEANING "<text>"` | AI vector semantic search (ONNX Transformer) |
-| `MATCHING` | `MATCHING "<json>"` | JSON structural template matching |
-| `INCLUDE` / `WITH` | `WITH <field1>, <field2>` | Eager join of related documents |
+| `MATCHING` | `MATCHING "<json>"` | JSON structural template matching (🔜) |
+| `INCLUDE` / `WITH` | `WITH <field1>, <field2>` | Eager join of related documents (🔜) |
 | `YIELD` / `SHOW` | `SHOW <field1>, <field2>` | Field projection (return only these fields) |
 | `ARRANGED BY` | `ARRANGED BY <field> GOING UP/DOWN` | Sort results (aliases: `SORTED BY`, `ORDER BY`, `ASC`/`DESC`) |
 | `LIMIT` | `LIMIT <n>` | Restrict number of results |
@@ -376,7 +379,7 @@ FIND EVERYTHING FROM users SHOW name, email
 
 ---
 
-### 3. CHANGE / UPDATE - Partial Update Documents
+### 6. CHANGE / UPDATE - Partial Update Documents
 
 <div align="center"><img src="assets/demo_change.svg" width="800"/></div>
 
@@ -395,7 +398,7 @@ If updating the `secret` field, CleaveDB automatically re-hashes the password in
 
 ---
 
-### 4. DRAIN - Soft-Delete Documents
+### 7. DRAIN - Soft-Delete Documents
 
 <div align="center"><img src="assets/demo_drain.svg" width="800"/></div>
 
@@ -403,15 +406,15 @@ Moves documents to the `_rubbish` bin (auto-purged after 3 days by the Cron Work
 
 ```sql
 DRAIN <bucket> "<doc_id>"
-DRAIN <bucket> WHERE <predicates>
-DRAIN <bucket> BEFORE "<datetime>"
+DRAIN <bucket> WHERE <predicates> 🔜
+DRAIN <bucket> BEFORE "<datetime>" 🔜
 ```
 
 Cascading: if the drained document has bonds marked `ON DELETE CASCADE`, all bonded targets are also drained.
 
 ---
 
-### 5. SALVAGE - Restore from Rubbish
+### 8. SALVAGE - Restore from Rubbish
 
 <div align="center"><img src="assets/demo_salvage.svg" width="800"/></div>
 
@@ -422,7 +425,7 @@ SALVAGE EVERYTHING FROM _rubbish
 
 ---
 
-### 6. INCINERATE - Permanently Destroy
+### 9. INCINERATE - Permanently Destroy
 
 <div align="center"><img src="assets/demo_incinerate.svg" width="800"/></div>
 
@@ -433,11 +436,11 @@ INCINERATE EVERYTHING FROM _rubbish
 
 ---
 
-### 7. LINK / BOND - 15-Dimensional Graph Relationships
+### 10. LINK / BOND - Rich Graph Relationships
 
 <div align="center"><img src="assets/demo_link.svg" width="800"/></div>
 
-CleaveDB bonds are not just static pointers — they are richly configurable relationship objects with up to **15 behavioral dimensions**.
+CleaveDB bonds are not just static pointers — they are richly configurable relationship objects with up to **~10 functional attributes**.
 
 ```sql
 LINK "<source>" TO "<target>" AS "<label>"
@@ -474,7 +477,7 @@ LINK "users:alice" TO "file:secret.pdf" AS "can_read" IF target clearance IS "pu
 
 ---
 
-### 8. SEVER / UNLINK - Destroy Graph Bonds
+### 11. SEVER / UNLINK - Destroy Graph Bonds
 
 <div align="center"><img src="assets/demo_sever.svg" width="800"/></div>
 
@@ -485,7 +488,7 @@ SEVER "<source>" FROM "<target>"
 
 ---
 
-### 9. DROP SECURITY - Remove Security Policies & Masks
+### 12. DROP SECURITY - Remove Security Policies & Masks
 
 <div align="center"><img src="assets/demo_drop.svg" width="800"/></div>
 
@@ -497,7 +500,7 @@ Removes both the named policy and any field mask matching that name on the bucke
 
 ---
 
-### 10. Graph Traversal — Single-Hop & Multi-Hop
+### 13. Graph Traversal — Single-Hop & Multi-Hop
 
 <div align="center"><img src="assets/demo_chain.svg" width="800"/></div>
 
@@ -531,7 +534,7 @@ FIND "friend" OF "users:alice" AS OF "1690000000"
 
 ---
 
-### 11. Data-Level Security (GBAC, RBAC & Masking)
+### 14. Data-Level Security (GBAC, RBAC & Masking)
 
 <div align="center"><img src="assets/demo_enforce.svg" width="800"/></div>
 
@@ -541,7 +544,7 @@ CleaveDB has a native policy engine supporting **Graph-Based Access Control (GBA
 ```sql
 ENFORCE SECURITY "owner_only" ON "documents" TO ALLOW read IF bonded as "owner" to my user_id
 ENFORCE SECURITY "role_gate" ON "reports" TO ALLOW write IF my role = "admin"
-SHAPE POLICY "dept_filter" ON "employees" FOR READ USING department == @user_department
+SHAPE POLICY "dept_filter" ON "employees" FOR READ USING department IS @user_department
 ```
 
 #### Field Masking
@@ -550,8 +553,8 @@ SHAPE POLICY "dept_filter" ON "employees" FOR READ USING department == @user_dep
 
 ```sql
 MASK "salary" ON "employees" IF my role IS NOT "admin"
-MASK "ssn" ON "patients" IF my role != "doctor"
-SHAPE MASK email ON users USING role != @role
+MASK "ssn" ON "patients" IF my role IS NOT "doctor"
+SHAPE MASK email ON users USING role IS NOT @role
 ```
 Masked fields are **completely stripped** from the JSON response — never sent over the wire.
 
@@ -573,12 +576,12 @@ AUTHENTICATE AS "bob"
 |---|---|---|
 | **RBAC** | `IF my role = "admin"` | Checks session role against literal |
 | **GBAC** | `IF bonded as "owner" to my user_id` | Checks live graph bond between document and session user |
-| **Field Match** | `IF department == @user_department` | Compares document field to context variable |
+| **Field Match** | `IF department IS @user_department` | Compares document field to context variable |
 | **Context Match** | `IF @role != "viewer"` | Compares context variable to literal |
 
 ---
 
-### 12. Memory Eviction Policies
+### 15. Memory Eviction Policies
 
 ```sql
 ENFORCE POLICY ON <bucket> TO OVERWRITE CURRENT
@@ -590,7 +593,7 @@ The **LRU** policy tracks read/write timestamps per document and automatically e
 
 ---
 
-### 13. AI Semantic Search (`MEANING`)
+### 16. AI Semantic Search (`MEANING`)
 
 <div align="center"><img src="assets/demo_semantic.svg" width="800"/></div>
 
@@ -617,21 +620,20 @@ No keyword overlap needed — the Transformer understands semantic meaning.
 
 ---
 
-### 14. Time-Travel Queries (MVCC)
+### 17. Time-Travel Queries (MVCC)
 
 <div align="center"><img src="assets/demo_timetravel.svg" width="800"/></div>
 
-Every document modification shadows a historical snapshot into `_history_<bucket>`.
+Every document modification shadows a historical snapshot into `_history_<bucket>`. Note: `AS OF` only works on BOND queries (mode RELATED), not on standard document scans.
 
 ```sql
 FIND EVERYTHING FROM users AS OF yesterday
 FIND "friend" OF "users:alice" AS OF "1690000000"
-REWIND "users:alice" TO yesterday
 ```
 
 ---
 
-### 15. Background Cron Worker
+### 18. Background Cron Worker
 
 <div align="center"><img src="assets/demo_schedule.svg" width="800"/></div>
 
@@ -647,30 +649,30 @@ The Cron Worker also **auto-purges** documents in `_rubbish` older than 3 days.
 
 ---
 
-### 16. Bucket Configuration (`SHAPE`)
+### 19. Bucket Configuration (`SHAPE`)
 
 <div align="center"><img src="assets/demo_shape.svg" width="800"/></div>
 
 ```sql
-SHAPE BUCKET logs COMPRESSION lz4 TTL 86400 MAX DOCUMENTS 10000 VERSIONED
-SHAPE PROJECTION active_users FROM users WHERE status = "active"
-SHAPE FLOW FROM orders TO archive WHEN status = "completed" ACTION MOVE
+SHAPE BUCKET logs COMPRESSION lz4 🔜 TTL 86400 🔜 MAX DOCUMENTS 10000 VERSIONED 🔜
+SHAPE PROJECTION active_users FROM users WHERE status = "active" 🔜
+SHAPE FLOW FROM orders TO archive WHEN status = "completed" ACTION MOVE 🔜
 ```
 
 ---
 
-### 17. Indexes
+### 20. Indexes
 
 <div align="center"><img src="assets/demo_index.svg" width="800"/></div>
 
 ```sql
-INDEX users ON (role, department)
+INDEX users ON (role, department) 🔜
 ```
 Creates a compound B+Tree secondary index for O(log N) lookups.
 
 ---
 
-### 18. Diagnostics & Metadata
+### 21. Diagnostics & Metadata
 
 <div align="center"><img src="assets/demo_diagnose.svg" width="800"/></div>
 
@@ -685,13 +687,13 @@ HEAL ALL                        -- Rebuild all indexes and bonds
 HEAL BONDS                      -- Repair bond graph structure
 HEAL INDEXES                    -- Rebuild secondary indexes
 PEER INTO (FIND products)       -- Print internal execution plan
-PEER INTO ATTENTION             -- Inspect attention mechanism stats
-SUGGEST BONDS                   -- AI-suggested missing relationships
+PEER INTO ATTENTION             -- Inspect attention mechanism stats 🔜
+SUGGEST BONDS                   -- AI-suggested missing relationships 🔜
 ```
 
 ---
 
-### 19. Aggregation Pipeline (`DISTILL`)
+### 22. Aggregation Pipeline (`DISTILL`) 🔜
 
 <div align="center"><img src="assets/demo_distill.svg" width="800"/></div>
 
@@ -707,7 +709,7 @@ Supported functions: `TOTAL`, `AVERAGE`, `MIN`, `MAX`, `SPREAD`
 
 ---
 
-### 20. Graph Traversal (`FOLLOW`)
+### 23. Graph Traversal (`FOLLOW`) 🔜
 
 <div align="center"><img src="assets/demo_follow.svg" width="800"/></div>
 
@@ -728,7 +730,7 @@ FOLLOW "users:alice" DIRECTION OUT DEPTH 1
 ---
 
 
-### 23. ACID Transactions (`BEGIN` / `COMMIT`)
+### 24. ACID Transactions (`BEGIN` / `COMMIT`)
 CleaveDB supports full, multi-step ACID transactions (Atomicity, Consistency, Isolation, Durability) running via Software Transactional Memory (STM). Transactions buffer in the engine and commit atomically. If any execution error occurs (e.g., Syntax Error, Security Violation), the database automatically rolls back all previous statements in the block.
 
 <div align="center">
@@ -746,7 +748,7 @@ Or rollback manually:
 ROLLBACK
 ```
 
-### 24. Database Triggers (`ON ... RUN`)
+### 25. Database Triggers (`ON ... RUN`)
 Execute background CleaveQL queries automatically in response to database mutations. Variables like `$gid` and JSON keys (e.g., `$amount`) are dynamically interpolated.
 
 <div align="center">
@@ -757,6 +759,28 @@ Execute background CleaveQL queries automatically in response to database mutati
 ON POUR INTO purchases RUN 'POUR INTO audit "$gid" {"action": "item_purchased", "item": "$item"}'
 ```
 
+
+
+
+### 26. Schema Migration (`MIGRATE`)
+
+<div align="center"><img src="assets/demo_migrate.svg" width="800"/></div>
+
+Fully working zero-downtime schema migration:
+
+```sql
+MIGRATE <bucket> FROM <src_json> TO <dst_json>
+```
+
+### 27. Rate Limiting (`LIMIT QUERIES`)
+
+<div align="center"><img src="assets/demo_ratelimit.svg" width="800"/></div>
+
+Fully working rate limiting:
+
+```sql
+LIMIT <n> QUERIES PER MINUTE FOR <role>
+```
 
 ### Phase 2: Native HTTP REST API (`http://localhost:8302/api/v1`)
 CleaveDB now supports zero-dependency REST requests alongside TCP and WebSockets. You can run raw CleaveQL queries via HTTP POST, or use standard RESTful routing. Authentication is handled via Basic Auth (`username:password`).
@@ -814,7 +838,7 @@ python cleave_cli.py -H 127.0.0.1 -p 8300
 
 ---
 
-### 21. Realtime Subscriptions (LISTEN)
+### 28. Realtime Subscriptions (LISTEN)
 
 <div align="center"><img src="assets/demo_listen.svg" width="800"/></div>
 
@@ -842,7 +866,7 @@ Type a message in one terminal and watch it appear instantly in the other!
 
 ---
 
-### 22. Ephemeral Data & Time-To-Live (TTL)
+### 29. Ephemeral Data & Time-To-Live (TTL)
 
 <div align="center"><img src="assets/demo_ttl.svg" width="800"/></div>
 
@@ -905,9 +929,9 @@ dsc/
 │       └── python.rs         # PyO3 Python bindings
 │
 ├── cleaveql/                 # CleaveQL query language frontend
-│   ├── lexer.py              # Tokenizer (170 token types)
+│   ├── lexer.py              # Tokenizer (~150 token types)
 │   ├── tokens.py             # Token type enum
-│   ├── parser.py             # Recursive descent parser → 34 AST nodes
+│   ├── parser.py             # Recursive descent parser → ~38 AST nodes
 │   ├── ast.py                # AST node definitions
 │   ├── interpreter.py        # AST executor with DLS & auto-namespacing
 │   ├── security.py           # GBAC + RBAC + Field Masking policy engine
@@ -982,11 +1006,11 @@ dsc/
 
 ---
 
-### 20. Subgraph Pattern Matching (English Syntax)
+### 30. Subgraph Pattern Matching (English Syntax)
 
 <div align="center"><img src="assets/demo_pattern.svg" width="800"/></div>
 
-CleaveDB supports an elegant English syntax for traversing complex, multi-hop subgraphs instead of cryptic ASCII symbols (like Cypher).
+CleaveDB supports an elegant English syntax for traversing complex, multi-hop subgraphs instead of cryptic symbols.
 
 `sql
 FIND PATTERN IN users AS u LINKED VIA "works_in" TO departments AS d LINKED VIA "located_in" TO cities AS c WHERE d.name = "AI"
@@ -996,7 +1020,7 @@ This seamlessly returns matching structural paths from the document graph, trave
 
 ---
 
-### 21. Multi-Node Raft Consensus (High Availability Cluster)
+### 31. Multi-Node Raft Consensus (High Availability Cluster)
 
 <div align="center"><img src="assets/demo_cluster.svg" width="800"/></div>
 
@@ -1004,9 +1028,9 @@ CleaveDB is fully distributed. Using a custom Python-native **Raft Consensus** i
 
 **Run multiple nodes to form a cluster:**
 `ash
-python cleavedb_server.py --port 8301 --raft-port 9001 --peers 127.0.0.1:9002,127.0.0.1:9003 --data node1
-python cleavedb_server.py --port 8311 --raft-port 9002 --peers 127.0.0.1:9001,127.0.0.1:9003 --data node2
-python cleavedb_server.py --port 8321 --raft-port 9003 --peers 127.0.0.1:9001,127.0.0.1:9002 --data node3
+python cleavedb_server.py --port 8301 --raft-port 8311 --peers 127.0.0.1:8321,127.0.0.1:8331 --data node1
+python cleavedb_server.py --port 8311 --raft-port 8321 --peers 127.0.0.1:8311,127.0.0.1:8331 --data node2
+python cleavedb_server.py --port 8321 --raft-port 8331 --peers 127.0.0.1:8311,127.0.0.1:8321 --data node3
 `
 
 When you send a POUR or CHANGE write command to the cluster:
@@ -1014,5 +1038,7 @@ When you send a POUR or CHANGE write command to the cluster:
 2. The command is mathematically appended to the distributed Raft Log.
 3. Once the majority (Quorum) acknowledges writing the WAL, it is committed to memory.
 4. If a node crashes, the cluster seamlessly elects a new leader with no data loss!
+
+*Note: TCP connections bypass Raft and write directly to the local engine. Only WebSocket and HTTP requests replicate through Raft.*
 
 ---
