@@ -62,6 +62,8 @@ python cleavedb_server.py
 
 ## 🚀 Quick Start: Connecting to CleaveDB
 
+Note: CleaveQL is **completely case-insensitive** (`FIND users` is the same as `find USERS`).
+
 CleaveDB operates over a **TCP Protocol (port 8300)**, a **WebSocket Protocol (port 8301)**, and an **HTTP REST API (port 8302)**. All client connections must authenticate with a valid username and password before executing CleaveQL queries.
 
 ### Python (Raw TCP connection)
@@ -218,7 +220,7 @@ wscat -c ws://127.0.0.1:8301
 
 ### Requirements
 - Python 3.13+, Rust 2021 (`cargo`), C++ build tools
-- `onnxruntime`, `tokenizers`, `huggingface_hub`, `numpy`
+- `onnxruntime`, `tokenizers`, `numpy`
 
 ### Installation
 ```bash
@@ -600,7 +602,7 @@ The **LRU** policy tracks read/write timestamps per document and automatically e
 CleaveDB ships with a built-in neural Transformer for vector search — no external services required.
 
 **How it works:**
-1. On first use, `attention/sra.py` downloads and caches the quantized `all-MiniLM-L6-v2` ONNX model (~22MB).
+1. The quantized `all-MiniLM-L6-v2` ONNX model (~22MB) is pre-bundled directly in the `attention/model/` directory. It is 100% offline.
 2. When a `MEANING` query arrives, the engine embeds the search phrase into a 384-dimensional vector (<5ms).
 3. Cosine similarity is computed against every document's text content.
 4. Results are ranked by `_embedding_distance` (0.0–1.0) and filtered at a 0.20 threshold.

@@ -6,22 +6,14 @@ import numpy as np
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 try:
-    from huggingface_hub import hf_hub_download
     from tokenizers import Tokenizer
     import onnxruntime as ort
     
     print("SRA Module: Initializing Hardware-Efficient AI Semantic Search (ONNX Q8_0)...")
     
-    # Check if the model is already downloaded locally
-    try:
-        # IF downloaded: strictly use local files (Zero network requests)
-        _model_path = hf_hub_download(repo_id="Xenova/all-MiniLM-L6-v2", filename="onnx/model_quantized.onnx", local_files_only=True)
-        _vocab_path = hf_hub_download(repo_id="Xenova/all-MiniLM-L6-v2", filename="tokenizer.json", local_files_only=True)
-    except Exception:
-        # ELSE: download it from the internet for the first time (22MB)
-        print("SRA Module: Model not found locally. Downloading model...")
-        _model_path = hf_hub_download(repo_id="Xenova/all-MiniLM-L6-v2", filename="onnx/model_quantized.onnx")
-        _vocab_path = hf_hub_download(repo_id="Xenova/all-MiniLM-L6-v2", filename="tokenizer.json")
+    # Model is fully bundled inside the attention/model directory
+    _model_path = os.path.join(os.path.dirname(__file__), 'model', 'model_quantized.onnx')
+    _vocab_path = os.path.join(os.path.dirname(__file__), 'model', 'tokenizer.json')
 
     _tokenizer = Tokenizer.from_file(_vocab_path)
     # CPU Execution Provider leverages AVX instructions under the hood
