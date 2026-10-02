@@ -511,6 +511,7 @@ async def handle_client(reader, writer):
             
         try:
             req = json.loads(auth_line.decode().strip())
+            print(f"LOGIN REQ: {req}", flush=True)
             action = req.get("action")
             
             if action == "register":

@@ -1,8 +1,27 @@
+import io
+from prompt_toolkit.lexers import PygmentsLexer
+from pygments.lexers.data import JsonLexer
+from prompt_toolkit import Application
+from prompt_toolkit.layout.containers import VSplit, HSplit, Window
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.layout import Layout
+from prompt_toolkit.widgets import TextArea, Frame
+from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit.key_binding import KeyBindings
 import socket
 import json
 import sys
 import getpass
 import argparse
+import os
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+from rich.syntax import Syntax
+from rich.table import Table
+console = Console()
+
 
 SECURITY_QUESTIONS = [
     "What was the name of your first pet?",
@@ -1063,20 +1082,64 @@ def main():
 
         f = s.makefile('rw')
         
-        print("========================================")
-        print("        Welcome to CleaveDB Shell       ")
-        print("========================================")
-        print("Not logged in. Type a command to begin.")
-        print("  login    - Log into an existing account")
-        print("  register - Create a new user account")
-        print("  forgot   - Recover a lost password")
-        print("  exit     - Close the shell")
+        try:
+            # Create a rich panel
+            grid = Table.grid(expand=True)
+            grid.add_column(justify="center", ratio=1)
+            grid.add_column(justify="left", ratio=2)
+            
+            logo = """
+[bold cyan]  _____ _                   ___  ____  
+ / ___/| |___ ___ ___ _____/ _ \/ __ )
+/ /__  | / -_) _ `/ _ \___/ // / _  | 
+\___/  |_\__/\_,_/\___/  /____/____/  [/]"""
+            
+            tips = """[bold]Tips for getting started[/]
+[dim]Type [bold cyan]help[/] to see all available commands.
+Scroll the output window directly with your [bold]mouse wheel[/].
+
+[bold]Recent activity[/]
+[dim]No recent activity[/]"""
+            
+            grid.add_row(logo, tips)
+            panel = Panel(grid, title="[bold orange3]CleaveDB Shell v1.0[/]", border_style="orange3", padding=(1, 2))
+            console.print(panel)
+        except Exception as e:
+            print(f"RICH ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            print("========================================")
+            print("        Welcome to CleaveDB Shell       ")
+            print("========================================")
+            print("Not logged in. Type a command to begin.")
+            print("  login    - Log into an existing account")
+            print("  register - Create a new user account")
+            print("  forgot   - Recover a lost password")
+            print("  exit     - Close the shell")
+
+        import questionary
+        from questionary import Style
+        custom_style = Style([
+            ('pointer', 'fg:#FF9D00 bold'),
+            ('highlighted', 'fg:#FF9D00 bold'),
+        ])
 
         auth_data = False
         while not auth_data:
             try:
-                cmd = input("\ncleavedb-auth> ").strip().lower()
-                if cmd in ['exit', 'quit']:
+                cmd = questionary.select(
+                    "What would you like to do?",
+                    style=custom_style,
+                    choices=[
+                        questionary.Choice("Log into an existing account", value="login"),
+                        questionary.Choice("Create a new user account", value="register"),
+                        questionary.Choice("Recover a lost password", value="forgot"),
+                        questionary.Separator(),
+                        questionary.Choice("Exit shell", value="exit")
+                    ]
+                ).ask()
+                
+                if cmd is None or cmd in ['exit', 'quit']:
                     s.close()
                     sys.exit(0)
                 elif cmd == 'register':
@@ -1085,78 +1148,101 @@ def main():
                     auth_data = do_login(f)
                 elif cmd == 'forgot':
                     do_forgot(f)
-                elif cmd:
-                    print("Unknown command. Please type 'login', 'register', 'forgot', or 'exit'.")
             except (EOFError, KeyboardInterrupt):
                 print("\nExiting...")
                 sys.exit(0)
                 
-        print("========================================")
-        print("Type your CleaveQL commands.")
-        print("Type 'logout' to switch users, or 'exit' to close.")
-        print("========================================")
+        import os
+        os.system("cls" if os.name == "nt" else "clear")
+        console.clear()
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.styles import Style
+        session = PromptSession()
+
+        grid = Table.grid(expand=True)
+        grid.add_column(justify="center", ratio=1)
+        grid.add_column(justify="left", ratio=2)
         
-        RED = "\033[91m"
-        RESET = "\033[0m"
+        logo_text = """
+[bold cyan]  _____ _                   ___  ____  
+ / ___/| |___ ___ ___ _____/ _ \/ __ )
+/ /__  | / -_) _ `/ _ \___/ // / _  | 
+\___/  |_\__/\_,_/\___/  /____/____/  [/]"""
+
+        tips = """[bold]Tips for getting started[/]
+[dim]Type [bold cyan]help[/] to see all available commands.
+Scroll naturally with your mouse wheel.
+
+[bold]Recent activity[/]
+[dim]No recent activity[/]"""
         
-        if auth_data.get("auth_level") == "dev":
-            prompt = f"{RED}root@cleavedb{RESET}> "
-        else:
-            prompt = f"{auth_data.get('username', 'user')}@cleavedb> "
-            
+        grid.add_row(logo_text, tips)
+        panel = Panel(grid, title="[bold orange3]CleaveDB Shell v1.0[/]", border_style="orange3", padding=(1, 2))
+        console.print(panel)
+
+        console.print(f"\n[+] Login successful! (Level: {auth_data.get('auth_level', 'standard')})")
+        console.print("========================================")
+        console.print("Type your CleaveQL commands. (Type 'help' to see all commands)")
+        console.print("Type 'logout' to switch users, or 'exit' to close.")
+        console.print("========================================\n")
+        
+        prompt_style = Style.from_dict({
+            'prompt': 'ansired bold' if auth_data.get("auth_level") == "dev" else 'ansicyan bold',
+        })
+        prompt_text = "root@cleavedb> " if auth_data.get("auth_level") == "dev" else f"{auth_data.get('username', 'user')}@cleavedb> "
+        
+        logout_requested = False
+        
         while True:
             try:
-                cmd = input(prompt).strip()
-                if cmd.lower() in ['exit', 'quit']:
-                    s.close()
-                    sys.exit(0)
-                if cmd.lower() == 'logout':
-                    print("Logged out successfully.\n")
-                    s.close()
-                    break
-                if cmd.lower() == '?' or cmd.lower().startswith('help'):
-                    parts = cmd.strip().split(None, 1)
-                    if len(parts) == 2:
-                        topic = parts[1].strip().lower().strip('"').strip("'")
-                        # Try exact match first, then try just the first word
-                        first_word = topic.split()[0]
-                        if topic in DETAILED_HELP:
-                            print(DETAILED_HELP[topic])
-                        elif first_word in DETAILED_HELP:
-                            print(DETAILED_HELP[first_word])
-                        else:
-                            avail = ", ".join(sorted(DETAILED_HELP.keys()))
-                            print(f"\n  No detailed help for '{topic}'.")
-                            print(f"  Available topics: {avail}\n")
-                    else:
-                        print(HELP_TEXT)
-                    continue
-                if cmd.lower() in ['cls', 'clear']:
-                    import os
-                    os.system('cls' if os.name == 'nt' else 'clear')
-                    continue
-                if not cmd:
-                    continue
+                cmd = session.prompt(prompt_text, style=prompt_style).strip()
+            except KeyboardInterrupt:
+                continue
+            except EOFError:
+                logout_requested = False
+                break
                 
-                f.write(cmd + "\n")
-                f.flush()
+            if not cmd:
+                continue
                 
-                response_str = f.readline().strip()
-                if not response_str:
-                    print("Server closed connection.")
-                    break
-                    
-                try:
-                    response_json = json.loads(response_str)
-                    print(json.dumps(response_json, indent=2))
-                except:
-                    print(response_str)
-                    
-            except (EOFError, KeyboardInterrupt):
-                print("\nExiting...")
-                s.close()
-                sys.exit(0)
+            if cmd.lower() in ['exit', 'quit']:
+                logout_requested = False
+                break
                 
+            if cmd.lower() == 'logout':
+                logout_requested = True
+                break
+                
+            if cmd.lower() in ['cls', 'clear']:
+                import os
+                os.system('cls' if os.name == 'nt' else 'clear')
+                continue
+                
+            if cmd.lower() == '?' or cmd.lower().startswith('help'):
+                console.print(HELP_TEXT)
+                continue
+                
+            s.send((cmd.replace('\n', ' ') + '\n').encode('utf-8'))
+            
+            response_str = s.recv(1024 * 1024).decode('utf-8').strip()
+            if not response_str:
+                console.print("[red]Server closed connection.[/]")
+                break
+                
+            try:
+                response_json = json.loads(response_str)
+                syntax = Syntax(json.dumps(response_json, indent=2), "json", theme="monokai")
+                console.print(syntax)
+            except:
+                console.print(response_str)
+                
+            console.print("") # Blank line
+            
+        s.close()
+        if logout_requested:
+            continue
+        else:
+            sys.exit(0)
     s.close()
     print("Goodbye.")
 
