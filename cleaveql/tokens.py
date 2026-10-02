@@ -8,6 +8,7 @@ class TokenType(Enum):
     # Verbs
     SCOOP = auto()    # query/read
     POUR = auto()
+    RESTORE = auto()
     MIGRATE = auto()     # insert/upsert
     DRAIN = auto()    # delete
     FLOW = auto()     # move/copy between buckets
@@ -15,6 +16,10 @@ class TokenType(Enum):
     DISTILL = auto()  # aggregate
     FOLLOW = auto()   # traverse bonds
     SHAPE = auto()    # create/configure bucket
+    VIEW = auto()
+    CONTINUOUS = auto()
+    GROUP = auto()
+    SUM = auto()
     PEER = auto()     # explain/inspect
     LISTEN = auto()   # websocket subscription
     CHANGE = auto()   # partial update
@@ -23,6 +28,9 @@ class TokenType(Enum):
     HEAL = auto()     # repair indexes
     SHOW = auto()     # list metadata
     DESCRIBE = auto() # describe a bucket
+    HOW = auto()
+    CHANGED = auto()
+    BETWEEN = auto()
     SUGGEST = auto()  # ask attention for suggestions
 
     # Clauses
@@ -271,6 +279,7 @@ KEYWORDS = {
     'asc': TokenType.ASC,
     'sorted': TokenType.SORTED,
     'pour': TokenType.POUR,
+    'restore': TokenType.RESTORE,
     'drain': TokenType.DRAIN,
     'flow': TokenType.FLOW,
     'bond': TokenType.BOND,
@@ -297,6 +306,10 @@ KEYWORDS = {
     'authenticate': TokenType.AUTHENTICATE,
     'follow': TokenType.FOLLOW,
     'shape': TokenType.SHAPE,
+    'view': TokenType.VIEW,
+    'continuous': TokenType.CONTINUOUS,
+    'group': TokenType.GROUP,
+    'sum': TokenType.SUM,
     'peer': TokenType.PEER,
     'change': TokenType.CHANGE,
     'update': TokenType.UPDATE,
@@ -305,6 +318,9 @@ KEYWORDS = {
     'heal': TokenType.HEAL,
     'show': TokenType.SHOW,
     'describe': TokenType.DESCRIBE,
+    'how': TokenType.HOW,
+    'changed': TokenType.CHANGED,
+    'between': TokenType.BETWEEN,
     'suggest': TokenType.SUGGEST,
     'from': TokenType.FROM,
     'into': TokenType.INTO,

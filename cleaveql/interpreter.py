@@ -1,4 +1,5 @@
 import time
+import uuid
 import threading
 import copy
 import uuid
@@ -21,7 +22,9 @@ class TenantEngineProxy:
         self.context = context
         
     def _tenant(self):
-        return self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
+        if "tenant_id" in self.context and self.context["tenant_id"]:
+            return self.context["tenant_id"]
+        return self.context.get("tenant_id", self.context.get("user", "").split(".")[0]) if "user" in self.context else "cron"
         
     def _ns(self, bucket):
         if not bucket or bucket.startswith("_"): return bucket
@@ -99,7 +102,7 @@ class Interpreter:
             pol_data = self._scan_bucket_rls("_security_policies")
             if pol_data:
 
-                tenant_id = self.context.get("user", "").split(".")[0]
+                tenant_id = self.context.get("tenant_id", self.context.get("user", "").split(".")[0])
                 for p_doc in json.loads(pol_data):
                     doc_id = p_doc["gid"].split(":")[1]
                     if tenant_id != "cron" and not (doc_id == tenant_id or doc_id.startswith(f"{tenant_id}.")):
@@ -180,7 +183,7 @@ class Interpreter:
             try:
                 res = self._execute_stmt(stmt)
                 if res is None: continue
-                tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else None
+                tenant = self.context.get("tenant_id", self.context.get("user", "").split(".")[0]) if "user" in self.context else None
                 if tenant and tenant != "cron":
                     self._strip_tenant(res, tenant)
                 results.append(res)
@@ -213,7 +216,7 @@ class Interpreter:
 
     def _namespace_gid(self, gid):
         return gid
-        tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
+        tenant = self.context.get("tenant_id", self.context.get("user", "").split(".")[0]) if "user" in self.context else "cron"
         if tenant == "cron":
             return gid
             
@@ -453,6 +456,8 @@ class Interpreter:
                     "password_hash": pw_hash,
                     "password_salt": salt,
                     "role": body.get("role", "viewer") if isinstance(body, dict) else "viewer"
+                ,
+                    "tenant_id": self.context.get("tenant_id", self.context.get("tenant_id", self.context.get("user", "").split(".")[0]))
                 }
                 self.engine.pour("_auth", auth_doc["username"], json.dumps(auth_doc))
                 
@@ -805,7 +810,7 @@ class Interpreter:
             if getattr(stmt, 'target', '').upper() == "BUCKETS":
                 buckets_data = self.engine.show("buckets")
                 all_b = json.loads(buckets_data) if buckets_data else []
-                t = self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
+                t = self.context.get("tenant_id", self.context.get("user", "").split(".")[0]) if "user" in self.context else "cron"
                 vis = []
                 is_dev = self.context.get("auth_level") == "dev"
                 for b in all_b:
@@ -818,6 +823,7 @@ class Interpreter:
 
 
         elif stmt_type == "SeverStmt":
+            tenant = self.context.get("tenant_id", self.context.get("user", "").split(".")[0]) if "user" in self.context else "cron"
             source = self._namespace_gid(getattr(stmt, 'source_gid', ''))
             target = self._namespace_gid(getattr(stmt, 'target_gid', ''))
             label = getattr(stmt, 'label', '')
@@ -829,9 +835,92 @@ class Interpreter:
                     b = b_doc.get("body", {})
                     if b.get("source") == source and b.get("target") == target:
                         if not label or b.get("label") == label:
+                            # WAL 4D MVCC Append
+                            hist_doc = dict(b)
+                            hist_doc["_event_type"] = "SEVER"
+                            hist_doc["_event_time"] = time.time() * 1000
+                            self.engine.pour("_history__bonds", f"{tenant}.{str(uuid.uuid4())}" if tenant != "cron" else str(uuid.uuid4()), json.dumps(hist_doc))
+                            
                             self.engine.delete(b_doc["gid"])
                             count += 1
             return {"status": "ok", "message": f"Severed {count} bonds."}
+
+        elif stmt_type == "ShapeViewStmt":
+            view_doc = {
+                "source": stmt.source_bucket,
+                "group_field": stmt.group_field,
+                "sum_field": stmt.sum_field
+            }
+            # Pour into _views metadata
+            self.engine.pour("_views", stmt.view_name, json.dumps(view_doc))
+            
+            # Perform initial DISTILL to bootstrap the view
+            # Note: This is an O(N) scan but it only happens once at creation
+            all_docs_str = self._scan_bucket_rls(stmt.source_bucket)
+            all_docs = json.loads(all_docs_str) if all_docs_str else []
+            
+            groups = {}
+            for d in all_docs:
+                body = d.get("body", {})
+                grp = body.get(stmt.group_field)
+                val = body.get(stmt.sum_field, 0)
+                if grp is not None:
+                    try:
+                        val = float(val)
+                        groups[str(grp)] = groups.get(str(grp), 0) + val
+                    except ValueError:
+                        pass
+                        
+            # Pour the aggregated results directly into the view bucket
+            for g, v in groups.items():
+                self.engine.pour(stmt.view_name, g, json.dumps({"_group": g, stmt.sum_field: v}))
+                
+            return {"status": "ok", "message": f"Continuous Materialized View '{stmt.view_name}' initialized."}
+
+        elif stmt_type == "RestoreBucketStmt":
+            bucket = stmt.bucket.lower()
+            r_data = self._scan_bucket_rls("_rubbish")
+            rubbish = json.loads(r_data) if r_data else []
+            count = 0
+            for r in rubbish:
+                r_gid = r['gid']
+                r_doc = self.engine.get(r_gid)
+                if not r_doc: continue
+                body = json.loads(r_doc)
+                if body.get("original_bucket") == bucket:
+                    # Restore it!
+                    self.engine.pour(bucket, body.get("original_id"), json.dumps(body.get("document", {})))
+                    self.engine.delete(r_gid)
+                    count += 1
+            return {"status": "ok", "message": f"Restored {count} documents back to '{bucket}' from the _rubbish bin."}
+
+        elif stmt_type == "DropBucketStmt":
+            import time
+            bucket = stmt.bucket.lower()
+            
+            docs_json = self._scan_bucket_rls(bucket)
+            docs = json.loads(docs_json) if docs_json else []
+            count = 0
+            for r in docs:
+                gid = r['gid']
+                doc_json = self.engine.get(gid)
+                if doc_json:
+                    rubbish_entry = {
+                        "original_bucket": bucket,
+                        "original_id": gid.split(":")[-1],
+                        "deleted_at": time.time(),
+                        "document": json.loads(doc_json)
+                    }
+                    tenant = self.context.get("tenant_id", self.context.get("user", "").split(".")[0]) if "user" in self.context else "cron"
+                    r_gid = f"{tenant}.{gid}" if tenant != "cron" else gid
+                    self.engine.pour("_rubbish", r_gid, json.dumps(rubbish_entry))
+                self.engine.delete(gid)
+                count += 1
+                
+            if hasattr(self.engine, 'delete_bucket'):
+                self.engine.delete_bucket(bucket)
+            
+            return {"status": "ok", "message": f"Dropped bucket '{bucket}'. Safely moved {count} documents to the _rubbish bin."}
 
         elif stmt_type == "DropSecurityStmt":
             bucket = getattr(stmt, 'bucket', '')
@@ -875,49 +964,130 @@ class Interpreter:
             return {"status": "ok", "description": f"Bucket '{target}' ({len(docs)} docs). Stats computed successfully."}
 
         elif stmt_type == "DistillStmt":
+            import ctypes
+            import os
+            from collections import defaultdict
+            
             bucket = getattr(stmt, 'bucket', '')
             agg_function = getattr(stmt, 'agg_function', '').upper()
             field = getattr(stmt, 'field', '')
+            group_by = getattr(stmt, 'group_by', None)
+            alias = getattr(stmt, 'alias', None)
             
             docs_json = self._scan_bucket_rls(bucket)
             docs = json.loads(docs_json) if docs_json else []
             
-            values = []
+            # Grouping
+            groups = defaultdict(list)
             for r in docs:
                 doc_str = self.engine.get(r['gid'])
                 if doc_str:
                     doc_body = json.loads(doc_str)
                     val = doc_body.get(field)
                     if isinstance(val, (int, float)):
-                        values.append(val)
+                        g_key = doc_body.get(group_by) if group_by else "_all_"
+                        groups[g_key].append(val)
                         
-            if not values:
-                return {"status": "ok", "result": None, "count": 0}
+            if not groups:
+                return {"status": "ok", "result": [], "count": 0}
                 
-            if agg_function == "TOTAL": res = sum(values)
-            elif agg_function == "AVERAGE": res = sum(values) / len(values)
-            elif agg_function == "MIN": res = min(values)
-            elif agg_function == "MAX": res = max(values)
-            elif agg_function == "SPREAD": res = max(values) - min(values)
-            else:
-                return {"status": "error", "message": f"Unknown aggregation: {agg_function}"}
+            results = []
+            for g_key, values in groups.items():
+                if agg_function in ["TOTAL", "SUM"]:
+                    if len(values) > 0 and hasattr(self.engine, 'simd_sum_avx512'):
+                        # C++ AVX-512 SIMD Execution!
+                        float_list = [float(v) for v in values]
+                        res = self.engine.simd_sum_avx512(float_list)
+                    else:
+                        res = sum(values)
+                elif agg_function == "AVERAGE": res = sum(values) / len(values)
+                elif agg_function == "MIN": res = min(values)
+                elif agg_function == "MAX": res = max(values)
+                elif agg_function == "SPREAD": res = max(values) - min(values)
+                else: return {"status": "error", "message": f"Unknown aggregation: {agg_function}"}
                 
-            return {"status": "ok", "result": round(res, 4), "count": len(values), "function": agg_function, "field": field}
+                # Format output
+                out_dict = {}
+                if group_by: out_dict[group_by] = g_key
+                out_dict[alias if alias else agg_function.lower()] = res
+                results.append(out_dict)
+                
+            # If no group_by, just return the single dict
+            if not group_by and len(results) == 1:
+                return {"status": "ok", "result": results[0], "count": sum(len(v) for v in groups.values())}
+                
+            return {"status": "ok", "result": results, "count": sum(len(v) for v in groups.values())}
+
+        elif stmt_type == "FindHowStmt":
+            import dateparser
+            t1 = dateparser.parse(stmt.start_time)
+            t2 = dateparser.parse(stmt.end_time)
+            ts1 = t1.timestamp() * 1000 if t1 else 0
+            ts2 = t2.timestamp() * 1000 if t2 else float('inf')
+            
+            b_data = self._scan_bucket_rls("_history__bonds")
+            bonds = json.loads(b_data) if b_data else []
+            
+            changes = []
+            for b in sorted(bonds, key=lambda x: x.get("body", {}).get("_event_time", 0)):
+                body = b.get("body", {})
+                evt_time = body.get("_event_time", 0)
+                if not (ts1 <= evt_time <= ts2): continue
+                
+                doc_id_ns = self._namespace_gid(stmt.doc_id)
+                if body.get("label") == stmt.bond_name and (body.get("source") == doc_id_ns or body.get("target") == doc_id_ns):
+                    changes.append({
+                        "time": evt_time,
+                        "action": body.get("_event_type"),
+                        "source": body.get("source"),
+                        "target": body.get("target"),
+                        "label": body.get("label")
+                    })
+            
+            return {"status": "ok", "mode": "DRIFT", "changes": changes}
 
         elif stmt_type == "FollowStmt":
-            doc_id = getattr(stmt, 'doc_id', '')
-            bond_label = getattr(stmt, 'bond_label', '')
+            doc_id = getattr(stmt, 'doc_key', '')
+            bond_label = getattr(stmt, 'bond_name', '')
             direction = getattr(stmt, 'direction', 'OUT').upper()
             depth = getattr(stmt, 'depth', 1)
             limit = getattr(stmt, 'limit', 100)
             
-            bonds_json = self._scan_bucket_rls("_bonds")
+            as_of = getattr(stmt, 'as_of', None)
+            as_of_ts = None
+            if as_of:
+                import dateparser
+                parsed = dateparser.parse(as_of)
+                if parsed: as_of_ts = parsed.timestamp() * 1000
+                else:
+                    try: as_of_ts = float(as_of)
+                    except ValueError: pass
+
+            bonds_json = self._scan_bucket_rls("_history__bonds" if as_of_ts else "_bonds")
             bonds = json.loads(bonds_json) if bonds_json else []
             
+            if as_of_ts:
+                valid_bonds = {}
+                for b_event in sorted(bonds, key=lambda x: x.get("body", {}).get("_event_time", 0)):
+                    body = b_event.get("body", {})
+                    evt_time = body.get("_event_time", 0)
+                    if evt_time > as_of_ts: continue
+                    sig = f"{body.get('source')}->{body.get('target')}@{body.get('label')}"
+                    if body.get("_event_type") == "SEVER":
+                        if sig in valid_bonds: del valid_bonds[sig]
+                    else:
+                        valid_bonds[sig] = b_event
+                # Re-package as normal bonds
+                bonds = list(valid_bonds.values())
+                for i in range(len(bonds)):
+                    # Extract the history event body back into the root for compatibility with follow logic
+                    bonds[i]["body"] = bonds[i]["body"]
+            
             visited = set()
-            queue = [(doc_id, 0)]
+            queue = [(self._namespace_gid(doc_id), 0)]
             results = []
             
+            limit = limit or float('inf')
             while queue and len(results) < limit:
                 current_id, current_depth = queue.pop(0)
                 if current_id in visited: continue
@@ -939,7 +1109,7 @@ class Interpreter:
             return {"status": "ok", "mode": "FOLLOW", "documents": results, "count": len(results)}
 
         elif stmt_type == "ShapeBucketStmt":
-            path = getattr(stmt, 'path', '')
+            path = getattr(stmt, 'path', '').lower()
             max_docs = getattr(stmt, 'max_documents', None)
             compression = getattr(stmt, 'compression', None)
             ttl = getattr(stmt, 'ttl', None)
@@ -1004,9 +1174,16 @@ class Interpreter:
                     "exclusive": getattr(stmt, 'exclusive', False),
                     "expires_at": expires
                 }
-                tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
+                tenant = self.context.get("tenant_id", self.context.get("user", "").split(".")[0]) if "user" in self.context else "cron"
                 bond_id = f"{tenant}.{str(uuid.uuid4())}" if tenant != "cron" else str(uuid.uuid4())
                 self.engine.pour("_bonds", bond_id, json.dumps(bond_doc))
+                
+                # WAL 4D MVCC Append
+                hist_doc = dict(bond_doc)
+                hist_doc["_event_type"] = "LINK"
+                hist_doc["_event_time"] = time.time() * 1000
+                self.engine.pour("_history__bonds", f"{tenant}.{str(uuid.uuid4())}" if tenant != "cron" else str(uuid.uuid4()), json.dumps(hist_doc))
+                
                 self.emitted_events.append({"event": "LINK", "target": bond_id, "bucket": "_bonds", "data": bond_doc})
                 count += 1
                 
@@ -1016,6 +1193,11 @@ class Interpreter:
                     bond_doc_2["target"] = source_gid
                     bond_id_2 = f"{tenant}.{str(uuid.uuid4())}" if tenant != "cron" else str(uuid.uuid4())
                     self.engine.pour("_bonds", bond_id_2, json.dumps(bond_doc_2))
+                    # WAL 4D MVCC Append
+                    hist_doc2 = dict(bond_doc_2)
+                    hist_doc2["_event_type"] = "LINK"
+                    hist_doc2["_event_time"] = time.time() * 1000
+                    self.engine.pour("_history__bonds", f"{tenant}.{str(uuid.uuid4())}" if tenant != "cron" else str(uuid.uuid4()), json.dumps(hist_doc2))
                     count += 1
                 
             return {"status": "ok", "message": f"{count} 15-Dimensional Bonds '{getattr(stmt, 'label', '')}' created."}
@@ -1050,7 +1232,7 @@ class Interpreter:
                 if self.engine:
                     cond_str = " ".join([t.lexeme for t in condition])
                     doc = {"type": "policy", "bucket": bucket, "name": name, "action": action, "condition_str": cond_str}
-                    tenant = self.context.get("user", "").split(".")[0]
+                    tenant = self.context.get("tenant_id", self.context.get("user", "").split(".")[0])
                     pol_id = f"{tenant}.policy_{bucket}_{name}" if tenant != "cron" else f"policy_{bucket}_{name}"
                     self.engine.pour("_security_policies", pol_id, json.dumps(doc))
                 return {"status": "ok", "policy": name, "message": f"Document Security Level (DSL) policy '{name}' active on '{bucket}'"}
@@ -1088,7 +1270,7 @@ class Interpreter:
             if self.engine:
                 cond_str = " ".join([t.lexeme for t in condition])
                 doc = {"type": "mask", "bucket": bucket, "field": field, "condition_str": cond_str}
-                tenant = self.context.get("user", "").split(".")[0]
+                tenant = self.context.get("tenant_id", self.context.get("user", "").split(".")[0])
                 mask_id = f"{tenant}.mask_{bucket}_{field}" if tenant != "cron" else f"mask_{bucket}_{field}"
                 self.engine.pour("_security_policies", mask_id, json.dumps(doc))
             return {"status": "ok", "message": f"Masking rule applied to field '{field}' on bucket '{bucket}'."}
@@ -1217,7 +1399,7 @@ class Interpreter:
                     "deleted_at": time.time(),
                     "body": json.loads(doc_json)
                 }
-                tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
+                tenant = self.context.get("tenant_id", self.context.get("user", "").split(".")[0]) if "user" in self.context else "cron"
                 r_gid = f"{tenant}.{gid}" if tenant != "cron" else gid
                 self.engine.pour("_rubbish", r_gid, json.dumps(rubbish_entry))
                 self.engine.delete(gid)
@@ -1239,7 +1421,7 @@ class Interpreter:
                                 "deleted_at": time.time(),
                                 "body": json.loads(t_json)
                             }
-                            tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
+                            tenant = self.context.get("tenant_id", self.context.get("user", "").split(".")[0]) if "user" in self.context else "cron"
                             r_t_gid = f"{tenant}.{t_gid}" if tenant != "cron" else t_gid
                             self.engine.pour("_rubbish", r_t_gid, json.dumps(rubbish_entry))
                             self.engine.delete(t_gid)

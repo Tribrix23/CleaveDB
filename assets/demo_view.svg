@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="230">
+  <rect width="100%" height="100%" rx="8" ry="8" fill="#0C0C0C" stroke="#333333" stroke-width="1"/>
+  <rect width="100%" height="24" rx="8" ry="8" fill="#1C1C1C" />
+  <rect width="100%" height="12" y="12" fill="#1C1C1C" />
+  <path d="M 740 12 L 750 12" stroke="#FFFFFF" stroke-width="1.5" />
+  <rect x="765" y="6" width="10" height="10" stroke="#FFFFFF" stroke-width="1.5" fill="none" />
+  <path d="M 790 6 L 800 16 M 800 6 L 790 16" stroke="#FFFFFF" stroke-width="1.5" />
+  <text x="15" y="16" fill="#FFFFFF" font-family="Segoe UI, sans-serif" font-size="11">PowerShell - SHAPE VIEW</text>
+  <g transform="translate(15, 40)" font-family="Consolas, monospace" font-size="13">
+    <text x="0" y="0" fill="#CCCCCC" xml:space="preserve"><tspan fill="#F9F1A5">PS C:\Users\David&gt;</tspan> cleave-cli</text>
+    <text x="0" y="20" fill="#CCCCCC" xml:space="preserve"></text>
+    <text x="0" y="40" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">SHAPE VIEW</tspan> &quot;department_budgets&quot; <tspan fill="#3B78FF">AS CONTINUOUS DISTILL FROM</tspan> &quot;employees&quot;</text>
+    <text x="0" y="60" fill="#CCCCCC" xml:space="preserve">          <tspan fill="#3B78FF">GROUP BY</tspan> &quot;department&quot; <tspan fill="#3B78FF">SUM</tspan> &quot;salary&quot;</text>
+    <text x="0" y="80" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[{&quot;status&quot;: &quot;ok&quot;, &quot;message&quot;: &quot;Continuous Materialized View 'department_budgets' initialized.&quot;}]</tspan></text>
+    <text x="0" y="100" fill="#CCCCCC" xml:space="preserve"></text>
+    <text x="0" y="120" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">POUR INTO</tspan> employees <tspan fill="#3B78FF">RANDOM</tspan> {&quot;department&quot;: &quot;Engineering&quot;, &quot;salary&quot;: 25000}</text>
+    <text x="0" y="140" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[{&quot;status&quot;: &quot;ok&quot;, &quot;gid&quot;: &quot;...&quot;}]</tspan></text>
+    <text x="0" y="160" fill="#CCCCCC" xml:space="preserve"></text>
+    <text x="0" y="180" fill="#CCCCCC" xml:space="preserve"><tspan fill="#16C60C">cleavedb&gt;</tspan> <tspan fill="#3B78FF">FIND</tspan> department_budgets</text>
+    <text x="0" y="200" fill="#CCCCCC" xml:space="preserve"><tspan fill="#CCCCCC">[{&quot;_group&quot;: &quot;Engineering&quot;, &quot;salary&quot;: 25000.0}]</tspan></text>
+  </g>
+</svg>

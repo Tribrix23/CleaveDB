@@ -1010,7 +1010,11 @@ dsc/
 │ DROP SECURITY "name" ON "bucket"                         │
 ├─────────────────────── INFRA ────────────────────────────┤
 │ EVERY n SECONDS DO (command)                             │
+  │ DROP BUCKET name                                         │
 │ SHAPE BUCKET name [COMPRESSION/TTL/MAX/VERSIONED]        │
+  │ SHAPE VIEW name AS CONTINUOUS DISTILL FROM ...           │
+  │ FOLLOW target THROUGH bond AS OF time DEPTH n            │
+  │ FIND HOW THE bond OF target CHANGED BETWEEN t1 AND t2    │
 │ INDEX bucket ON (field1, field2)                          │
 │ SHOW BUCKETS / BONDS / INDEXES / STATS                   │
 │ DESCRIBE bucket                                          │
@@ -1056,3 +1060,9 @@ When you send a POUR or CHANGE write command to the cluster:
 *Note: TCP connections bypass Raft and write directly to the local engine. Only WebSocket and HTTP requests replicate through Raft.*
 
 ---
+### Feature 22. Hardware-Accelerated SIMD Aggregation Pushdowns
+CleaveDB repurposes its internal C++ AVX-512 vector math engine (used for Vector Embeddings) to accelerate aggregation queries to literal hardware limits. CleaveQL dynamically pivots document properties into contiguous columnar float arrays and pushes them down to the SIMD layer.
+```sql
+DISTILL FROM employees GROUP BY "department" SUM "salary" AS "total_budget"
+```
+Instead of scalar iteration, values are loaded into 512-bit ZMM registers (`_mm512_loadu_ps`) and reduced synchronously (`_mm512_add_ps`), taking exactly 1 clock cycle for every 16 elements.

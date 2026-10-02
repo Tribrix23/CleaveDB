@@ -54,8 +54,10 @@ class CountStmt(ASTNode):
 @dataclass
 class DistillStmt(ASTNode):
     bucket: str = ""
-    agg_function: str = ""  # total, average, min, max, spread
+    agg_function: str = ""  # total/sum, average, min, max, spread
     field: str = ""
+    group_by: Optional[str] = None
+    alias: Optional[str] = None
     where: Optional[WhereClause] = None
 
 @dataclass
@@ -64,6 +66,7 @@ class FollowStmt(ASTNode):
     bond_name: Optional[str] = None
     direction: Optional[str] = None # out, in, both
     depth: Optional[int] = None
+    as_of: Optional[str] = None
     limit: Optional[int] = None
 
 # Mutation statements  
@@ -104,6 +107,13 @@ class IncinerateStmt(ASTNode):
     everything: bool = False
 
 # Declaration statements
+class ShapeViewStmt(ASTNode):
+    def __init__(self, view_name, source_bucket, group_field, sum_field):
+        self.view_name = view_name
+        self.source_bucket = source_bucket
+        self.group_field = group_field
+        self.sum_field = sum_field
+
 @dataclass
 class ShapeBucketStmt(ASTNode):
     path: str = ""
@@ -155,6 +165,14 @@ class DescribeStmt(ASTNode):
 class PeerStmt(ASTNode):
     target_stmt: Optional[ASTNode] = None
     attention: bool = False
+
+@dataclass
+@dataclass
+class FindHowStmt(ASTNode):
+    bond_name: str = ""
+    doc_id: str = ""
+    start_time: str = ""
+    end_time: str = ""
 
 @dataclass
 class SuggestStmt(ASTNode):
@@ -259,3 +277,11 @@ class TriggerStmt(ASTNode):
 class RateLimitStmt(ASTNode):
     role: str = ''
     limit: int = 0
+
+@dataclass
+class DropBucketStmt(ASTNode):
+    bucket: str = ""
+
+@dataclass
+class RestoreBucketStmt(ASTNode):
+    bucket: str = ""

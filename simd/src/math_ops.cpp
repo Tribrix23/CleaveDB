@@ -136,3 +136,63 @@ extern "C" {
         return cleavedb::simd::dot_product_scalar(a, b, n);
     }
 }
+
+namespace cleavedb::simd {
+
+#include "cpu_detect.h"
+
+float sum_avx512(const float* arr, int n) {
+#if defined(__AVX512F__)
+    if (!cleavedb_has_avx512()) {
+        float sum = 0.0f;
+        for (int i = 0; i < n; ++i) sum += arr[i];
+        return sum;
+    }
+    __m512 sum0 = _mm512_setzero_ps();
+    __m512 sum1 = _mm512_setzero_ps();
+    __m512 sum2 = _mm512_setzero_ps();
+    __m512 sum3 = _mm512_setzero_ps();
+    
+    int i = 0;
+    int limit = n - 63;
+    
+    for (; i < limit; i += 64) {
+        __m512 v0 = _mm512_loadu_ps(arr + i);
+        __m512 v1 = _mm512_loadu_ps(arr + i + 16);
+        __m512 v2 = _mm512_loadu_ps(arr + i + 32);
+        __m512 v3 = _mm512_loadu_ps(arr + i + 48);
+        
+        sum0 = _mm512_add_ps(sum0, v0);
+        sum1 = _mm512_add_ps(sum1, v1);
+        sum2 = _mm512_add_ps(sum2, v2);
+        sum3 = _mm512_add_ps(sum3, v3);
+    }
+    
+    __m512 total_sum = _mm512_add_ps(_mm512_add_ps(sum0, sum1), _mm512_add_ps(sum2, sum3));
+    
+    float temp[16];
+    _mm512_storeu_ps(temp, total_sum);
+    float scalar_sum = 0.0f;
+    for (int j = 0; j < 16; ++j) {
+        scalar_sum += temp[j];
+    }
+    
+    for (; i < n; ++i) {
+        scalar_sum += arr[i];
+    }
+    
+    return scalar_sum;
+#else
+    float sum = 0.0f;
+    for (int i = 0; i < n; ++i) sum += arr[i];
+    return sum;
+#endif
+}
+
+} // namespace cleavedb::simd
+
+extern "C" {
+    float cleavedb_sum_avx512(const float* arr, int n) {
+        return cleavedb::simd::sum_avx512(arr, n);
+    }
+}

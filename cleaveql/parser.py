@@ -86,6 +86,8 @@ class Parser:
             return self.bond_stmt()
         if self.match(TokenType.UNLINK, TokenType.SEVER):
             return self.sever_stmt()
+        if self.match(TokenType.RESTORE):
+            return self.restore_stmt()
         if self.match(TokenType.DROP):
             return self.drop_stmt()
         if self.match(TokenType.LIMIT):
@@ -130,7 +132,19 @@ class Parser:
         # If it doesn't match any statement, throw an error
         raise self.error(self.peek(), "Expected a statement.")
 
-    def scoop_stmt(self) -> ScoopStmt:
+    def scoop_stmt(self) -> Any:
+        if self.match(TokenType.HOW):
+            self.consume(TokenType.THE, "Expected 'THE'.")
+            bond_name = self.consume_string("Expected bond name.") if self.peek().type == TokenType.STRING else self.consume_identifier("Expected bond name.")
+            self.consume(TokenType.OF, "Expected 'OF'.")
+            doc_id = self.consume_string("Expected doc ID.") if self.peek().type == TokenType.STRING else self.consume_identifier("Expected doc ID.")
+            self.consume(TokenType.CHANGED, "Expected 'CHANGED'.")
+            self.consume(TokenType.BETWEEN, "Expected 'BETWEEN'.")
+            start_time = self.consume_string("Expected start time.") if self.peek().type == TokenType.STRING else self.consume_identifier("Expected start time.")
+            if self.match(TokenType.AND): pass
+            end_time = self.consume_string("Expected end time.") if self.peek().type == TokenType.STRING else self.consume_identifier("Expected end time.")
+            return FindHowStmt(bond_name=bond_name, doc_id=doc_id, start_time=start_time, end_time=end_time)
+
         mode = "EVERYTHING"
         mode_count = None
         yield_fields = []
@@ -346,17 +360,35 @@ class Parser:
 
     def distill_stmt(self) -> DistillStmt:
         self.consume(TokenType.FROM, "Expected 'from' after 'distill'.")
-        bucket = self.consume_identifier("Expected bucket name.")
         
-        agg_function = self.consume_identifier("Expected aggregation function.")
-        self.consume(TokenType.OF, "Expected 'of' after aggregation function.")
-        field = self.consume_identifier("Expected field name.")
+        if self.match(TokenType.STRING): bucket = self.previous().value
+        else: bucket = self.consume_identifier("Expected bucket name.")
         
+        group_by = None
+        if self.match(TokenType.GROUP):
+            self.consume_identifier("Expected 'by' after group.") # 'by' is an identifier
+            if self.match(TokenType.STRING): group_by = self.previous().value
+            else: group_by = self.consume_identifier("Expected group field name.")
+            
+        if self.match(TokenType.STRING): agg_function = self.previous().value
+        else: agg_function = self.consume_identifier("Expected aggregation function (e.g. SUM, TOTAL).")
+        
+        # Support both old "OF field" and new ""field"" syntax
+        if self.match(TokenType.OF): pass 
+        
+        if self.match(TokenType.STRING): field = self.previous().value
+        else: field = self.consume_identifier("Expected field name to aggregate.")
+        
+        alias = None
+        if self.match(TokenType.AS):
+            if self.match(TokenType.STRING): alias = self.previous().value
+            else: alias = self.consume_identifier("Expected alias name.")
+
         clauses = []
         while self.match(TokenType.WHERE, TokenType.WHOSE, TokenType.MEANING, TokenType.MENTIONING, TokenType.NEAR, TokenType.SINCE, TokenType.UNTIL, TokenType.ORDER, TokenType.INCLUDE, TokenType.MATCHING, TokenType.YIELD):
             clauses.append(self.scoop_clause(self.previous().type))
             
-        return DistillStmt(bucket=bucket, agg_function=agg_function, field=field)
+        return DistillStmt(bucket=bucket, agg_function=agg_function, field=field, group_by=group_by, alias=alias)
 
     def follow_stmt(self) -> FollowStmt:
         doc_key = self.consume_doc_id("Expected document key.")
@@ -366,12 +398,17 @@ class Parser:
             if self.match(TokenType.STRING): bond = self.previous().value
             else: bond = self.consume_identifier("Expected bond name.")
             
-        direction = None
+        direction = "OUT"
         if self.match(TokenType.DIRECTION):
             if self.match(TokenType.OUT, TokenType.IN, TokenType.BOTH):
                 direction = self.previous().lexeme
             else:
                 raise self.error(self.peek(), "Expected 'out', 'in', or 'both' for direction.")
+                
+        as_of = None
+        if self.match(TokenType.AS):
+            if self.match(TokenType.OF):
+                as_of = self.consume_string("Expected time string for AS OF.")
                 
         depth = None
         if self.match(TokenType.DEPTH):
@@ -390,7 +427,7 @@ class Parser:
         if self.match(TokenType.LIMIT):
             limit = self.consume(TokenType.INTEGER, "Expected integer for limit.").value
             
-        return FollowStmt(doc_key=doc_key, bond_name=bond, direction=direction, depth=depth, limit=limit)
+        return FollowStmt(doc_key=doc_key, bond_name=bond, direction=direction, depth=depth, limit=limit, as_of=as_of)
 
     def pour_stmt(self) -> Any:
         if self.match(TokenType.STRING):
@@ -512,6 +549,20 @@ class Parser:
         return IncinerateStmt(doc_id=doc_id)
 
     def shape_stmt(self) -> Any:
+        if self.match(TokenType.VIEW):
+            view_name = self.consume_string("Expected view name as string.")
+            self.consume(TokenType.AS, "Expected 'AS'.")
+            self.consume(TokenType.CONTINUOUS, "Expected 'CONTINUOUS'.")
+            self.consume(TokenType.DISTILL, "Expected 'DISTILL'.")
+            self.consume(TokenType.FROM, "Expected 'FROM'.")
+            source_bucket = self.consume_string("Expected source bucket as string.")
+            self.consume(TokenType.GROUP, "Expected 'GROUP'.")
+            self.consume(TokenType.BY, "Expected 'BY'.")
+            group_field = self.consume_string("Expected group field as string.")
+            self.consume(TokenType.SUM, "Expected 'SUM'.")
+            sum_field = self.consume_string("Expected sum field as string.")
+            return ShapeViewStmt(view_name=view_name, source_bucket=source_bucket, group_field=group_field, sum_field=sum_field)
+            
         if self.match(TokenType.BUCKET) or self.peek().type == TokenType.IDENTIFIER:
             if self.previous().type != TokenType.BUCKET: pass
             path = self.consume_identifier("Expected bucket path.")
@@ -1141,9 +1192,24 @@ class Parser:
             label = ""
         return SeverStmt(source_gid=source_gid, target_gid=target_gid, label=label)
 
-    def drop_stmt(self) -> DropSecurityStmt:
-        self.consume(TokenType.SECURITY, "Expected 'security'.")
-        name = self.consume_string("Expected policy name.")
+    def restore_stmt(self) -> RestoreBucketStmt:
+        self.match(TokenType.BUCKET) # Optional 'BUCKET' keyword
+        if self.match(TokenType.STRING): bucket = self.previous().value
+        else: bucket = self.consume_identifier("Expected bucket name.")
+        return RestoreBucketStmt(bucket=bucket)
+
+    def drop_stmt(self) -> Any:
+        if self.match(TokenType.SECURITY):
+            name = self.consume_string("Expected policy name.")
+            self.consume(TokenType.ON, "Expected 'on'.")
+            if self.match(TokenType.STRING): bucket = self.previous().value
+            else: bucket = self.consume_identifier("Expected bucket name.")
+            return DropSecurityStmt(name=name, bucket=bucket)
+            
+        self.match(TokenType.BUCKET) # Optional
+        if self.match(TokenType.STRING): bucket = self.previous().value
+        else: bucket = self.consume_identifier("Expected bucket name.")
+        return DropBucketStmt(bucket=bucket)
         self.consume(TokenType.ON, "Expected 'on'.")
         if self.match(TokenType.STRING): bucket = self.previous().value
         else: bucket = self.consume_identifier("Expected bucket name.")

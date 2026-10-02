@@ -11,6 +11,7 @@ from prompt_toolkit.key_binding import KeyBindings
 import socket
 import json
 import sys
+import pathlib
 import getpass
 import argparse
 import os
@@ -32,6 +33,18 @@ SECURITY_QUESTIONS = [
 ]
 
 DETAILED_HELP = {
+
+"how": """
+================================================================================
+  FIND HOW THE <bond> OF <target> CHANGED BETWEEN <t1> AND <t2>
+================================================================================
+
+Examines the 4D Multi-Version Concurrency Control (MVCC) Write-Ahead Log to detect 
+graph drift over a window of time. Returns all LINK and SEVER events.
+
+Example:
+    FIND HOW THE "manager" OF "users:diana" CHANGED BETWEEN "last month" AND "today"
+""",
 
 "find pattern": """
 ================================================================================
@@ -1079,7 +1092,7 @@ def main():
             import subprocess, time, os
             print(f"Server not found at {args.host}:{args.port}. Auto-starting background server...")
             try:
-                import sys, pathlib
+                import pathlib
                 # Find the root directory where cleavedb_server.py actually lives
                 exe_dir = pathlib.Path(sys.executable if getattr(sys, 'frozen', False) else __file__).parent
                 
@@ -1101,10 +1114,24 @@ def main():
                     time.sleep(5)
                     sys.exit(1)
                 
-                print("Booting up database engine...")
-                time.sleep(3)
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.connect((args.host, args.port))
+                print("Booting up database engine... (This can take up to 30 seconds for the AI Transformer and SIMD engine)")
+                
+                # Retry loop for up to 30 seconds
+                connected = False
+                for _ in range(30):
+                    time.sleep(1)
+                    try:
+                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        s.connect((args.host, args.port))
+                        connected = True
+                        break
+                    except Exception:
+                        continue
+                
+                if not connected:
+                    print("Auto-start failed: Timed out waiting for database engine after 30 seconds.")
+                    time.sleep(5)
+                    sys.exit(1)
             except Exception as e:
                 print(f"Auto-start failed: {e}")
                 time.sleep(5)

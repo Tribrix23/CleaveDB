@@ -282,6 +282,14 @@ impl CleaveDB {
         Ok(format!("{}, direct_get={}, cursor_count={}, samples={:?}",
             root_info, sample_result.is_some(), count, sample_keys))
     }
+
+    /// Computes the sum of a contiguous float32 array using AVX-512 vectorization.
+    #[pyo3(signature = (arr))]
+    fn simd_sum_avx512(&self, arr: Vec<f32>) -> PyResult<f32> {
+        let n = arr.len() as std::os::raw::c_int;
+        let sum = unsafe { crate::simd_ffi::cleavedb_sum_avx512(arr.as_ptr(), n) };
+        Ok(sum)
+    }
 }
 
 #[pymodule]
@@ -289,8 +297,3 @@ fn cleavedb3_storage(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CleaveDB>()?;
     Ok(())
 }
-
-
-
-
-

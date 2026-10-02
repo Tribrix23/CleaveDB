@@ -5,6 +5,7 @@ use std::os::raw::{c_float, c_int, c_uchar};
 
 extern "C" {
     // math_ops.h
+    pub fn cleavedb_sum_avx512(a: *const c_float, n: c_int) -> c_float;
     fn cleavedb_dot_product_avx512(a: *const c_float, b: *const c_float, n: c_int) -> c_float;
     fn cleavedb_dot_product_avx2(a: *const c_float, b: *const c_float, n: c_int) -> c_float;
     fn cleavedb_dot_product_scalar(a: *const c_float, b: *const c_float, n: c_int) -> c_float;

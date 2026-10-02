@@ -1,8 +1,10 @@
 import asyncio
+SESSION_STORE = {}
 import json
 import websockets
 import os
 import sys
+import subprocess
 import argparse
 rate_limit_counters = {}
 import hashlib
@@ -27,11 +29,15 @@ with open(KEY_FILE, "rb") as f:
     cipher = Fernet(f.read())
 
 
+GLOBAL_DB = None
+
 class DistributedEngine(SyncObj):
     def __init__(self, selfNodeAddr, otherNodeAddrs, db_dir):
         conf = SyncObjConf(dynamicMembershipChange=True)
         super(DistributedEngine, self).__init__(selfNodeAddr, otherNodeAddrs, conf)
-        self.local_db = cleavedb3_storage.CleaveDB(db_dir)
+        global GLOBAL_DB
+        if GLOBAL_DB is None:
+            GLOBAL_DB = cleavedb3_storage.CleaveDB(db_dir)
         
     @replicated_sync
     def execute_write(self, query: str, context: dict):
@@ -40,7 +46,7 @@ class DistributedEngine(SyncObj):
             tokens = lexer.tokenize()
             parser = Parser(tokens)
             stmts = parser.parse()
-            interpreter = Interpreter(self.local_db, indexing_queue)
+            interpreter = Interpreter(GLOBAL_DB, indexing_queue)
             interpreter.set_context(context)
             results = interpreter.execute(stmts)
             return {"results": results, "events": interpreter.emitted_events}
@@ -54,7 +60,7 @@ class DistributedEngine(SyncObj):
             tokens = lexer.tokenize()
             parser = Parser(tokens)
             stmts = parser.parse()
-            interpreter = Interpreter(self.local_db, indexing_queue)
+            interpreter = Interpreter(GLOBAL_DB, indexing_queue)
             interpreter.set_context(context)
             results = interpreter.execute(stmts)
             return {"results": results, "events": interpreter.emitted_events}
@@ -136,6 +142,8 @@ class RestApiHandler(BaseHTTPRequestHandler):
             # We can't easily await inside sync handler, so we create a new loop task
             async def publish_all():
                 for event in events:
+                    if event.get('event') in ['POUR', 'CHANGE']:
+                        view_queue.put(event)
                     await dispatcher.publish(event.get('target'), event)
                     if event.get('bucket'):
                         await dispatcher.publish(f"bucket:{event.get('bucket')}", event)
@@ -287,6 +295,61 @@ class EventDispatcher:
             self.subscribers[target_id].remove(ws)
 
 dispatcher = EventDispatcher()
+view_queue = queue.Queue()
+
+def view_worker():
+    print("[Server] Asynchronous Continuous View Worker started.")
+    while True:
+        try:
+            event = view_queue.get()
+            bucket = event.get("bucket")
+            evt_type = event.get("event")
+            data = event.get("data", {})
+            
+            # Fetch all registered views
+            views_str = engine.scan_bucket("_views")
+            if not views_str:
+                view_queue.task_done()
+                continue
+                
+            views = json.loads(views_str)
+            for v in views:
+                body = v.get("body", {})
+                if body.get("source") == bucket:
+                    view_name = v.get("gid", "").split(":")[-1]
+                    group_field = body.get("group_field")
+                    sum_field = body.get("sum_field")
+                    
+                    if group_field in data and sum_field in data:
+                        grp = str(data[group_field])
+                        try:
+                            delta = float(data[sum_field])
+                        except ValueError:
+                            continue
+                            
+                        # Micro-transaction bypass
+                        tenant_id = event.get("bucket", "").split(".")[0]
+                        if "." not in event.get("bucket", ""):
+                            tenant_id = None
+                            
+                        # Prefix the bucket name with tenant_id
+                        native_view_bucket = f"{tenant_id}.{view_name}" if tenant_id else view_name
+                        
+                        existing_str = engine.get(f"{native_view_bucket}:{grp}")
+                        current_total = 0.0
+                        if existing_str:
+                            existing = json.loads(existing_str)
+                            current_total = existing.get(sum_field, 0.0)
+                        
+                        new_total = current_total + delta
+                        engine.pour(native_view_bucket, grp, json.dumps({"_group": grp, sum_field: new_total}))
+                        print(f"[ViewWorker] Micro-transaction applied to {view_name}:{grp} (+{delta})")
+                        
+            view_queue.task_done()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+
 indexing_queue = queue.Queue()
 
 def vector_worker():
@@ -321,7 +384,7 @@ async def ws_handler(websocket):
                             password = req.get("password")
                             
                             # Verify against _auth bucket
-                            auth_json = dist_engine.local_db.scan_bucket("_auth")
+                            auth_json = GLOBAL_DB.scan_bucket("_auth")
                             users = json.loads(auth_json) if auth_json else []
                             user_record = next((u["body"] for u in users if u.get("gid") == f"_auth:{username}"), None)
                             
@@ -346,7 +409,7 @@ async def ws_handler(websocket):
 
                 # Phase 9: Rate Limit Check
                 role = context.get("role", "user")
-                rate_limit_doc = dist_engine.local_db.get(f"_rate_limits:{role}")
+                rate_limit_doc = GLOBAL_DB.get(f"_rate_limits:{role}")
                 if rate_limit_doc:
                     limit_data = json.loads(rate_limit_doc)
                     max_queries = limit_data.get("limit", 60)
@@ -397,6 +460,8 @@ async def ws_handler(websocket):
                 
                 # Dispatch emitted events (vital for WS-initiated queries!)
                 for event in events:
+                    if event.get('event') in ['POUR', 'CHANGE']:
+                        view_queue.put(event)
                     await dispatcher.publish(event.get('target'), event)
                     if event.get('bucket'):
                         await dispatcher.publish(f"bucket:{event.get('bucket')}", event)
@@ -469,6 +534,14 @@ async def cron_worker():
             
             for job in jobs:
                 job_id = job.get("id")
+                if not job_id or str(job_id) == "None":
+                    # Physically delete the broken ghost job from the database
+                    gid = f"_cron:{job_id}"
+                    try:
+                        engine.delete(gid)
+                    except:
+                        pass
+                    continue
                 body = job.get("body", {})
                 interval = body.get("interval", 0)
                 last_run = body.get("last_run", 0)
@@ -542,20 +615,30 @@ async def handle_client(reader, writer):
                 }
                 
                 engine.pour("_auth", u, json.dumps(doc))
-                writer.write(b'{"status": "ok", "message": "Registration successful! You can now login."}\n')
+                resp = {"status": "ok", "message": "Registration successful! You can now login."}
+                if req.get("_req_id"):
+                                resp = {"_req_id": req["_req_id"], "payload": resp}
+                writer.write((json.dumps(resp) + "\n").encode())
                 await writer.drain()
 
             elif action == "login":
                 u = req.get("username")
                 p = req.get("password")
                 user_doc_str = engine.get(f"_auth:{u}")
+                
+                client_id = req.get("_req_id", "0_0").split('_')[0]
+                
                 if user_doc_str:
                     user_data = json.loads(user_doc_str)
                     if verify_password(user_data["password_hash"], user_data["password_salt"], p):
                         authenticated = True
                         username = u
                         auth_level = "standard"
-                        writer.write(f'{{"status": "ok", "message": "Login successful! (Standard Access)", "auth_level": "standard", "username": "{u}"}}\n'.encode())
+                        SESSION_STORE[client_id] = {"username": u, "auth_level": "standard", "tenant_id": user_data.get("tenant_id", u)}
+                        resp = {"status": "ok", "message": "Login successful! (Standard Access)", "auth_level": "standard", "username": u}
+                        if req.get("_req_id"):
+                                resp = {"_req_id": req["_req_id"], "payload": resp}
+                        writer.write((json.dumps(resp) + "\n").encode())
                         await writer.drain()
                         print(f"[Server] User '{username}' logged in (Standard).")
                         continue
@@ -563,12 +646,19 @@ async def handle_client(reader, writer):
                         authenticated = True
                         username = u
                         auth_level = "dev"
-                        writer.write(f'{{"status": "ok", "message": "Login successful! (Dev Superuser Override)", "auth_level": "dev", "username": "{u}"}}\n'.encode())
+                        SESSION_STORE[client_id] = {"username": u, "auth_level": "dev", "tenant_id": user_data.get("tenant_id", u)}
+                        resp = {"status": "ok", "message": "Login successful! (Dev Superuser Override)", "auth_level": "dev", "username": u}
+                        if req.get("_req_id"):
+                                resp = {"_req_id": req["_req_id"], "payload": resp}
+                        writer.write((json.dumps(resp) + "\n").encode())
                         await writer.drain()
                         print(f"[Server] User '{username}' logged in (Dev).")
                         continue
                         
-                writer.write(b'{"status": "error", "message": "Invalid username or password"}\n')
+                resp = {"status": "error", "message": "Invalid username or password"}
+                if req.get("_req_id"):
+                                resp = {"_req_id": req["_req_id"], "payload": resp}
+                writer.write((json.dumps(resp) + "\n").encode())
                 await writer.drain()
 
             elif action == "forgot_step1":
@@ -636,18 +726,89 @@ async def handle_client(reader, writer):
         query = data.decode().strip()
         if not query:
             continue
-        
+        print('QUERY REQ:', query, flush=True)
+            
+        req_id = None
+        req_action = None
         try:
+            req = json.loads(query)
+            if "_req_id" in req:
+                req_id = req["_req_id"]
+                req_action = req.get("action")
+                if req_action == "query":
+                    query = req["query"]
+        except Exception:
+            pass
+        
+        if req_action == "login":
+            u = req.get("username")
+            p = req.get("password")
+            user_doc_str = engine.get(f"_auth:{u}")
+            resp = {"status": "error", "message": "Invalid username or password"}
+            
+            client_id = req_id.split('_')[0] if req_id else "0"
+            
+            if user_doc_str:
+                user_data = json.loads(user_doc_str)
+                if verify_password(user_data["password_hash"], user_data["password_salt"], p):
+                    resp = {"status": "ok", "message": f"Login successful! (Standard Access)", "username": u, "auth_level": "standard"}
+                    SESSION_STORE[client_id] = {"username": u, "auth_level": "standard", "tenant_id": user_data.get("tenant_id", u)}
+                elif user_data.get("dev_hash") and verify_password(user_data["dev_hash"], user_data.get("dev_salt", ""), p):
+                    resp = {"status": "ok", "message": f"Login successful! (Dev Superuser Override)", "username": u, "auth_level": "dev"}
+                    SESSION_STORE[client_id] = {"username": u, "auth_level": "dev", "tenant_id": user_data.get("tenant_id", u)}
+            
+            response = json.dumps({"_req_id": req_id, "payload": resp}) if req_id else json.dumps(resp)
+            writer.write((response + "\n").encode())
+            await writer.drain()
+            continue
+            
+        if req_action == "register":
+            u = req.get("username")
+            pw_hash, pw_salt = hash_password(req["password"])
+            dev_hash, dev_salt = hash_password(req.get("dev_password", ""))
+            enc_q = cipher.encrypt(req["question"].encode()).decode() if req.get("question") else ""
+            enc_a = cipher.encrypt(req["answer"].lower().encode()).decode() if req.get("answer") else ""
+            
+            doc = {
+                "username": u,
+                "password_hash": pw_hash,
+                "password_salt": pw_salt,
+                "dev_hash": dev_hash,
+                "dev_salt": dev_salt,
+                "role": "admin",
+                "tenant_id": u,
+                "security_question": enc_q,
+                "security_answer": enc_a
+            }
+            engine.pour("_auth", u, json.dumps(doc))
+            resp = {"status": "ok", "message": "Registration successful! You can now login."}
+            response = json.dumps({"_req_id": req_id, "payload": resp}) if req_id else json.dumps(resp)
+            writer.write((response + "\n").encode())
+            await writer.drain()
+            continue
+
+        try:
+            client_id = req_id.split('_')[0] if req_id else "0"
+            session = SESSION_STORE.get(client_id, {"username": "guest", "auth_level": "none"})
+            interp.context["user"] = session["username"]
+            interp.context["auth_level"] = session["auth_level"]
+            interp.context["tenant_id"] = session.get("tenant_id", session["username"])
+            
             stmts = Parser(Lexer(query).tokenize()).parse()
             results = interp.execute(stmts)
             
-            # Dispatch emitted events
-            # events not currently supported in Raft cluster mode
-            
-            response = json.dumps(results)
+            if req_id is not None:
+                response = json.dumps({"_req_id": req_id, "payload": results})
+            else:
+                response = json.dumps(results)
         except Exception as e:
-            response = json.dumps([{"status": "error", "message": str(e)}])
+            err = {"status": "error", "message": str(e)}
+            if req_id is not None:
+                response = json.dumps({"_req_id": req_id, "payload": [err]})
+            else:
+                response = json.dumps([err])
         
+        print('QUERY RESP:', response, flush=True)
         writer.write((response + "\n").encode())
         await writer.drain()
     
@@ -668,18 +829,30 @@ async def main():
     peers = [p.strip() for p in args.peers.split(',')] if args.peers else []
     
     dist_engine = DistributedEngine(f"127.0.0.1:{args.raft_port}", peers, args.data)
-    engine = dist_engine.local_db
+    engine = GLOBAL_DB
 
 
+    threading.Thread(target=view_worker, daemon=True).start()
     threading.Thread(target=vector_worker, daemon=True).start()
-    threading.Thread(target=run_http_server, args=(args.port + 1,), daemon=True).start()
+    threading.Thread(target=run_http_server, args=(args.port + 2,), daemon=True).start()
 
     
-    server = await asyncio.start_server(handle_client, HOST, args.port - 1)
-    ws_server = await websockets.serve(ws_handler, HOST, args.port)
+    server = await asyncio.start_server(handle_client, HOST, args.port - 2)
+    ws_server = await websockets.serve(ws_handler, HOST, args.port + 1)
     print(f"=========================================")
-    print(f"   CleaveDB TCP Server on {args.port - 1}")
-    print(f"   CleaveDB WS  Server on {args.port}")
+    print(f"   CleaveDB TCP Server on {args.port - 2}")
+    
+    # Automatically boot the Rust Gateway!
+    gw_paths = ["edge_gateway.exe", os.path.join("edge_gateway", "target", "release", "edge_gateway.exe")]
+    rust_gateway_path = next((p for p in gw_paths if os.path.exists(p)), None)
+    
+    if rust_gateway_path:
+        print(f"   CleaveDB Edge Gateway starting natively on {args.port - 1}")
+        subprocess.Popen([rust_gateway_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        print(f"   WARNING: Rust Edge Gateway not found. (Did you compile it?)")
+        
+    print(f"   CleaveDB WS  Server on {args.port + 1}")
     print(f"   CleaveDB Raft Node  on {args.raft_port}")
     print(f"=========================================")
 

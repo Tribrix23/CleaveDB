@@ -18,6 +18,7 @@ float dot_product_scalar(const float* a, const float* b, int n);
 
 // C FFI exports for Rust
 extern "C" {
+    float cleavedb_sum_avx512(const float* arr, int n);
     float cleavedb_dot_product_avx512(const float* a, const float* b, int n);
     float cleavedb_dot_product_avx2(const float* a, const float* b, int n);
     float cleavedb_dot_product_scalar(const float* a, const float* b, int n);
