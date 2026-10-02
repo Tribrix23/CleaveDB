@@ -14,35 +14,84 @@ from .security import PolicyEngine, SecurityError
 
 
 
+
+class TenantEngineProxy:
+    def __init__(self, engine, context):
+        self.engine = engine
+        self.context = context
+        
+    def _tenant(self):
+        return self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
+        
+    def _ns(self, bucket):
+        if not bucket or bucket.startswith("_"): return bucket
+        t = self._tenant()
+        if t == "cron": return bucket
+        return f"{t}.{bucket}"
+        
+    def _ns_gid(self, gid):
+        if not gid: return gid
+        parts = gid.split(":", 1)
+        if len(parts) == 2: return f"{self._ns(parts[0])}:{parts[1]}"
+        return gid
+
+    def pour(self, bucket, doc_id, json_str):
+        return self.engine.pour(self._ns(bucket), doc_id, json_str)
+        
+    def get(self, gid):
+        return self.engine.get(self._ns_gid(gid))
+        
+    def delete(self, gid):
+        return self.engine.delete(self._ns_gid(gid))
+        
+    def scan_bucket(self, bucket):
+        data = self.engine.scan_bucket(self._ns(bucket))
+        if not data: return data
+        if bucket.startswith("_"):
+            import json
+            t = self._tenant()
+            if t != "cron":
+                docs = json.loads(data)
+                filtered = []
+                for d in docs:
+                    gid = d.get("gid", "")
+                    body = d.get("body", {})
+                    if bucket == "_auth":
+                        if gid == f"_auth:{t}": filtered.append(d)
+                    elif bucket == "_bonds":
+                        if body.get("source", "").startswith(f"{t}.") or body.get("target", "").startswith(f"{t}."): filtered.append(d)
+                    elif bucket == "_security_policies":
+                        if ":" in gid and gid.split(":", 1)[1].startswith(f"{t}."): filtered.append(d)
+                    else:
+                        if ":" in gid and gid.split(":", 1)[1].startswith(f"{t}."): filtered.append(d)
+                return json.dumps(filtered)
+        return data
+        
+    def show_buckets(self):
+        return self.engine.show()
+        
+    def __getattr__(self, name):
+        return getattr(self.engine, name)
+
 class Interpreter:
     def _scan_bucket_rls(self, bucket):
-        data = self.engine.scan_bucket(bucket)
-        if not data: return data
-        docs = json.loads(data)
-        tenant = self.context.get("user", "").split(".")[0]
-        if tenant == "cron" or not tenant: return data
-        filtered = []
-        for d in docs:
-            gid_parts = d["gid"].split(":")
-            if len(gid_parts) > 1:
-                d_id = gid_parts[1]
-                if d_id == tenant or d_id.startswith(f"{tenant}."):
-                    filtered.append(d)
-            else:
-                filtered.append(d)
-        return json.dumps(filtered)
+        return self.engine.scan_bucket(bucket)
 
     def __init__(self, engine=None, indexing_queue=None):
-        self.engine = engine
-        self.indexing_queue = indexing_queue
         self.context = {}
+        self.engine = TenantEngineProxy(engine, self.context) if engine else None
+        self.indexing_queue = indexing_queue
         self.in_transaction = False
         self.transaction_log = []
         self.emitted_events = []
         self.security = PolicyEngine()
         
     def set_context(self, context):
-        self.context = context
+        if not hasattr(self, 'context') or self.context is None:
+            self.context = {}
+        self.context.clear()
+        if context:
+            self.context.update(context)
         self.security = PolicyEngine()
         if self.engine:
             from .lexer import Lexer
@@ -99,11 +148,40 @@ class Interpreter:
         return result
 
 
+    def _strip_tenant(self, data, tenant):
+        if not tenant or tenant == 'cron': return data
+        prefix = f"{tenant}."
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if k in ('gid', 'source', 'target') and isinstance(v, str):
+                    parts = v.split(":", 1)
+                    if len(parts) == 2 and parts[0].startswith(prefix):
+                        data[k] = f"{parts[0][len(prefix):]}:{parts[1]}"
+                elif k == 'gids' and isinstance(v, list):
+                    new_gids = []
+                    for gid in v:
+                        parts = str(gid).split(":", 1)
+                        if len(parts) == 2 and parts[0].startswith(prefix):
+                            new_gids.append(f"{parts[0][len(prefix):]}:{parts[1]}")
+                        else:
+                            new_gids.append(gid)
+                    data[k] = new_gids
+                elif isinstance(v, (dict, list)):
+                    self._strip_tenant(v, tenant)
+        elif isinstance(data, list):
+            for item in data:
+                self._strip_tenant(item, tenant)
+        return data
+
     def execute(self, stmts: list) -> list:
         results = []
         for stmt in stmts:
             try:
                 res = self._execute_stmt(stmt)
+                if res is None: continue
+                tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else None
+                if tenant and tenant != "cron":
+                    self._strip_tenant(res, tenant)
                 results.append(res)
                 if res.get("status") == "error" and self.in_transaction:
                     self._rollback()
@@ -133,8 +211,7 @@ class Interpreter:
 
 
     def _namespace_gid(self, gid):
-        if not gid:
-            return gid
+        return gid
         tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
         if tenant == "cron":
             return gid
@@ -341,13 +418,6 @@ class Interpreter:
                             self.engine.delete(lru_doc['gid'])
             
             json_str = json.dumps(body) if isinstance(body, (dict, list)) else str(body or '{}')
-            # Auto-Namespace ALL Documents for Multi-Tenancy
-            if "user" in self.context:
-                creator = self.context["user"].split(".")[0]
-                if creator != "cron" and doc_id and not doc_id.startswith(f"{creator}.") and doc_id != creator:
-                    doc_id = f"{creator}.{doc_id}"
-
-
             if self.in_transaction:
                 gid_check = f"{bucket}:{doc_id}" if doc_id else None
                 old_val = self.engine.get(gid_check) if gid_check else None
@@ -393,12 +463,8 @@ class Interpreter:
             if isinstance(documents, str):
                 documents = json.loads(documents)
             gids = []
-            tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else None
             for doc in documents:
                 doc_id = doc.pop('_id', doc.pop('gid', None)) if isinstance(doc, dict) else None
-                
-                if tenant and tenant != "cron" and doc_id and not doc_id.startswith(f"{tenant}.") and doc_id != tenant:
-                    doc_id = f"{tenant}.{doc_id}"
                     
                 json_str = json.dumps(doc) if isinstance(doc, dict) else str(doc)
 
@@ -461,7 +527,7 @@ class Interpreter:
                     elif as_of.isdigit(): effective_time = int(as_of)
                 
                 label = getattr(stmt, 'related_label', '')
-                source = getattr(stmt, 'related_source', '')
+                source = self._namespace_gid(getattr(stmt, 'related_source', ''))
                 bonds_data = self._scan_bucket_rls("_bonds")
                 bonds = json.loads(bonds_data) if bonds_data else []
                 
@@ -719,9 +785,19 @@ class Interpreter:
             return {"status": "ok", "message": result}
 
         elif stmt_type == "ShowStmt":
-            target = getattr(stmt, 'target', 'buckets')
-            result = self.engine.show(target)
-            return {"status": "ok", "data": json.loads(result) if result.startswith('[') else result}
+            if getattr(stmt, 'target', '').upper() == "BUCKETS":
+                buckets_data = self.engine.show("buckets")
+                all_b = json.loads(buckets_data) if buckets_data else []
+                t = self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
+                vis = []
+                is_dev = self.context.get("auth_level") == "dev"
+                for b in all_b:
+                    if b.startswith("_"):
+                        if is_dev: vis.append(b)
+                        continue
+                    if t != "cron" and b.startswith(f"{t}."):
+                        vis.append(b[len(t)+1:])
+                return {"status": "ok", "data": vis}
 
 
         elif stmt_type == "SeverStmt":
