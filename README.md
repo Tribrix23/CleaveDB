@@ -3,10 +3,10 @@
   <br/><br/>
   <p><strong>The polyglot, AVX-512 ready , hybrid relational-document graph database with Transformer attention layers.</strong></p>
   
-  [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
-  [![Python](https://img.shields.io/badge/Python-3.13+-blue.svg)]()
-  [![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)]()
-  [![License](https://img.shields.io/badge/license-Custom_Consent-blue.svg)]()
+  
+  [![Python](https://img.shields.io/badge/Python-3.13+-blue.svg)](https://www.python.org/downloads/?Python)
+  [![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2021/index.html)
+  [![License](https://img.shields.io/badge/license-Custom_Consent-blue.svg)](https://github.com/Tribrix23/CleaveDB/blob/main/LICENSE)
   [![NPM Version](https://img.shields.io/npm/v/cleavedb.svg)](https://www.npmjs.com/package/cleavedb)
 </div>
 
