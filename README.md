@@ -48,6 +48,13 @@ CleaveDB comes with a master `build.py` orchestrator script. Simply run:
 python build.py
 ```
 
+### 4. Start the Database Engine
+Once the engine is built, you can start the database server and interactive shell by running the compiled executable:
+```bash
+./CleaveShell.exe
+```
+*(You can now execute all CleaveQL queries directly in your terminal, or connect via the NPM Client!)*
+
 **What `build.py` automatically does in the background:**
 1. Compiles the **C++ SIMD** layers.
 2. Compiles the optional **Go Coordinator** into a shared library (fully wired to storage engine).
