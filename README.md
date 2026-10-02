@@ -656,9 +656,9 @@ The Cron Worker also **auto-purges** documents in `_rubbish` older than 3 days.
 <div align="center"><img src="assets/demo_shape.svg" width="800"/></div>
 
 ```sql
-SHAPE BUCKET logs COMPRESSION lz4 🔜 TTL 86400 🔜 MAX DOCUMENTS 10000 VERSIONED 🔜
+SHAPE BUCKET logs COMPRESSION lz4  TTL 86400  MAX DOCUMENTS 10000 VERSIONED 
 SHAPE PROJECTION active_users FROM users WHERE status = "active" 🔜
-SHAPE FLOW FROM orders TO archive WHEN status = "completed" ACTION MOVE 🔜
+SHAPE FLOW FROM orders TO archive WHEN status = "completed" ACTION MOVE 
 ```
 
 ---
@@ -668,7 +668,7 @@ SHAPE FLOW FROM orders TO archive WHEN status = "completed" ACTION MOVE 🔜
 <div align="center"><img src="assets/demo_index.svg" width="800"/></div>
 
 ```sql
-INDEX users ON (role, department) 🔜
+INDEX users ON (role, department) 
 ```
 Creates a compound B+Tree secondary index for O(log N) lookups.
 
@@ -695,7 +695,7 @@ SUGGEST BONDS                   -- AI-suggested missing relationships 🔜
 
 ---
 
-### 22. Aggregation Pipeline (`DISTILL`) 🔜
+### 22. Aggregation Pipeline (`DISTILL`) 
 
 <div align="center"><img src="assets/demo_distill.svg" width="800"/></div>
 
@@ -711,7 +711,7 @@ Supported functions: `TOTAL`, `AVERAGE`, `MIN`, `MAX`, `SPREAD`
 
 ---
 
-### 23. Graph Traversal (`FOLLOW`) 🔜
+### 23. Graph Traversal (`FOLLOW`) 
 
 <div align="center"><img src="assets/demo_follow.svg" width="800"/></div>
 
@@ -771,6 +771,8 @@ ON POUR INTO purchases RUN 'POUR INTO audit "$gid" {"action": "item_purchased", 
 Fully working zero-downtime schema migration:
 
 ```sql
+<img src="assets/demo_migrate.svg" width="800"/>
+
 MIGRATE <bucket> FROM <src_json> TO <dst_json>
 ```
 
@@ -781,6 +783,8 @@ MIGRATE <bucket> FROM <src_json> TO <dst_json>
 Fully working rate limiting:
 
 ```sql
+<img src="assets/demo_ratelimit.svg" width="800"/>
+
 LIMIT <n> QUERIES PER MINUTE FOR <role>
 ```
 
