@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/CleaveDB.png" alt="CleaveDB 3.5" width="500"/>
+  <img src="assets/CleaveDB.png" alt="CleaveDB 3.6" width="500"/>
   <br/><br/>
   <p><strong>The polyglot, AVX-512 ready , hybrid relational-document graph database with Transformer attention layers.</strong></p>
   
@@ -12,7 +12,7 @@
 
 <br/>
 
-**CleaveDB 3.5** is a ground-up, hybrid Relational Document & Graph database that eliminates the complexity of traditional SQL `JOIN`s, external vector search services, and opaque graph databases. It ships with:
+**CleaveDB 3.6** is a ground-up, hybrid Relational Document & Graph database that eliminates the complexity of traditional SQL `JOIN`s, external vector search services, and opaque graph databases. It ships with:
 
 
 
@@ -1066,3 +1066,12 @@ CleaveDB repurposes its internal C++ AVX-512 vector math engine (used for Vector
 DISTILL FROM employees GROUP BY "department" SUM "salary" AS "total_budget"
 ```
 Instead of scalar iteration, values are loaded into 512-bit ZMM registers (`_mm512_loadu_ps`) and reduced synchronously (`_mm512_add_ps`), taking exactly 1 clock cycle for every 16 elements.
+
+### Feature 1. Neuro-Symbolic Semantic Pathfinding
+Graph databases traverse relationships symbolically, but they possess zero semantic understanding. Vector databases find conceptually similar data but are entirely flat. CleaveDB seamlessly merges Graph Edge Traversal with the ONNX Transformer.
+```sql
+FOLLOW "users:alice" THROUGH "friend" GUIDED BY MEANING "machine learning experts" THRESHOLD 0.75 DEPTH 6
+```
+At each hop of a BFS graph traversal, the Rust FFI engine computes the `_mm512_dp_ps` vector cosine similarity between the prompt's embedding and the adjacent nodes' embeddings. It dynamically prunes branches of the graph that do not match the semantic concept in a single CPU clock cycle, preventing BFS explosions and yielding highly intelligent, context-aware paths.
+
+![Semantic Pathfinding Demo](assets/demo_guided.svg)

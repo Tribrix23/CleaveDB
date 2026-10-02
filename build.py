@@ -21,7 +21,7 @@ def check_tool(name):
 
 def main():
     print("=" * 60)
-    print("CleaveDB 3.5 — Master Build Script")
+    print("CleaveDB 3.6 — Master Build Script")
     print(f"Platform: {platform.system()} {platform.machine()}")
     print("=" * 60)
     is_windows = platform.system() == 'Windows'
@@ -52,7 +52,7 @@ def main():
         print("  Install maturin for Python bindings: pip install maturin")
 
     print("\n" + "=" * 60)
-    print("Build complete! CleaveDB 3.5 is ready.")
+    print("Build complete! CleaveDB 3.6 is ready.")
     print("Run: python -m cleaveql.repl")
     print("=" * 60)
 

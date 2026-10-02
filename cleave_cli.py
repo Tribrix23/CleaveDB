@@ -800,7 +800,7 @@ Example:
 
 HELP_TEXT = """
 ================================================================================
-  CleaveDB 3.5 Manual (CleaveQL) - Complete Reference
+  CleaveDB 3.6 Manual (CleaveQL) - Complete Reference
 ================================================================================
 
 1. WRITE & UPDATE (Mutations)

@@ -14,7 +14,8 @@ class TokenType(Enum):
     FLOW = auto()     # move/copy between buckets
     BOND = auto()     # declare relationship
     DISTILL = auto()  # aggregate
-    FOLLOW = auto()   # traverse bonds
+    FOLLOW = auto()
+    THRESHOLD = auto()   # traverse bonds
     SHAPE = auto()    # create/configure bucket
     VIEW = auto()
     CONTINUOUS = auto()
@@ -43,6 +44,7 @@ class TokenType(Enum):
     WHERE = auto()
     WHOSE = auto()      # bond traversal predicate
     MEANING = auto()    # semantic search
+    GUIDED = auto()
     MENTIONING = auto() # keyword search (BM25)
     NEAR = auto()       # graph proximity
     WITHIN = auto()     # depth for NEAR
@@ -305,6 +307,7 @@ KEYWORDS = {
     'bonded': TokenType.BONDED,
     'authenticate': TokenType.AUTHENTICATE,
     'follow': TokenType.FOLLOW,
+    'threshold': TokenType.THRESHOLD,
     'shape': TokenType.SHAPE,
     'view': TokenType.VIEW,
     'continuous': TokenType.CONTINUOUS,
@@ -327,6 +330,7 @@ KEYWORDS = {
     'where': TokenType.WHERE,
     'whose': TokenType.WHOSE,
     'meaning': TokenType.MEANING,
+    'guided': TokenType.GUIDED,
     'mentioning': TokenType.MENTIONING,
     'near': TokenType.NEAR,
     'within': TokenType.WITHIN,

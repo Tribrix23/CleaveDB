@@ -410,6 +410,15 @@ class Parser:
             if self.match(TokenType.OF):
                 as_of = self.consume_string("Expected time string for AS OF.")
                 
+        guided_by = None
+        threshold = 0.0
+        if self.match(TokenType.GUIDED):
+            self.consume(TokenType.BY, "Expected 'by' after 'guided'.")
+            self.consume(TokenType.MEANING, "Expected 'meaning' after 'guided by'.")
+            guided_by = self.consume_string("Expected string literal after 'guided by meaning'.")
+            if self.match(TokenType.THRESHOLD):
+                threshold = self.consume(TokenType.FLOAT, "Expected float for threshold.").value
+
         depth = None
         if self.match(TokenType.DEPTH):
             depth = self.consume(TokenType.INTEGER, "Expected integer for depth.").value

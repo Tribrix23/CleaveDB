@@ -1087,6 +1087,17 @@ class Interpreter:
             queue = [(self._namespace_gid(doc_id), 0)]
             results = []
             
+            # --- Neuro-Symbolic Pathfinding Setup ---
+            guided_by = getattr(stmt, 'guided_by', None)
+            threshold = getattr(stmt, 'threshold', 0.0)
+            prompt_emb = None
+            if guided_by:
+                try:
+                    from attention.sra import get_embedding
+                    prompt_emb = get_embedding(guided_by).tolist()
+                except Exception as e:
+                    print(f"[Interpreter] SRA Embedding failed: {e}")
+            
             limit = limit or float('inf')
             while queue and len(results) < limit:
                 current_id, current_depth = queue.pop(0)

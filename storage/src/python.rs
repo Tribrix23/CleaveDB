@@ -284,6 +284,11 @@ impl CleaveDB {
     }
 
     /// Computes the sum of a contiguous float32 array using AVX-512 vectorization.
+    #[pyo3(signature = (a, b))]
+    fn simd_dot_product(&self, a: Vec<f32>, b: Vec<f32>) -> PyResult<f32> {
+        Ok(crate::simd_ffi::dot_product(&a, &b))
+    }
+
     #[pyo3(signature = (arr))]
     fn simd_sum_avx512(&self, arr: Vec<f32>) -> PyResult<f32> {
         let n = arr.len() as std::os::raw::c_int;
