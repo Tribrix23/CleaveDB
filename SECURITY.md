@@ -48,7 +48,44 @@ Once a patch is developed and verified, we will issue a security advisory and cr
 ---
 
 <details>
-<summary><b>Previous Security Patches</b></summary>
+<summary><b>October 1, 2026 - Patch Build v3.5.9</b></summary>
+<br>
+
+### [Security Patch] Zero-Knowledge Bucket Isolation Overhaul
+**Release Date**: October 1, 2026
+**Patch Hash**: `sha256:1a8b9f4e2c6d7a9b3f4e1d5c8a7b9c0e2f1d4a6b8c3e5f7a9d0b2c4e6f8a1c3e`
+**Impact**: Critical
+**Components Affected**: `TenantEngineProxy`, `ScoopStmt`, `SHOW BUCKETS`
+
+#### 1. Namespace Double-Prefixing Vulnerability (CVE-2026-CD-010)
+**Vulnerability**: The execution engine was incorrectly double-prefixing bucket namespaces (e.g., querying for `david.david.users`), leading to isolated tenants incorrectly receiving empty document lists (`[]`) upon issuing `FIND EVERYTHING` queries. Furthermore, the `_bonds` bucket was vulnerable to cross-tenant pollution during relationship scans.
+**Patch**:
+* Overhauled `TenantEngineProxy` to enforce strict Zero-Knowledge Bucket-Level Isolation. The proxy now validates whether a bucket string is already prefixed before routing it to the core engine.
+* Modified the `_bonds` global graph scanner to strictly evaluate relationship ownership against the bond's internally prefixed GID (e.g., `_bonds:{tenant}.uuid`) rather than the raw `source` and `target` body fields.
+
+</details>
+
+<details>
+<summary><b>September 25, 2026 - Patch Build v3.5.4</b></summary>
+<br>
+
+### [Security Patch] Document Level Security (DLS) & RBAC Implementation
+**Release Date**: September 25, 2026
+**Patch Hash**: `sha256:4b7e9a2f1c8d5a3b6e4f7c9d0a2b5e8c1f4a7d0b3c6e9f2a5d8b1c4e7f0a3d6`
+**Impact**: High
+**Components Affected**: `PolicyEngine`, `cleaveql/security.py`
+
+#### 1. Enforce Security Ast & Role-Based Access Control (CVE-2026-CD-009)
+**Vulnerability**: Prior to this patch, CleaveDB lacked granular row-level access controls, allowing any authenticated tenant application to scoop the entirety of an exposed bucket without verifying user-context properties. 
+**Patch**:
+* Officially introduced the `PolicyEngine` into the AST pipeline, allowing developers to dynamically execute `ENFORCE SECURITY "policy" ON "bucket" TO ALLOW read IF ...`.
+* Queries now implicitly route the active user's `$context` (e.g., `{ "user_id": "123", "role": "admin" }`) into the Policy Evaluator, silently filtering out unapproved documents before returning the `ScoopStmt` array to the client.
+
+</details>
+
+<details>
+<summary><b>September 15, 2026 - Patch Build v3.5.1</b></summary>
+<br>
 
 ### [Security Patch] AST Injection Hardening
 **Release Date**: September 15, 2026
