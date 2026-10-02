@@ -27,6 +27,7 @@ class TenantEngineProxy:
         if not bucket or bucket.startswith("_"): return bucket
         t = self._tenant()
         if t == "cron": return bucket
+        if bucket.startswith(f"{t}."): return bucket
         return f"{t}.{bucket}"
         
     def _ns_gid(self, gid):
@@ -59,7 +60,7 @@ class TenantEngineProxy:
                     if bucket == "_auth":
                         if gid == f"_auth:{t}": filtered.append(d)
                     elif bucket == "_bonds":
-                        if body.get("source", "").startswith(f"{t}.") or body.get("target", "").startswith(f"{t}."): filtered.append(d)
+                        if ":" in gid and gid.split(":", 1)[1].startswith(f"{t}."): filtered.append(d)
                     elif bucket == "_security_policies":
                         if ":" in gid and gid.split(":", 1)[1].startswith(f"{t}."): filtered.append(d)
                     else:
@@ -600,6 +601,8 @@ class Interpreter:
             mode_count = getattr(stmt, 'mode_count', None)
             whose_field = getattr(stmt, 'whose_field', None)
             whose_value = getattr(stmt, 'whose_value', None)
+            if whose_field == "gid" and whose_value:
+                whose_value = self._namespace_gid(whose_value)
             yield_fields = getattr(stmt, 'yield_fields', [])
             limit = getattr(stmt, 'limit', None)
             mentioning = getattr(stmt, 'mentioning', None)
@@ -633,7 +636,11 @@ class Interpreter:
                     
                     doc_vec = json.loads(emb_str)
                     # HW-Accelerated AVX-512 SIMD C++ Call!
-                    similarity = float(self.engine.simd_dot_product(query_vec, doc_vec))
+                    try:
+                        similarity = float(self.engine.simd_dot_product(query_vec, doc_vec))
+                    except AttributeError:
+                        # Fallback for Python Mock
+                        similarity = sum(x*y for x, y in zip(query_vec, doc_vec))
                     print(f"[Interpreter] Similarity for {doc['gid']}: {similarity}")
                     
                     if similarity > 0.20:
@@ -646,7 +653,17 @@ class Interpreter:
 
             # Apply Document Security Level (DSL) Read Filters
             if hasattr(self, 'security'):
-                filtered_docs = [d for d in filtered_docs if self.security.check_read(bucket, d, self.context, self.engine)]
+                matching = getattr(stmt, 'matching', None)
+            if matching:
+                def is_match(template, target):
+                    if isinstance(template, dict) and isinstance(target, dict):
+                        for k, v in template.items():
+                            if k not in target or not is_match(v, target[k]): return False
+                        return True
+                    return template == target
+                filtered_docs = [d for d in filtered_docs if is_match(matching, d['body'])]
+                
+            filtered_docs = [d for d in filtered_docs if self.security.check_read(bucket, d, self.context, self.engine)]
 
             # Apply WHERE clause
             if getattr(stmt, 'where', None):
@@ -654,7 +671,7 @@ class Interpreter:
 
             # Apply WHOSE
             if whose_field and whose_value is not None:
-                filtered_docs = [d for d in filtered_docs if d['body'].get(whose_field) == whose_value]
+                filtered_docs = [d for d in filtered_docs if (d.get(whose_field).split(':', 1)[-1] if whose_field == 'gid' and ':' in str(d.get(whose_field)) else d.get(whose_field) if whose_field == 'gid' else d['body'].get(whose_field)) == (whose_value.split(':', 1)[-1] if whose_field == 'gid' and isinstance(whose_value, str) and ':' in whose_value else whose_value)]
 
             # Update LRU Tracking on Read
             policy_data = self.engine.get(f"_bucket_policies:{bucket}")
@@ -919,7 +936,7 @@ class Interpreter:
                             if direction in ('IN', 'BOTH') and body.get('target') == current_id:
                                 queue.append((body.get('source'), current_depth + 1))
                                 
-            return results
+            return {"status": "ok", "mode": "FOLLOW", "documents": results, "count": len(results)}
 
         elif stmt_type == "ShapeBucketStmt":
             path = getattr(stmt, 'path', '')
@@ -1124,13 +1141,14 @@ class Interpreter:
                         body = b["body"]
                         if body["label"] == edge.label:
                             next_gid = None
-                            if edge.direction == "->" and body["source"] == current_gid:
+                            clean_cgid = current_gid.split('.', 1)[-1] if '.' in current_gid and ':' in current_gid else current_gid
+                            if edge.direction == "->" and body["source"] == clean_cgid:
                                 next_gid = body["target"]
-                            elif edge.direction == "<-" and body["target"] == current_gid:
+                            elif edge.direction == "<-" and body["target"] == clean_cgid:
                                 next_gid = body["source"]
                             elif edge.direction == "-":
-                                if body["source"] == current_gid: next_gid = body["target"]
-                                elif body["target"] == current_gid: next_gid = body["source"]
+                                if body["source"] == clean_cgid: next_gid = body["target"]
+                                elif body["target"] == clean_cgid: next_gid = body["source"]
                                 
                             if next_gid and next_gid.startswith(next_node.bucket + ":"):
                                 target_doc_str = self.engine.get(next_gid)
@@ -1150,9 +1168,7 @@ class Interpreter:
                         for alias, d in path.items():
                             for k, v in d["body"].items():
                                 flat_doc[f"{alias}.{k}"] = v
-                        
-                        print(f"[MatchStmt] flat_doc={flat_doc}, type={type(flat_doc)}")
-                    if not self._evaluate_where(stmt.where, flat_doc):
+                        if not self._evaluate_where(stmt.where, flat_doc):
                             continue
                     final_results.append(path)
                     
@@ -1201,7 +1217,9 @@ class Interpreter:
                     "deleted_at": time.time(),
                     "body": json.loads(doc_json)
                 }
-                self.engine.pour("_rubbish", gid, json.dumps(rubbish_entry))
+                tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
+                r_gid = f"{tenant}.{gid}" if tenant != "cron" else gid
+                self.engine.pour("_rubbish", r_gid, json.dumps(rubbish_entry))
                 self.engine.delete(gid)
                 self._fire_triggers("DRAIN", bucket, gid.split(":")[-1], json.loads(doc_json))
                 drained_count += 1
@@ -1221,7 +1239,9 @@ class Interpreter:
                                 "deleted_at": time.time(),
                                 "body": json.loads(t_json)
                             }
-                            self.engine.pour("_rubbish", t_gid, json.dumps(rubbish_entry))
+                            tenant = self.context.get("user", "").split(".")[0] if "user" in self.context else "cron"
+                            r_t_gid = f"{tenant}.{t_gid}" if tenant != "cron" else t_gid
+                            self.engine.pour("_rubbish", r_t_gid, json.dumps(rubbish_entry))
                             self.engine.delete(t_gid)
             
             if doc_id:

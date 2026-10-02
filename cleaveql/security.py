@@ -76,6 +76,33 @@ class PolicyEngine:
             if op in ('==', 'is'): return str(val1).lower() == str(val2).lower()
             if op in ('!=', 'isnot'): return str(val1).lower() != str(val2).lower()
             
+        # Generic Field Comparison: age > 18
+        m3 = re.match(r'^([a-zA-Z_]+)(==|!=|isnot|is|>|<|>=|<=)"?([a-zA-Z0-9_\.]+)"?$', "".join([t.lexeme for t in condition_tokens]).lower())
+        if m3:
+            field = m3.group(1)
+            op = m3.group(2)
+            val2 = m3.group(3)
+            
+            body = document.get("body", document)
+            val1 = body.get(field)
+            
+            if val1 is None: return False
+            
+            # Try numeric
+            try:
+                v1 = float(val1)
+                v2 = float(val2)
+            except ValueError:
+                v1 = str(val1).lower()
+                v2 = str(val2).lower()
+                
+            if op in ('==', 'is'): return v1 == v2
+            if op in ('!=', 'isnot'): return v1 != v2
+            if op == '>': return v1 > v2
+            if op == '<': return v1 < v2
+            if op == '>=': return v1 >= v2
+            if op == '<=': return v1 <= v2
+            
         return False
 
 

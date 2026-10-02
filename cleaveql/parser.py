@@ -212,10 +212,13 @@ class Parser:
             else:
                 # CHAIN relational lookup!
                 rel_chain = []
-                rel_chain.append(self.consume_identifier("Expected relationship label"))
+                if self.match(TokenType.STRING): rel_chain.append(self.previous().value)
+                else: rel_chain.append(self.consume_identifier("Expected relationship label"))
+                
                 self.consume(TokenType.OF, "Expected 'of'")
                 while self.match(TokenType.THE):
-                    rel_chain.append(self.consume_identifier("Expected relationship label"))
+                    if self.match(TokenType.STRING): rel_chain.append(self.previous().value)
+                    else: rel_chain.append(self.consume_identifier("Expected relationship label"))
                     self.consume(TokenType.OF, "Expected 'of'")
                 
                 bucket = self.consume_identifier("Expected target bucket for chain")
@@ -236,6 +239,9 @@ class Parser:
         where = None
         whose_field = None
         whose_value = None
+        if self.match(TokenType.STRING):
+            whose_field = "gid"
+            whose_value = f"{bucket}:{self.previous().value}"
         mentioning = None
         meaning = None
         matching = None
@@ -258,9 +264,12 @@ class Parser:
             elif self.match(TokenType.MEANING):
                 meaning = self.consume_string("Expected search string after meaning.")
             elif self.match(TokenType.MATCHING):
-                match_str = self.consume_string("Expected JSON object string after matching.")
+                if self.check(TokenType.STRING):
+                    match_str = self.consume_string("Expected JSON object string after matching.")
+                else:
+                    match_str = self.consume_json("Expected JSON object after matching.")
                 import json
-                matching = json.loads(match_str)
+                matching = json.loads(match_str) if isinstance(match_str, str) else match_str
             elif self.match(TokenType.INCLUDE, TokenType.WITH):
                 include.append(self.consume_identifier("Expected field to include."))
                 while self.match(TokenType.COMMA):
@@ -354,7 +363,8 @@ class Parser:
         
         bond = None
         if self.match(TokenType.THROUGH):
-            bond = self.consume_identifier("Expected bond name.")
+            if self.match(TokenType.STRING): bond = self.previous().value
+            else: bond = self.consume_identifier("Expected bond name.")
             
         direction = None
         if self.match(TokenType.DIRECTION):
@@ -502,12 +512,16 @@ class Parser:
         return IncinerateStmt(doc_id=doc_id)
 
     def shape_stmt(self) -> Any:
-        if self.match(TokenType.BUCKET):
+        if self.match(TokenType.BUCKET) or self.peek().type == TokenType.IDENTIFIER:
+            if self.previous().type != TokenType.BUCKET: pass
             path = self.consume_identifier("Expected bucket path.")
             compression = None
             ttl = None
             max_documents = None
             versioned = False
+            strict_schema = None
+            if self.match(TokenType.STRICT):
+                strict_schema = self.consume_json("Expected JSON schema.")
             while self.match(TokenType.COMPRESSION, TokenType.TTL, TokenType.MAX, TokenType.VERSIONED):
                 prop_name = self.previous().type
                 if prop_name == TokenType.COMPRESSION:
@@ -741,17 +755,32 @@ class Parser:
         return PolicyStmt(bucket=bucket, algorithm=algorithm)
 
     def index_stmt(self) -> IndexStmt:
-        bucket = self.consume_identifier("Expected bucket name.")
-        self.consume(TokenType.ON, "Expected 'on' after bucket name.")
-        self.consume(TokenType.LPAREN, "Expected '(' after 'on'.")
-        
-        fields = []
-        while True:
-            fields.append(self.consume_identifier("Expected field name."))
-            if not self.match(TokenType.COMMA):
-                break
-                
-        self.consume(TokenType.RPAREN, "Expected ')' after fields.")
+        # INDEX age ON users
+        # INDEX "age" ON users (BTREE)
+        if self.match(TokenType.STRING):
+            field = self.previous().value
+        else:
+            field = self.consume_identifier("Expected field name or bucket name.")
+            
+        if self.match(TokenType.ON):
+            # It's INDEX field ON bucket
+            fields = [field]
+            bucket = self.consume_identifier("Expected bucket name.")
+            if self.match(TokenType.LPAREN):
+                self.consume_identifier("Expected index algorithm")
+                self.consume(TokenType.RPAREN, "Expected ')'")
+        else:
+            # It's INDEX bucket ON (field)
+            bucket = field
+            self.consume(TokenType.ON, "Expected 'on' after bucket name.")
+            self.consume(TokenType.LPAREN, "Expected '(' after 'on'.")
+            fields = []
+            while True:
+                if self.match(TokenType.STRING): fields.append(self.previous().value)
+                else: fields.append(self.consume_identifier("Expected field name."))
+                if not self.match(TokenType.COMMA): break
+            self.consume(TokenType.RPAREN, "Expected ')' after fields.")
+            
         return IndexStmt(bucket=bucket, fields=fields)
 
     def heal_stmt(self) -> HealStmt:
