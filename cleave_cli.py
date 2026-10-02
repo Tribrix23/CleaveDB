@@ -1076,9 +1076,39 @@ def main():
         try:
             s.connect((args.host, args.port))
         except ConnectionRefusedError:
-            print(f"Error: Could not connect to CleaveDB server at {args.host}:{args.port}")
-            print("Is the server running?")
-            sys.exit(1)
+            import subprocess, time, os
+            print(f"Server not found at {args.host}:{args.port}. Auto-starting background server...")
+            try:
+                import sys, pathlib
+                # Find the root directory where cleavedb_server.py actually lives
+                exe_dir = pathlib.Path(sys.executable if getattr(sys, 'frozen', False) else __file__).parent
+                
+                # Check current dir, then parent, then grand-parent
+                server_path = None
+                root_dir = None
+                for d in [exe_dir, exe_dir.parent, exe_dir.parent.parent]:
+                    if (d / "cleavedb_server.py").exists():
+                        server_path = str(d / "cleavedb_server.py")
+                        root_dir = str(d)
+                        break
+                        
+                if server_path:
+                    flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    # Run the server in the correct root directory
+                    subprocess.Popen(["python", "cleavedb_server.py"], cwd=root_dir, creationflags=flags)
+                else:
+                    print(f"Error: cleavedb_server.py not found to auto-start.")
+                    time.sleep(5)
+                    sys.exit(1)
+                
+                print("Booting up database engine...")
+                time.sleep(3)
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.connect((args.host, args.port))
+            except Exception as e:
+                print(f"Auto-start failed: {e}")
+                time.sleep(5)
+                sys.exit(1)
 
         f = s.makefile('rw')
         
