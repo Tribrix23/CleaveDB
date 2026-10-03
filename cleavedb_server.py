@@ -329,6 +329,12 @@ def webhook_worker():
                         }
                         import uuid
                         payload_bytes = json.dumps(payload).encode("utf-8")
+                        try:
+                            from cleaveql.security import validate_webhook_url
+                            validate_webhook_url(body.get("url"))
+                        except Exception as ve:
+                            GLOBAL_DB.pour("_webhook_log", str(uuid.uuid4()), json.dumps({"webhook": body.get("name"), "status": "blocked", "error": str(ve), "timestamp": int(time.time())}))
+                            continue
                         for attempt in range(3):
                             req = urllib.request.Request(body.get("url"), data=payload_bytes, headers={"Content-Type": "application/json"}, method="POST")
                             try:

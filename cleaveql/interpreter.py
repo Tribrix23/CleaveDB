@@ -12,7 +12,7 @@ import os
 When engine is a CleaveDB instance (from PyO3), calls the real Rust methods.
 When engine is None, returns mock results for testing.
 """
-from .security import PolicyEngine, SecurityError
+from .security import PolicyEngine, SecurityError, validate_webhook_url, MAX_FORECAST_HORIZON
 
 
 class TenantEngineProxy:
@@ -61,7 +61,7 @@ class TenantEngineProxy:
         if not data:
             return data
         if bucket.startswith("_"):
-            import json
+
 
             t = self._tenant()
             if t != "cron":
@@ -1800,6 +1800,7 @@ class Interpreter:
             bucket = getattr(stmt, "bucket", "")
             action_filter = getattr(stmt, "action_filter", "")
             url = getattr(stmt, "url", "")
+            url = validate_webhook_url(url)
             
             t = self.context.get("tenant_id", self.context.get("user", "").split(".")[0]) if "user" in self.context else "cron"
             doc_id = f"{t}.{name}" if t != "cron" else name
@@ -2632,7 +2633,7 @@ class Interpreter:
 
 
         elif stmt_type == "PipeStmt":
-            import json
+
             import math
             
             bucket = stmt.source_bucket
@@ -2735,6 +2736,8 @@ class Interpreter:
             val_f = stmt.value_field
             time_f = stmt.time_field
             horizon = stmt.horizon
+            if horizon <= 0 or horizon > MAX_FORECAST_HORIZON:
+                return {"status": "error", "message": f"FORECAST horizon must be between 1 and {MAX_FORECAST_HORIZON}."}
             method = stmt.method
             window = stmt.window
             
@@ -2742,7 +2745,7 @@ class Interpreter:
             if not data_str:
                 return {"status": "error", "message": f"Bucket '{bucket}' not found or empty."}
             
-            import json
+
             data = json.loads(data_str)
             
             import numpy as np

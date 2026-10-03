@@ -17,7 +17,51 @@ Once a patch is developed and verified, we will issue a security advisory and cr
 
 ---
 
-## Latest Patch: CleaveDB 3.6
+## Latest Patch: CleaveDB 3.9.0
+
+### [Security Audit & Patch] Event-Pipeline Integrity, Webhook SSRF & Analytics Resource Limits
+**Release Date**: October 3, 2026
+**Impact**: High
+**Components Affected**: `DrainStmt`, `ChangeStmt`, `replica_worker`, `webhook_worker`, `ShapeWebhookStmt`, `ForecastStmt`, `cleaveql/security.py`.
+
+This audit covered the feature set added in this cycle (`GUARD`, `AUDITED`, `ENRICH`, `PEER INTO COST`, `SHAPE WEBHOOK`, `SHAPE REPLICA`, `FORECAST`, `PIPE`). Every item below was found while building and testing these features and is fixed in this build.
+
+#### 1. Deleted Data Persisting in Replica Buckets (CDB-SEC-2026-015)
+**Vulnerability Engine Assessment**: `DRAIN` emitted its change event with a bare document ID (`p1`) instead of the tenant-qualified GID. The replica worker matches events by fully-qualified GID, so the delete cascade never matched the replicated copy.
+**Exploit Scenario / Attack Vector**: A tenant deletes a record (for example a customer exercising a right-to-erasure request, or an admin withdrawing a document that was published to a `public_catalog` replica). The source document is gone, but the projected copy stays readable in the replica bucket indefinitely. Anyone with read access to the replica can still retrieve data the owner believes has been destroyed, defeating deletion guarantees and any access revocation done at the source.
+**Patch Implementation**:
+* `DrainStmt` now builds the event GID with the executing tenant's bucket prefix before emission.
+* Verified end-to-end: `POUR` populates the replica, `CHANGE` updates it, `DRAIN` removes the replicated entry.
+
+#### 2. `CHANGE` Event Emission Crash (CDB-SEC-2026-016)
+**Vulnerability Engine Assessment**: `ChangeStmt` built its event GID through a helper (`_ns`) that does not exist on the `Interpreter` object, raising `AttributeError` during the statement.
+**Exploit Scenario / Attack Vector**: Updates to a bucket feeding a replica or webhook failed before the event was emitted, so downstream consumers never learned about the change. A corrected or revoked value (for example `visibility` flipped from `"public"` to `"private"`) was not propagated, and the writer received an internal error for a valid request.
+**Patch Implementation**:
+* Event GID construction in `ChangeStmt` now derives the tenant bucket from the execution context with a safe fallback and no longer depends on the missing helper.
+
+#### 3. Webhook Server-Side Request Forgery (CDB-SEC-2026-017)
+**Vulnerability Engine Assessment**: `SHAPE WEBHOOK ... POST TO "<url>"` stored any string as the target and the delivery worker passed it directly to `urllib.request.urlopen`, which also honours non-HTTP schemes such as `file://`.
+**Exploit Scenario / Attack Vector**: A tenant allowed to create webhooks registers a target such as `http://169.254.169.254/latest/meta-data/` (cloud instance metadata) or a `file://` URL. The database host then issues the request on the attacker's behalf and records the outcome in `_webhook_log`, turning the server into a proxy into its own cloud credentials or internal network.
+**Patch Implementation**:
+* Added `validate_webhook_url()` to `cleaveql/security.py`. Only `http` and `https` are accepted, a hostname is required, and any URL resolving to a link-local / metadata address (`169.254.0.0/16`, `fe80::/10`) is rejected.
+* Validation runs at `SHAPE WEBHOOK` creation and again immediately before every delivery, so a hostname re-pointed after registration is still caught. Blocked deliveries are logged to `_webhook_log` with status `blocked`.
+* **Known limitation**: loopback and private-LAN targets (for example `http://localhost:3000/hook`) remain allowed because local integrations need them. HTTP redirects and DNS rebinding between the check and the connection are not yet mitigated. Operators exposing CleaveDB to untrusted tenants should also restrict outbound traffic at the network layer.
+
+#### 4. Unbounded `FORECAST` Horizon (CDB-SEC-2026-018)
+**Vulnerability Engine Assessment**: `FORECAST ... NEXT <n> <unit>` accepted any integer for `n` and allocated that many prediction rows.
+**Exploit Scenario / Attack Vector**: A low-privilege tenant sends `FORECAST sales PREDICT total OVER created_at NEXT 999999999 DAYS METHOD LINEAR`. The interpreter allocates and serialises hundreds of millions of rows, exhausting memory and stalling the shared execution thread for every tenant (resource-exhaustion DoS).
+**Patch Implementation**:
+* Added `MAX_FORECAST_HORIZON = 10000`. Requests outside `1..10000` are rejected with a clear error before any computation.
+
+#### Reviewed, No Change Required
+* `FORECAST` and `PIPE` read their source documents through the same row-level-security scan path as `SCOOP`, so `ENFORCE SECURITY` policies and tenant isolation apply to their inputs.
+* `SHAPE REPLICA` copies only the fields named in `SHOW`, so hidden fields (for example cost or margin) never reach the replica bucket.
+
+---
+
+<details>
+<summary><b>October 3, 2026 - Patch Build v3.6.0</b></summary>
+<br>
 
 ### [Security Audit & Patch] Hardware SIMD Fallback & Soft-Delete Preservation
 **Release Date**: October 3, 2026
@@ -38,7 +82,7 @@ Once a patch is developed and verified, we will issue a security advisory and cr
 * Overhauled `DropBucketStmt` in the AST Interpreter. `DROP BUCKET` now operates securely as a massive soft-delete queue, iterating over all documents and packaging them heavily into the isolated `_rubbish` ledger before unlinking the bucket namespace.
 * Designed and deployed a native `RESTORE BUCKET` AST function, allowing tenant administrators to seamlessly resurrect accidentally or maliciously dropped buckets in milliseconds.
 
----
+</details>
 
 <details>
 <summary><b>October 2, 2026 - Patch Build v3.5.10</b></summary>

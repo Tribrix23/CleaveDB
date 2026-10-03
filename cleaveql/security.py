@@ -165,3 +165,36 @@ class PolicyEngine:
 
 
 
+
+
+MAX_FORECAST_HORIZON = 10000
+
+
+def validate_webhook_url(url: str) -> str:
+    """Reject webhook targets that could be abused for SSRF / local file access.
+
+    Allowed: http/https only. Blocked: other schemes (file://, ftp://, ...),
+    missing hosts, and link-local / cloud-metadata addresses (169.254.0.0/16, fe80::/10).
+    Loopback and private LAN targets remain allowed (needed for local services).
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    if not isinstance(url, str) or not url:
+        raise SecurityError("Webhook URL is required.")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise SecurityError("Webhook URL must use http or https.")
+    host = parsed.hostname
+    if not host:
+        raise SecurityError("Webhook URL has no host.")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return url  # unresolved now; re-validated again at delivery time
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if ip.is_link_local:
+            raise SecurityError("Webhook URL resolves to a blocked link-local/metadata address.")
+    return url

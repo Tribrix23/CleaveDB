@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/CleaveDB.png" alt="CleaveDB 3.6" width="500"/>
+  <img src="assets/CleaveDB.png" alt="CleaveDB 3.9.0" width="500"/>
   <br/><br/>
   <p><strong>The polyglot, AVX-512 ready , hybrid relational-document graph database with Transformer attention layers.</strong></p>
   
@@ -12,7 +12,7 @@
 
 <br/>
 
-**CleaveDB 3.6** is a ground-up, hybrid Relational Document & Graph database that eliminates the complexity of traditional SQL `JOIN`s, external vector search services, and opaque graph databases. It ships with:
+**CleaveDB 3.9.0** is a ground-up, hybrid Relational Document & Graph database that eliminates the complexity of traditional SQL `JOIN`s, external vector search services, and opaque graph databases. It ships with:
 
 
 

@@ -13,3 +13,9 @@ cleavedb_server_data/
 build/
 
 release/
+dist/
+*.exe
+*.spec
+test_*_db/
+*_webhook*.py
+ping_server.py
