@@ -328,12 +328,13 @@ def view_worker():
                             continue
                             
                         # Micro-transaction bypass
-                        tenant_id = event.get("bucket", "").split(".")[0]
-                        if "." not in event.get("bucket", ""):
-                            tenant_id = None
+                        target_gid = event.get("target", "")
+                        tenant_id = target_gid.split(".")[0] if ":" in target_gid and "." in target_gid.split(":")[0] else None
                             
                         # Prefix the bucket name with tenant_id
-                        native_view_bucket = f"{tenant_id}.{view_name}" if tenant_id else view_name
+                        # Wait! view_name ALREADY HAS the tenant ID in it if it's from _views!
+                        # e.g. view_user_1fe556.region_sales
+                        native_view_bucket = view_name
                         
                         existing_str = engine.get(f"{native_view_bucket}:{grp}")
                         current_total = 0.0
@@ -796,6 +797,12 @@ async def handle_client(reader, writer):
             
             stmts = Parser(Lexer(query).tokenize()).parse()
             results = interp.execute(stmts)
+            
+            for event in interp.emitted_events:
+                if event.get('event') in ['POUR', 'CHANGE']:
+                    view_queue.put(event)
+                # Ignore dispatcher for now since it causes errors without create_task
+            interp.emitted_events.clear()
             
             if req_id is not None:
                 response = json.dumps({"_req_id": req_id, "payload": results})

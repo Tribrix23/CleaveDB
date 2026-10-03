@@ -644,7 +644,7 @@ class Parser:
             self.consume(TokenType.TO, "Expected 'to' after source bucket.")
             dest = self.consume_identifier("Expected destination bucket.")
             self.consume(TokenType.WHEN, "Expected 'when' after destination bucket.")
-            when = self.expression()
+            when = self._parse_where()
             
             action = None
             if self.match(TokenType.ACTION):

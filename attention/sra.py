@@ -56,3 +56,20 @@ def compute_similarity(text1: str, text2: str) -> float:
     e1 = get_embedding(text1)
     e2 = get_embedding(text2)
     return float(np.dot(e1, e2))
+
+def get_diagnostics() -> dict:
+    if not _AI_ENABLED:
+        return {"status": "offline", "reason": "Missing ML dependencies"}
+    
+    meta = _session.get_modelmeta()
+    
+    return {
+        "model": "all-MiniLM-L6-v2",
+        "onnx_version": ort.__version__,
+        "providers": _session.get_providers(),
+        "input_names": [i.name for i in _session.get_inputs()],
+        "output_names": [o.name for o in _session.get_outputs()],
+        "dim": _session.get_outputs()[0].shape[-1],
+        "hw_acceleration": _session.get_providers()[0] if _session.get_providers() else "Unknown",
+        "custom_metadata": meta.custom_metadata_map if hasattr(meta, "custom_metadata_map") else {}
+    }
