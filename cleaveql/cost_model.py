@@ -71,3 +71,97 @@ class CostModel:
         """Recalibrate cost model from actual benchmark measurements."""
         self.page_cost = measured_page_ms
         self.row_cost = measured_row_ms
+
+    def explain_cost(self, stmt, total_docs: int, available_indexes: list):
+        """Generates a structured query cost breakdown and suggestions."""
+        bucket = getattr(stmt, "bucket", "")
+        where = getattr(stmt, "where", None)
+        order_by = getattr(stmt, "order_by", None)
+        sort_fields = [order_by] if order_by else []
+        limit = getattr(stmt, "limit", None)
+        
+        where_fields = []
+        if where:
+            for p in getattr(where, "predicates", []):
+                if hasattr(p, "field"):
+                    where_fields.append(p.field)
+                    
+        has_applicable_index = False
+        for idx in available_indexes:
+            fields = idx.get("fields", [])
+            # Check if index fields cover ANY of the where fields
+            if any(f in fields for f in where_fields):
+                has_applicable_index = True
+                break
+                
+        scan_type = "INDEX_SCAN" if has_applicable_index else "FULL_BUCKET_SCAN"
+        
+        # Estimate selectivity
+        selectivity = 1.0
+        if where:
+            for p in getattr(where, "predicates", []):
+                op = getattr(p, "op", "=")
+                if op == "=":
+                    selectivity *= 0.12
+                else:
+                    selectivity *= 0.4
+        
+        selectivity = min(1.0, max(0.001, selectivity))
+        if not where:
+            selectivity = 1.0
+            
+        docs_after = int(total_docs * selectivity)
+        
+        index_covers_sort = False
+        if has_applicable_index:
+            for idx in available_indexes:
+                fields = idx.get("fields", [])
+                if any(f in fields for f in where_fields):
+                    if all(sf in fields for sf in sort_fields):
+                        index_covers_sort = True
+                        break
+        sort_in_memory = len(sort_fields) > 0 and not index_covers_sort
+        
+        # Calculate cost
+        estimated_ms = 0.0
+        pages = max(1, total_docs // 20)  # assume 20 docs per page
+        
+        if scan_type == "FULL_BUCKET_SCAN":
+            estimated_ms += self.estimate_scan_cost(pages, total_docs)
+            estimated_docs_scanned = total_docs
+        else:
+            estimated_ms += self.estimate_index_cost(3, docs_after)  # assume depth 3
+            estimated_docs_scanned = max(1, int(total_docs * selectivity * 1.5))
+            
+        if sort_in_memory:
+            estimated_ms += self.estimate_sort_cost(docs_after)
+            
+        suggestions = []
+        if (not has_applicable_index and where_fields) or sort_in_memory:
+            needed_fields = where_fields.copy()
+            for sf in sort_fields:
+                if sf not in needed_fields:
+                    needed_fields.append(sf)
+                    
+            if not has_applicable_index:
+                reason = "to avoid full scan" + (" and eliminate in-memory sort" if sort_in_memory else "")
+                suggestions.append(f"Create INDEX {bucket} ON ({', '.join(needed_fields)}) {reason}")
+            elif sort_in_memory:
+                suggestions.append(f"Create compound INDEX {bucket} ON ({', '.join(needed_fields)}) to eliminate in-memory sort")
+            
+        if not limit and (total_docs > 1000 or sort_in_memory):
+            suggestions.append("Add LIMIT to cap memory usage")
+            
+        if not suggestions:
+            suggestions.append("Query is optimal")
+            
+        return {
+            "scan_type": scan_type,
+            "estimated_docs_scanned": estimated_docs_scanned,
+            "filter_selectivity": round(selectivity, 3),
+            "docs_after_filter": docs_after,
+            "sort_in_memory": sort_in_memory,
+            "has_applicable_index": has_applicable_index,
+            "estimated_ms": max(1, int(estimated_ms)),
+            "suggestions": suggestions
+        }

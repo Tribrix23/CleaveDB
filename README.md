@@ -1067,6 +1067,61 @@ DISTILL FROM employees GROUP BY "department" SUM "salary" AS "total_budget"
 ```
 Instead of scalar iteration, values are loaded into 512-bit ZMM registers (`_mm512_loadu_ps`) and reduced synchronously (`_mm512_add_ps`), taking exactly 1 clock cycle for every 16 elements.
 
+### Feature 23: Data Validation (GUARD)
+Ensure strict data integrity at the database level without writing application-layer code using the `GUARD` command.
+```sql
+SHAPE GUARD "age_limit" ON users MUST age >= 18
+```
+
+### Feature 24: Built-in Audit Trails
+Automatically track historical changes for compliance and lineage tracking by turning a bucket into an `AUDITED` bucket.
+```sql
+SHAPE BUCKET users AUDITED
+```
+
+### Feature 25: Computed Fields (ENRICH)
+Automatically compute derived data without complex application logic using `ENRICH`.
+```sql
+ENRICH users COMPUTE "full_name" AS first_name + " " + last_name
+```
+
+### Feature 26: Explain Cost (PEER INTO COST)
+Debug query performance by peering into the cost of queries using `PEER INTO COST`.
+```sql
+PEER INTO COST (POUR {"name": "Test"} INTO users)
+```
+
+### Feature 27: Webhooks for CDC
+Eliminate the need for Kafka or Debezium by subscribing to database events directly via HTTP `WEBHOOK`.
+```sql
+SHAPE WEBHOOK "user_created" ON users WHEN action = "POUR" POST TO "https://api.example.com/hooks"
+```
+
+
+
+### Feature 30: Multi-Stage Aggregation Pipeline (PIPE)
+Chainable read operations (filter, group, sort, limit) executed in a single pass natively.
+```sql
+PIPE FROM orders
+  THEN WHERE status = "completed"
+  THEN GROUP BY region TOTAL OF revenue AS region_total
+  THEN ARRANGED BY region_total GOING DOWN
+  THEN LIMIT 5
+```
+
+### Feature 29: Statistical Prediction (FORECAST)
+Native linear regression and moving averages computed inside the engine for time-series forecasting.
+```sql
+FORECAST sales PREDICT total OVER created_at NEXT 7 DAYS METHOD LINEAR
+```
+
+### Feature 28: Cross-Bucket Replication (REPLICATE TO)
+Selectively project and copy data across buckets dynamically as the data changes using `REPLICATE TO`.
+```sql
+SHAPE REPLICA public_catalog FROM products WHERE visibility = "public" SHOW name, price
+```
+
+
 ### Feature 1. Neuro-Symbolic Semantic Pathfinding
 Graph databases traverse relationships symbolically, but they possess zero semantic understanding. Vector databases find conceptually similar data but are entirely flat. CleaveDB seamlessly merges Graph Edge Traversal with the ONNX Transformer.
 ```sql

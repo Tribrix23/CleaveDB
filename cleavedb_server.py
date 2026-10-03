@@ -144,6 +144,9 @@ class RestApiHandler(BaseHTTPRequestHandler):
                 for event in events:
                     if event.get('event') in ['POUR', 'CHANGE']:
                         view_queue.put(event)
+                    if event.get('event') in ['POUR', 'CHANGE', 'DRAIN']:
+                        webhook_queue.put(event)
+                        replica_queue.put(event)
                     await dispatcher.publish(event.get('target'), event)
                     if event.get('bucket'):
                         await dispatcher.publish(f"bucket:{event.get('bucket')}", event)
@@ -296,6 +299,51 @@ class EventDispatcher:
 
 dispatcher = EventDispatcher()
 view_queue = queue.Queue()
+webhook_queue = queue.Queue()
+replica_queue = queue.Queue()
+
+def webhook_worker():
+    print("[Server] Asynchronous Webhook Worker started.")
+    import urllib.request
+    import urllib.error
+    import time
+    while True:
+        try:
+            event = webhook_queue.get()
+            evt_type = event.get("event")
+            evt_bucket = event.get("bucket")
+            
+            webhooks_str = GLOBAL_DB.scan_bucket("_webhooks")
+            if webhooks_str:
+                webhooks = json.loads(webhooks_str)
+                for w in webhooks:
+                    body = w.get("body", {})
+                    if body.get("bucket") == evt_bucket and body.get("action") == evt_type:
+                        payload = {
+                            "event": evt_type,
+                            "bucket": evt_bucket,
+                            "gid": event.get("target"),
+                            "body": event.get("data"),
+                            "timestamp": int(time.time()),
+                            "tenant": body.get("tenant", "")
+                        }
+                        import uuid
+                        payload_bytes = json.dumps(payload).encode("utf-8")
+                        for attempt in range(3):
+                            req = urllib.request.Request(body.get("url"), data=payload_bytes, headers={"Content-Type": "application/json"}, method="POST")
+                            try:
+                                urllib.request.urlopen(req, timeout=5)
+                                GLOBAL_DB.pour("_webhook_log", str(uuid.uuid4()), json.dumps({"webhook": body.get("name"), "status": "success", "attempts": attempt+1, "timestamp": int(time.time())}))
+                                break
+                            except Exception as e:
+                                if attempt == 2:
+                                    GLOBAL_DB.pour("_webhook_log", str(uuid.uuid4()), json.dumps({"webhook": body.get("name"), "status": "failed", "error": str(e), "attempts": 3, "timestamp": int(time.time())}))
+                                else:
+                                    time.sleep(2 ** attempt)
+            webhook_queue.task_done()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
 
 def view_worker():
     print("[Server] Asynchronous Continuous View Worker started.")
@@ -313,10 +361,13 @@ def view_worker():
                 continue
                 
             views = json.loads(views_str)
+            t_evt = event.get("tenant")
             for v in views:
                 body = v.get("body", {})
-                if body.get("source") == bucket:
+                t_view = body.get("tenant")
+                if body.get("source") == bucket and (t_view == t_evt or t_view is None):
                     view_name = v.get("gid", "").split(":")[-1]
+                    if "." in view_name: view_name = view_name.split(".", 1)[1]
                     group_field = body.get("group_field")
                     sum_field = body.get("sum_field")
                     
@@ -463,6 +514,9 @@ async def ws_handler(websocket):
                 for event in events:
                     if event.get('event') in ['POUR', 'CHANGE']:
                         view_queue.put(event)
+                    if event.get('event') in ['POUR', 'CHANGE', 'DRAIN']:
+                        webhook_queue.put(event)
+                        replica_queue.put(event)
                     await dispatcher.publish(event.get('target'), event)
                     if event.get('bucket'):
                         await dispatcher.publish(f"bucket:{event.get('bucket')}", event)
@@ -801,6 +855,9 @@ async def handle_client(reader, writer):
             for event in interp.emitted_events:
                 if event.get('event') in ['POUR', 'CHANGE']:
                     view_queue.put(event)
+                if event.get('event') in ['POUR', 'CHANGE', 'DRAIN']:
+                    webhook_queue.put(event)
+                    replica_queue.put(event)
                 # Ignore dispatcher for now since it causes errors without create_task
             interp.emitted_events.clear()
             
@@ -822,6 +879,79 @@ async def handle_client(reader, writer):
     print(f"[Server] User '{username}' disconnected.")
     writer.close()
 
+def replica_worker():
+    print("[Server] Asynchronous Replica Worker started.")
+    import json
+    while True:
+        try:
+            event = replica_queue.get()
+            evt_type = event.get("event")
+            evt_bucket = event.get("bucket")
+            evt_gid = event.get("target")
+            data = event.get("data", {})
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except:
+                    data = {}
+            
+            replicas_str = GLOBAL_DB.scan_bucket("_replicas")
+            if replicas_str:
+                replicas = json.loads(replicas_str)
+                for r in replicas:
+                    body = r.get("body", {})
+                    if body.get("source") == evt_bucket:
+                        print(f"[ReplicaWorker] MATCH BUCKET: {evt_bucket}, evt_type: {evt_type}, gid: {evt_gid}", flush=True)
+                        target = body.get("target")
+                        when = body.get("when")
+                        show = body.get("show_fields", [])
+                        
+                        # Evaluate condition
+                        match = True
+                        if when:
+                            if when.get("type") == "WhereClause":
+                                # Very basic evaluation of the first predicate for the feature plan
+                                preds = when.get("predicates", [])
+                                if preds:
+                                    p = preds[0]
+                                    left = p.get("field")
+                                    right = p.get("value")
+                                    op = p.get("op")
+                                    
+                                    val = data.get(left)
+                                    if op == "=" or op == "==":
+                                        match = (str(val) == str(right))
+                                    elif op == "!=":
+                                        match = (str(val) != str(right))
+                                
+                        if match and evt_type in ["POUR", "CHANGE"]:
+                            # Project fields
+                            projected = {}
+                            if show:
+                                for f in show:
+                                    if f in data:
+                                        projected[f] = data[f]
+                            else:
+                                projected = data.copy()
+                            
+                            # Upsert to target bucket
+                            actual_id = evt_gid.split(":")[-1] if ":" in evt_gid else evt_gid
+                            target_tenant = evt_gid.split(".")[0] if "." in evt_gid else ""
+                            full_target = f"{target_tenant}.{target}" if target_tenant else target
+                            GLOBAL_DB.pour(full_target, actual_id, json.dumps(projected))
+                            
+                        elif not match or evt_type == "DRAIN":
+                            # Remove from target bucket if it doesn't match anymore or was deleted
+                            actual_id = evt_gid.split(":")[-1] if ":" in evt_gid else evt_gid
+                            target_tenant = evt_gid.split(".")[0] if "." in evt_gid else ""
+                            full_target = f"{target_tenant}.{target}" if target_tenant else target
+                            GLOBAL_DB.delete(f"{full_target}:{actual_id}")
+                            
+            replica_queue.task_done()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+
 async def main():
     global dist_engine
     global engine
@@ -840,6 +970,10 @@ async def main():
 
 
     threading.Thread(target=view_worker, daemon=True).start()
+
+
+    threading.Thread(target=webhook_worker, daemon=True).start()
+    threading.Thread(target=replica_worker, daemon=True).start()
     threading.Thread(target=vector_worker, daemon=True).start()
     threading.Thread(target=run_http_server, args=(args.port + 2,), daemon=True).start()
 

@@ -24,6 +24,113 @@ class Parser:
 
     def statement(self) -> Any:
 
+
+
+        if self.match(TokenType.PIPE):
+            self.consume(TokenType.FROM, "Expected 'FROM' after PIPE.")
+            source_bucket = self.consume_identifier("Expected source bucket.")
+            
+            stages = []
+            while self.match(TokenType.THEN):
+                if self.match(TokenType.WHERE):
+                    expr = self._parse_where()
+                    stages.append(FilterStage(where=expr))
+                elif self.match(TokenType.GROUP):
+                    self.consume(TokenType.BY, "Expected 'BY' after 'GROUP'.")
+                    group_field = self.consume_identifier("Expected group field.")
+                    
+                    aggregations = []
+                    while True:
+                        if self.match(TokenType.TOTAL): agg_type = "TOTAL"
+                        elif self.match(TokenType.AVERAGE): agg_type = "AVERAGE"
+                        elif self.match(TokenType.MIN): agg_type = "MIN"
+                        elif self.match(TokenType.MAX_AGG): agg_type = "MAX"
+                        elif self.match(TokenType.TALLY): agg_type = "TALLY"
+                        elif self.match(TokenType.SPREAD): agg_type = "SPREAD"
+                        else:
+                            break
+                            
+                        target_field = None
+                        if agg_type != "TALLY":
+                            self.consume(TokenType.OF, f"Expected 'OF' after {agg_type}.")
+                            target_field = self.consume_identifier("Expected target field for aggregation.")
+                            
+                        self.consume(TokenType.AS, "Expected 'AS' for aggregation alias.")
+                        alias = self.consume_identifier("Expected alias name.")
+                        
+                        aggregations.append({"type": agg_type, "field": target_field, "alias": alias})
+                        
+                        if not self.match(TokenType.COMMA):
+                            break
+                            
+                    stages.append(GroupStage(group_field=group_field, aggregations=aggregations))
+                elif self.match(TokenType.ARRANGED):
+                    self.consume(TokenType.BY, "Expected 'BY' after 'ARRANGED'.")
+                    sort_field = self.consume_identifier("Expected sort field.")
+                    self.consume(TokenType.GOING, "Expected 'GOING'.")
+                    
+                    direction = "UP"
+                    if self.match(TokenType.DOWN):
+                        direction = "DOWN"
+                    elif self.match(TokenType.UP):
+                        direction = "UP"
+                    else:
+                        raise ParseError("Expected 'UP' or 'DOWN'.")
+                        
+                    stages.append(SortStage(sort_field=sort_field, direction=direction))
+                elif self.match(TokenType.LIMIT):
+                    if self.check(TokenType.INTEGER):
+                        limit = int(self.advance().value)
+                        stages.append(LimitStage(limit=limit))
+                    else:
+                        raise ParseError("Expected integer limit.")
+                elif self.match(TokenType.SHOW):
+                    fields = [self.consume_identifier("Expected field name.")]
+                    while self.match(TokenType.COMMA):
+                        fields.append(self.consume_identifier("Expected field name."))
+                    stages.append(ProjectStage(fields=fields))
+                else:
+                    raise ParseError("Expected valid stage after 'THEN' (WHERE, GROUP, ARRANGED, LIMIT, SHOW).")
+                    
+            return PipeStmt(source_bucket=source_bucket, stages=stages)
+
+        if self.match(TokenType.FORECAST):
+            bucket = self.consume_identifier("Expected bucket name.")
+            self.consume(TokenType.PREDICT, "Expected 'PREDICT' after bucket.")
+            value_field = self.consume_identifier("Expected field to predict.")
+            self.consume(TokenType.OVER, "Expected 'OVER'.")
+            time_field = self.consume_identifier("Expected time field.")
+            self.consume(TokenType.NEXT, "Expected 'NEXT'.")
+            
+            if self.check(TokenType.INTEGER):
+                horizon = int(self.advance().value)
+            else:
+                raise ParseError("Expected integer horizon.")
+                
+            time_unit = self.consume_identifier("Expected time unit (e.g. DAYS, HOURS).")
+            
+            self.consume(TokenType.METHOD, "Expected 'METHOD'.")
+            method = ""
+            if self.match(TokenType.LINEAR):
+                method = "LINEAR"
+            elif self.match(TokenType.MOVING_AVERAGE):
+                method = "MOVING_AVERAGE"
+            elif self.match(TokenType.EXPONENTIAL):
+                method = "EXPONENTIAL"
+            elif self.match(TokenType.IDENTIFIER):
+                method = self.previous().lexeme.upper()
+            else:
+                raise ParseError("Expected method name.")
+                
+            window = 0
+            if self.match(TokenType.WINDOW):
+                if self.check(TokenType.INTEGER):
+                    window = int(self.advance().value)
+                else:
+                    raise ParseError("Expected integer window.")
+                    
+            return ForecastStmt(bucket=bucket, value_field=value_field, time_field=time_field, horizon=horizon, time_unit=time_unit, method=method, window=window)
+
         if self.match(TokenType.BEGIN):
             if self.match(TokenType.TRANSACTION):
                 pass
@@ -65,6 +172,10 @@ class Parser:
                 
             return TriggerStmt(event, bucket, query_template)
 
+        if self.match(TokenType.GUARD):
+            return self.guard_stmt()
+        if self.match(TokenType.ENRICH):
+            return self.enrich_stmt()
         if self.match(TokenType.MIGRATE):
             return self.migrate_stmt()
         if self.match(TokenType.LISTEN):
@@ -108,6 +219,8 @@ class Parser:
             return self.incinerate_stmt()
         if self.match(TokenType.SHAPE):
             return self.shape_stmt()
+        if self.match(TokenType.HELP):
+            return HelpStmt()
         if self.match(TokenType.INDEX):
             return self.index_stmt()
         if self.match(TokenType.AUTHENTICATE):
@@ -327,6 +440,8 @@ class Parser:
         stmt.whose_field = whose_field
         stmt.whose_value = whose_value
         stmt.limit = limit
+        stmt.order_by = arrange_field
+        stmt.order_dir = arrange_dir
         stmt.arrange_field = arrange_field
         stmt.arrange_dir = arrange_dir
         
@@ -558,6 +673,19 @@ class Parser:
         return IncinerateStmt(doc_id=doc_id)
 
     def shape_stmt(self) -> Any:
+        if self.match(TokenType.WEBHOOK):
+            name = self.consume_string("Expected webhook name")
+            self.consume(TokenType.ON, "Expected 'on'")
+            bucket = self.consume_identifier("Expected bucket name")
+            self.consume(TokenType.WHEN, "Expected 'when'")
+            self.consume(TokenType.ACTION, "Expected 'action'")
+            self.consume(TokenType.EQ, "Expected '='")
+            action_filter = self.consume_string("Expected action string")
+            self.consume(TokenType.POST, "Expected 'post'")
+            self.consume(TokenType.TO, "Expected 'to'")
+            url = self.consume_string("Expected url")
+            return ShapeWebhookStmt(name=name, bucket=bucket, action_filter=action_filter, url=url)
+            
         if self.match(TokenType.VIEW):
             view_name = self.consume_string("Expected view name as string.")
             self.consume(TokenType.AS, "Expected 'AS'.")
@@ -579,10 +707,11 @@ class Parser:
             ttl = None
             max_documents = None
             versioned = False
+            audited = False
             strict_schema = None
             if self.match(TokenType.STRICT):
                 strict_schema = self.consume_json("Expected JSON schema.")
-            while self.match(TokenType.COMPRESSION, TokenType.TTL, TokenType.MAX, TokenType.VERSIONED):
+            while self.match(TokenType.COMPRESSION, TokenType.TTL, TokenType.MAX, TokenType.VERSIONED, TokenType.AUDITED):
                 prop_name = self.previous().type
                 if prop_name == TokenType.COMPRESSION:
                     compression = str(self.consume_value("Expected compression value."))
@@ -594,7 +723,9 @@ class Parser:
                     max_documents = self.consume_value("Expected max documents value.")
                 elif prop_name == TokenType.VERSIONED:
                     versioned = True
-            return ShapeBucketStmt(path=path, compression=compression, ttl=ttl, max_documents=max_documents, versioned=versioned)
+                elif prop_name == TokenType.AUDITED:
+                    audited = True
+            return ShapeBucketStmt(path=path, compression=compression, ttl=ttl, max_documents=max_documents, versioned=versioned, audited=audited)
             
         elif self.match(TokenType.PROJECTION):
             path = self.consume_identifier("Expected projection path.")
@@ -638,6 +769,23 @@ class Parser:
             return MaskStmt(field=field, bucket=bucket, condition=condition)
 
             
+        elif self.match(TokenType.REPLICA):
+            target = self.consume_identifier("Expected target bucket name after 'shape replica'.")
+            self.consume(TokenType.FROM, "Expected 'from' after replica target.")
+            source = self.consume_identifier("Expected source bucket name.")
+            
+            when_expr = None
+            if self.match(TokenType.WHERE):
+                when_expr = self._parse_where()
+                
+            show_fields = []
+            if self.match(TokenType.SHOW):
+                show_fields.append(self.consume_identifier("Expected field name after SHOW."))
+                while self.match(TokenType.COMMA):
+                    show_fields.append(self.consume_identifier("Expected field name after comma."))
+            
+            return ShapeReplicaStmt(target_bucket=target, source_bucket=source, when=when_expr, show_fields=show_fields)
+
         elif self.match(TokenType.FLOW):
             self.consume(TokenType.FROM, "Expected 'from' after 'shape flow'.")
             source = self.consume_identifier("Expected source bucket.")
@@ -815,23 +963,25 @@ class Parser:
         return PolicyStmt(bucket=bucket, algorithm=algorithm)
 
     def index_stmt(self) -> IndexStmt:
-        # INDEX age ON users
-        # INDEX "age" ON users (BTREE)
+        fields = []
         if self.match(TokenType.STRING):
-            field = self.previous().value
+            fields.append(self.previous().value)
         else:
-            field = self.consume_identifier("Expected field name or bucket name.")
+            fields.append(self.consume_identifier("Expected field name or bucket name."))
             
+        while self.match(TokenType.COMMA):
+            if self.match(TokenType.STRING):
+                fields.append(self.previous().value)
+            else:
+                fields.append(self.consume_identifier("Expected field name."))
+
         if self.match(TokenType.ON):
-            # It's INDEX field ON bucket
-            fields = [field]
             bucket = self.consume_identifier("Expected bucket name.")
             if self.match(TokenType.LPAREN):
                 self.consume_identifier("Expected index algorithm")
                 self.consume(TokenType.RPAREN, "Expected ')'")
         else:
-            # It's INDEX bucket ON (field)
-            bucket = field
+            bucket = fields[0]
             self.consume(TokenType.ON, "Expected 'on' after bucket name.")
             self.consume(TokenType.LPAREN, "Expected '(' after 'on'.")
             fields = []
@@ -840,7 +990,7 @@ class Parser:
                 else: fields.append(self.consume_identifier("Expected field name."))
                 if not self.match(TokenType.COMMA): break
             self.consume(TokenType.RPAREN, "Expected ')' after fields.")
-            
+
         return IndexStmt(bucket=bucket, fields=fields)
 
     def heal_stmt(self) -> HealStmt:
@@ -849,9 +999,9 @@ class Parser:
         raise self.error(self.peek(), "Expected 'bonds', 'indexes', or 'all' after 'heal'.")
 
     def show_stmt(self) -> ShowStmt:
-        if self.match(TokenType.BUCKETS, TokenType.BONDS, TokenType.INDEXES, TokenType.STATS):
+        if self.match(TokenType.BUCKETS, TokenType.BONDS, TokenType.INDEXES, TokenType.STATS, TokenType.WEBHOOKS):
             return ShowStmt(target=self.previous().lexeme)
-        raise self.error(self.peek(), "Expected 'buckets', 'bonds', 'indexes', or 'stats' after 'show'.")
+        raise self.error(self.peek(), "Expected 'buckets', 'bonds', 'indexes', 'stats', or 'webhooks' after 'show'.")
 
     def describe_stmt(self) -> DescribeStmt:
         bucket = self.consume_identifier("Expected bucket name.")
@@ -861,6 +1011,12 @@ class Parser:
         self.consume(TokenType.INTO, "Expected 'into' after 'peer'.")
         if self.match(TokenType.ATTENTION):
             return PeerStmt(attention=True)
+        elif self.match(TokenType.COST):
+            has_paren = self.match(TokenType.LPAREN)
+            stmt = self.statement()
+            if has_paren:
+                self.consume(TokenType.RPAREN, "Expected ')' after target statement in PEER INTO COST.")
+            return PeerStmt(cost=True, target_stmt=stmt)
         else:
             return PeerStmt(target_stmt=self.statement())
 
@@ -936,19 +1092,11 @@ class Parser:
         return str(self.consume(TokenType.STRING, message).value)
         
     def consume_identifier(self, message: str) -> str:
-        # Accept IDENTIFIER or any keyword token as a field/bucket name
-        # (keywords like 'total', 'status', 'name' can be field names in context)
-        if self.check(TokenType.IDENTIFIER):
-            return self.advance().lexeme
-        # Allow keywords to be used as identifiers
-        if not self.is_at_end() and self.peek().type not in (
-            TokenType.EOF, TokenType.EQ, TokenType.NEQ, TokenType.GT, TokenType.GTE,
-            TokenType.LT, TokenType.LTE, TokenType.COMMA, TokenType.LPAREN, TokenType.RPAREN,
-            TokenType.LBRACE, TokenType.RBRACE, TokenType.LBRACKET, TokenType.RBRACKET,
-            TokenType.INTEGER, TokenType.FLOAT, TokenType.STRING,
-        ):
-            return self.advance().lexeme
-        raise self.error(self.peek(), message)
+        if self.is_at_end():
+            raise self.error(self.peek(), message)
+        if self.peek().type in (TokenType.EOF, TokenType.COMMA, TokenType.LPAREN, TokenType.RPAREN, TokenType.EQ, TokenType.NEQ, TokenType.GT, TokenType.LT, TokenType.GTE, TokenType.LTE):
+            raise self.error(self.peek(), message)
+        return self.advance().lexeme
         
     def consume_field_path(self, message: str) -> str:
         path = self.consume_identifier(message)
@@ -1254,6 +1402,89 @@ class Parser:
             
         return RateLimitStmt(limit=limit_val, role=role)
 
+
+    def guard_stmt(self) -> GuardStmt:
+        stmt = GuardStmt()
+        stmt.bucket = self.consume_identifier("Expected bucket name after GUARD")
+        self.consume(TokenType.WITH, "Expected WITH after bucket name")
+        
+        while True:
+            rule = {}
+            # rule field
+            print("BEFORE FIELD PEAK:", self.peek().lexeme, self.peek().type)
+            rule["field"] = self.consume_identifier("Expected field name in GUARD rule")
+            print("AFTER FIELD PEAK:", self.peek().lexeme, self.peek().type)
+
+            
+            if self.match(TokenType.IS):
+                if self.match(TokenType.NOT):
+                    if self.match(TokenType.REQUIRED):
+                        rule["rule_type"] = "NOT REQUIRED"
+                    else:
+                        raise ParserError(f"Expected REQUIRED after IS NOT, got {self.peek().lexeme}")
+                elif self.match(TokenType.REQUIRED):
+                    rule["rule_type"] = "REQUIRED"
+                elif self.match(TokenType.TYPE):
+                    rule["rule_type"] = "TYPE"
+                    type_str = self.consume(TokenType.IDENTIFIER, "Expected type name after TYPE").lexeme
+                    rule["value"] = type_str.lower()
+                else:
+                    raise ParserError(f"Unknown IS condition: {self.peek().lexeme}")
+                    
+            elif self.match(TokenType.IN):
+                rule["rule_type"] = "IN"
+                if self.peek().lexeme == "(":
+                    self.advance()
+                    vals = []
+                    while not self.check(TokenType.EOF) and self.peek().lexeme != ")":
+                        if self.check(TokenType.STRING):
+                            vals.append(self.advance().value)
+                        elif (self.check(TokenType.INTEGER) or self.check(TokenType.FLOAT)):
+                            vals.append(self.advance().value)
+                        elif self.peek().lexeme == ",":
+                            self.advance()
+                        else:
+                            self.advance()
+                    if self.peek().lexeme == ")":
+                        self.advance()
+                    rule["value"] = vals
+                else:
+                    raise ParserError("Expected ( after IN")
+                    
+            elif self.match(TokenType.IDENTIFIER) and self.previous().lexeme.lower() == "length":
+                rule["rule_type"] = "LENGTH"
+                op = self.advance().lexeme
+                if op not in (">", "<", ">=", "<=", "=", "!="):
+                    raise ParserError(f"Expected comparison operator for LENGTH, got {op}")
+                rule["operator"] = op
+                rule["value"] = self.consume(TokenType.INTEGER, "Expected number for LENGTH").value
+                
+            else:
+                op = self.advance().lexeme
+                if op in (">", "<", ">=", "<=", "=", "!="):
+                    rule["rule_type"] = "COMPARE"
+                    rule["operator"] = op
+                    if (self.check(TokenType.INTEGER) or self.check(TokenType.FLOAT)):
+                        rule["value"] = self.advance().value
+                    elif self.check(TokenType.STRING):
+                        rule["value"] = self.advance().value
+                    elif self.check(TokenType.IDENTIFIER) and self.peek().lexeme.lower() in ("true", "false"):
+                        v = self.advance().lexeme.lower()
+                        rule["value"] = True if v == "true" else False
+                    else:
+                        raise ParserError("Expected value after comparison operator")
+                else:
+                    raise ParserError(f"Unknown rule operator: {op}")
+                    
+            stmt.rules.append(rule)
+            
+            if not self.is_at_end() and self.peek().lexeme == ",":
+                self.advance()
+            else:
+                break
+                
+        return stmt
+
     def migrate_stmt(self):
         if self.match(TokenType.STRING):
             bucket = self.previous().value
@@ -1267,3 +1498,52 @@ class Parser:
         dst_json = self.consume_json("Expected destination JSON pattern")
         
         return MigrateStmt(bucket=bucket, src_json=src_json, dst_json=dst_json)
+
+    def enrich_stmt(self) -> Any:
+        bucket = self.consume_identifier("Expected bucket name for ENRICH")
+        self.consume(TokenType.WITH, "Expected WITH after bucket name")
+        
+        rules = []
+        while True:
+            rule = {}
+            rule["field"] = self.consume_identifier("Expected virtual field name in ENRICH rule")
+            self.consume(TokenType.AS, "Expected AS after virtual field name")
+            
+            # The expression can be a single string, number, field reference, NOW(), CONCAT(), or arithmetic/comparisons.
+            # To keep it simple, we'll parse it as a string token if it's quoted, or a combination of tokens.
+            # But the user example says:
+            # ENRICH users WITH full_name AS CONCAT(first_name, " ", last_name)
+            # ENRICH products WITH discount_price AS price * 0.9
+            # ENRICH orders WITH is_overdue AS (due_date < NOW())
+            # ENRICH employees WITH is_senior AS (years_experience > 5)
+            
+            # Since parsing full expressions properly requires a full expression parser,
+            # we will just collect all tokens until a COMMA or EOF, and store them as a list of tokens/strings.
+            
+            expr_tokens = []
+            paren_count = 0
+            while not self.is_at_end():
+                if self.peek().type == TokenType.LPAREN:
+                    paren_count += 1
+                elif self.peek().type == TokenType.RPAREN:
+                    paren_count -= 1
+                    
+                if self.peek().type == TokenType.COMMA and paren_count == 0:
+                    break
+                    
+                t = self.advance()
+                if t.type == TokenType.STRING:
+                    expr_tokens.append(f'"{t.value}"')
+                else:
+                    expr_tokens.append(t.lexeme)
+                    
+            rule["expr"] = " ".join(expr_tokens)
+            rules.append(rule)
+            
+            if not self.is_at_end() and self.peek().type == TokenType.COMMA:
+                self.advance()
+            else:
+                break
+                
+        from .ast import EnrichStmt
+        return EnrichStmt(bucket=bucket, rules=rules)

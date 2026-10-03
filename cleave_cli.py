@@ -960,6 +960,24 @@ HELP_TEXT = """
   logout                                        End session, return to login.
   cls | clear                                   Clear terminal screen.
   exit | quit                                   Close connection and exit.
+
+12. FOUNDATION TIER (NEW FEATURES)
+  GUARD <bucket> WITH <rules>                   Document validation.
+    Ex: GUARD users WITH name IS REQUIRED, age >= 0
+  SHAPE BUCKET <bucket> AUDITED                 Automatic change logging.
+  ENRICH <bucket> WITH <field> AS <expr>        Computed virtual fields.
+    Ex: ENRICH users WITH full_name AS CONCAT(first, " ", last)
+  PEER INTO COST (<query>)                      Natural language query cost/suggester.
+SHAPE WEBHOOK "<name>" ON <bucket> WHEN action = "<act>" POST TO "<url>"
+                                                Native outbound HTTP events.
+  SHOW WEBHOOKS                                 List webhooks.
+  SHAPE REPLICA <target> FROM <source> [WHERE <expr>] [SHOW <fields>]
+                                                Cross-bucket selective sync.
+    Ex: SHAPE REPLICA active_users FROM users WHERE status = "active" SHOW name, role
+    FORECAST <bucket> PREDICT <val> OVER <time> NEXT <n> <unit> METHOD <method>
+                                                  Built-in statistical prediction.
+    PIPE FROM <bucket> THEN ... THEN ...            Multi-stage aggregation pipeline.
+      Ex: PIPE FROM orders THEN WHERE status="completed" THEN GROUP BY region TOTAL OF revenue AS region_total
 ================================================================================
 """
 

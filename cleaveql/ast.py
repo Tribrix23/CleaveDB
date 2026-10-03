@@ -115,12 +115,24 @@ class ShapeViewStmt(ASTNode):
         self.sum_field = sum_field
 
 @dataclass
+class HelpStmt(ASTNode):
+    pass
+
+@dataclass
+class ShapeWebhookStmt(ASTNode):
+    name: str = ""
+    bucket: str = ""
+    action_filter: str = ""
+    url: str = ""
+
+@dataclass
 class ShapeBucketStmt(ASTNode):
     path: str = ""
     compression: Optional[str] = None
     ttl: Optional[str] = None
     max_documents: Optional[int] = None
     versioned: bool = False
+    audited: bool = False
 
 @dataclass
 class ShapeProjectionStmt(ASTNode):
@@ -165,6 +177,7 @@ class DescribeStmt(ASTNode):
 class PeerStmt(ASTNode):
     target_stmt: Optional[ASTNode] = None
     attention: bool = False
+    cost: bool = False
 
 @dataclass
 @dataclass
@@ -285,3 +298,61 @@ class DropBucketStmt(ASTNode):
 @dataclass
 class RestoreBucketStmt(ASTNode):
     bucket: str = ""
+
+@dataclass
+class GuardStmt(ASTNode):
+    bucket: str = ""
+    rules: List[dict] = field(default_factory=list)
+
+
+@dataclass
+class EnrichStmt(ASTNode):
+    bucket: str = ""
+    rules: List[dict] = field(default_factory=list)
+
+
+class ShapeReplicaStmt(ASTNode):
+    def __init__(self, target_bucket: str, source_bucket: str, when=None, show_fields=None):
+        self.target_bucket = target_bucket
+        self.source_bucket = source_bucket
+        self.when = when
+        self.show_fields = show_fields or []
+
+
+@dataclass
+class ForecastStmt(ASTNode):
+    bucket: str = ""
+    value_field: str = ""
+    time_field: str = ""
+    horizon: int = 0
+    time_unit: str = ""
+    method: str = ""
+    window: int = 0
+
+
+@dataclass
+class FilterStage(ASTNode):
+    where: Any = None
+
+@dataclass
+class GroupStage(ASTNode):
+    group_field: str = ""
+    aggregations: List[dict] = field(default_factory=list)
+
+@dataclass
+class SortStage(ASTNode):
+    sort_field: str = ""
+    direction: str = "UP"
+
+@dataclass
+class LimitStage(ASTNode):
+    limit: int = 0
+
+@dataclass
+class ProjectStage(ASTNode):
+    fields: List[str] = field(default_factory=list)
+
+@dataclass
+class PipeStmt(ASTNode):
+    source_bucket: str = ""
+    stages: List[ASTNode] = field(default_factory=list)

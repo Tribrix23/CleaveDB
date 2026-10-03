@@ -11,7 +11,8 @@ class TokenType(Enum):
     RESTORE = auto()
     MIGRATE = auto()     # insert/upsert
     DRAIN = auto()    # delete
-    FLOW = auto()     # move/copy between buckets
+    FLOW = auto()
+    REPLICA = auto()     # move/copy between buckets
     BOND = auto()     # declare relationship
     DISTILL = auto()  # aggregate
     FOLLOW = auto()
@@ -22,7 +23,20 @@ class TokenType(Enum):
     GROUP = auto()
     SUM = auto()
     PEER = auto()     # explain/inspect
-    LISTEN = auto()   # websocket subscription
+    LISTEN = auto()
+    GUARD = auto()
+    COST = auto()
+    ENRICH = auto()
+    CONCAT = auto()
+    NOW = auto()
+    AUDITED = auto()
+    REQUIRED = auto()
+    WEBHOOK = auto()
+    WEBHOOKS = auto()
+    POST = auto()
+    HELP = auto()
+    LENGTH = auto()
+    TYPE = auto()   # websocket subscription
     CHANGE = auto()   # partial update
     COUNT = auto()    # count matching documents
     INDEX = auto()    # declare index
@@ -218,6 +232,7 @@ class TokenType(Enum):
     LPAREN = auto()   # (
     RPAREN = auto()   # )
     STAR = auto()     # *
+    PIPE_OP = auto()  # |>
 
     # Literals
     INTEGER = auto()
@@ -239,6 +254,17 @@ class TokenType(Enum):
     SECOND = auto()
     SECONDS = auto()
     UNKNOWN = auto()
+    FORECAST = auto()
+    PREDICT = auto()
+    OVER = auto()
+    NEXT = auto()
+    METHOD = auto()
+    LINEAR = auto()
+    MOVING_AVERAGE = auto()
+    EXPONENTIAL = auto()
+    WINDOW = auto()
+    PIPE = auto()
+    THEN = auto()
 
 KEYWORDS = {
     "expires": TokenType.EXPIRES,
@@ -284,6 +310,7 @@ KEYWORDS = {
     'restore': TokenType.RESTORE,
     'drain': TokenType.DRAIN,
     'flow': TokenType.FLOW,
+    'replica': TokenType.REPLICA,
     'bond': TokenType.BOND,
     'link': TokenType.LINK,
     'if': TokenType.IF,
@@ -379,6 +406,19 @@ KEYWORDS = {
     'not': TokenType.NOT,
     'matching': TokenType.MATCHING,
     'is': TokenType.IS,
+    'guard': TokenType.GUARD,
+    'cost': TokenType.COST,
+    'enrich': TokenType.ENRICH,
+    'concat': TokenType.CONCAT,
+    'now': TokenType.NOW,
+    'audited': TokenType.AUDITED,
+    'required': TokenType.REQUIRED,
+    'webhook': TokenType.WEBHOOK,
+    'webhooks': TokenType.WEBHOOKS,
+    'post': TokenType.POST,
+    'help': TokenType.HELP,
+    'length': TokenType.LENGTH,
+    'type': TokenType.TYPE,
     'random': TokenType.RANDOM,
     'last': TokenType.LAST,
     'first': TokenType.FIRST,
@@ -420,6 +460,18 @@ KEYWORDS = {
     'max_agg': TokenType.MAX_AGG,
     'spread': TokenType.SPREAD,
     'of': TokenType.OF,
+    'forecast': TokenType.FORECAST,
+    'predict': TokenType.PREDICT,
+    'over': TokenType.OVER,
+    'next': TokenType.NEXT,
+    'method': TokenType.METHOD,
+    'linear': TokenType.LINEAR,
+    'moving_average': TokenType.MOVING_AVERAGE,
+    'exponential': TokenType.EXPONENTIAL,
+    'window': TokenType.WINDOW,
+    'pipe': TokenType.PIPE,
+    'then': TokenType.THEN,
+    'pipe': TokenType.PIPE,
 }
 
 @dataclass
