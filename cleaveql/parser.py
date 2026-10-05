@@ -44,7 +44,7 @@ class Parser:
                         if self.match(TokenType.TOTAL): agg_type = "TOTAL"
                         elif self.match(TokenType.AVERAGE): agg_type = "AVERAGE"
                         elif self.match(TokenType.MIN): agg_type = "MIN"
-                        elif self.match(TokenType.MAX_AGG): agg_type = "MAX"
+                        elif self.match(TokenType.MAX_AGG, TokenType.MAX): agg_type = "MAX"
                         elif self.match(TokenType.TALLY): agg_type = "TALLY"
                         elif self.match(TokenType.SPREAD): agg_type = "SPREAD"
                         else:
@@ -479,31 +479,48 @@ class Parser:
         if self.match(TokenType.STRING): bucket = self.previous().value
         else: bucket = self.consume_identifier("Expected bucket name.")
         
+        where = None
+        if self.match(TokenType.WHERE):
+            where = self._parse_where()
+
         group_by = None
         if self.match(TokenType.GROUP):
             self.consume_identifier("Expected 'by' after group.") # 'by' is an identifier
             if self.match(TokenType.STRING): group_by = self.previous().value
             else: group_by = self.consume_identifier("Expected group field name.")
-            
-        if self.match(TokenType.STRING): agg_function = self.previous().value
-        else: agg_function = self.consume_identifier("Expected aggregation function (e.g. SUM, TOTAL).")
-        
-        # Support both old "OF field" and new ""field"" syntax
-        if self.match(TokenType.OF): pass 
-        
-        if self.match(TokenType.STRING): field = self.previous().value
-        else: field = self.consume_identifier("Expected field name to aggregate.")
-        
-        alias = None
-        if self.match(TokenType.AS):
-            if self.match(TokenType.STRING): alias = self.previous().value
-            else: alias = self.consume_identifier("Expected alias name.")
 
-        clauses = []
-        while self.match(TokenType.WHERE, TokenType.WHOSE, TokenType.MEANING, TokenType.MENTIONING, TokenType.NEAR, TokenType.SINCE, TokenType.UNTIL, TokenType.ORDER, TokenType.INCLUDE, TokenType.MATCHING, TokenType.YIELD):
-            clauses.append(self.scoop_clause(self.previous().type))
-            
-        return DistillStmt(bucket=bucket, agg_function=agg_function, field=field, group_by=group_by, alias=alias)
+        if where is None and self.match(TokenType.WHERE):
+            where = self._parse_where()
+
+        aggs = []
+        while True:
+            if self.match(TokenType.STRING): agg_function = self.previous().value
+            else: agg_function = self.consume_identifier("Expected aggregation function (e.g. SUM, TOTAL, COUNT).")
+
+            # Support both old "OF field" and new ""field"" syntax
+            had_of = self.match(TokenType.OF)
+
+            if agg_function.upper() in ("COUNT", "TALLY") and not had_of \
+                    and not self.check(TokenType.IDENTIFIER) and not self.check(TokenType.STRING):
+                field = "*"   # COUNT / TALLY with no field counts documents
+            elif self.match(TokenType.STRING): field = self.previous().value
+            else: field = self.consume_identifier("Expected field name to aggregate.")
+
+            alias = None
+            if self.match(TokenType.AS):
+                if self.match(TokenType.STRING): alias = self.previous().value
+                else: alias = self.consume_identifier("Expected alias name.")
+
+            aggs.append({"function": agg_function, "field": field, "alias": alias})
+            if not self.match(TokenType.COMMA):
+                break
+
+        if where is None and self.match(TokenType.WHERE):
+            where = self._parse_where()
+
+        first = aggs[0]
+        return DistillStmt(bucket=bucket, agg_function=first["function"], field=first["field"],
+                           group_by=group_by, alias=first["alias"], where=where, aggs=aggs)
 
     def follow_stmt(self) -> FollowStmt:
         doc_key = self.consume_doc_id("Expected document key.")
@@ -976,10 +993,21 @@ class Parser:
                 fields.append(self.consume_identifier("Expected field name."))
 
         if self.match(TokenType.ON):
-            bucket = self.consume_identifier("Expected bucket name.")
-            if self.match(TokenType.LPAREN):
-                self.consume_identifier("Expected index algorithm")
-                self.consume(TokenType.RPAREN, "Expected ')'")
+            if self.check(TokenType.LPAREN):
+                # INDEX bucket ON (field, field)
+                bucket = fields[0]
+                self.consume(TokenType.LPAREN, "Expected '(' after 'on'.")
+                fields = []
+                while True:
+                    if self.match(TokenType.STRING): fields.append(self.previous().value)
+                    else: fields.append(self.consume_identifier("Expected field name."))
+                    if not self.match(TokenType.COMMA): break
+                self.consume(TokenType.RPAREN, "Expected ')' after fields.")
+            else:
+                bucket = self.consume_identifier("Expected bucket name.")
+                if self.match(TokenType.LPAREN):
+                    self.consume_identifier("Expected index algorithm")
+                    self.consume(TokenType.RPAREN, "Expected ')'")
         else:
             bucket = fields[0]
             self.consume(TokenType.ON, "Expected 'on' after bucket name.")
@@ -1277,7 +1305,7 @@ class Parser:
             elif self.match(TokenType.FROM):
                 direction = "<-"
             else:
-                if self.match(TokenType.IDENTIFIER) and self.previous().lexeme.lower() == "with":
+                if self.match(TokenType.WITH) or (self.match(TokenType.IDENTIFIER) and self.previous().lexeme.lower() == "with"):
                     direction = "-"
                 else:
                     raise self.error(self.peek(), "Expected 'TO', 'FROM', or 'WITH' after edge label.")
@@ -1341,7 +1369,10 @@ class Parser:
 
     def sever_stmt(self) -> SeverStmt:
         source_gid = self.consume_string("Expected source document ID.")
-        self.consume(TokenType.FROM, "Expected 'from'.")
+        if self.match(TokenType.FROM, TokenType.TO, TokenType.AND):
+            pass
+        else:
+            self.consume(TokenType.FROM, "Expected 'from'.")
         target_gid = self.consume_string("Expected target document ID.")
         if self.match(TokenType.AS):
             label = self.consume_string("Expected label string.")
@@ -1421,7 +1452,7 @@ class Parser:
                     if self.match(TokenType.REQUIRED):
                         rule["rule_type"] = "NOT REQUIRED"
                     else:
-                        raise ParserError(f"Expected REQUIRED after IS NOT, got {self.peek().lexeme}")
+                        raise ParseError(f"Expected REQUIRED after IS NOT, got {self.peek().lexeme}")
                 elif self.match(TokenType.REQUIRED):
                     rule["rule_type"] = "REQUIRED"
                 elif self.match(TokenType.TYPE):
@@ -1429,7 +1460,7 @@ class Parser:
                     type_str = self.consume(TokenType.IDENTIFIER, "Expected type name after TYPE").lexeme
                     rule["value"] = type_str.lower()
                 else:
-                    raise ParserError(f"Unknown IS condition: {self.peek().lexeme}")
+                    raise ParseError(f"Unknown IS condition: {self.peek().lexeme}")
                     
             elif self.match(TokenType.IN):
                 rule["rule_type"] = "IN"
@@ -1449,13 +1480,13 @@ class Parser:
                         self.advance()
                     rule["value"] = vals
                 else:
-                    raise ParserError("Expected ( after IN")
+                    raise ParseError("Expected ( after IN")
                     
             elif self.match(TokenType.IDENTIFIER) and self.previous().lexeme.lower() == "length":
                 rule["rule_type"] = "LENGTH"
                 op = self.advance().lexeme
                 if op not in (">", "<", ">=", "<=", "=", "!="):
-                    raise ParserError(f"Expected comparison operator for LENGTH, got {op}")
+                    raise ParseError(f"Expected comparison operator for LENGTH, got {op}")
                 rule["operator"] = op
                 rule["value"] = self.consume(TokenType.INTEGER, "Expected number for LENGTH").value
                 
@@ -1472,9 +1503,9 @@ class Parser:
                         v = self.advance().lexeme.lower()
                         rule["value"] = True if v == "true" else False
                     else:
-                        raise ParserError("Expected value after comparison operator")
+                        raise ParseError("Expected value after comparison operator")
                 else:
-                    raise ParserError(f"Unknown rule operator: {op}")
+                    raise ParseError(f"Unknown rule operator: {op}")
                     
             stmt.rules.append(rule)
             

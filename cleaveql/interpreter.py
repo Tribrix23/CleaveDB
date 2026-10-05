@@ -458,7 +458,7 @@ class Interpreter:
         if policy_str:
             policy = json.loads(policy_str)
             print(f"[_log_audit] POLICY OBJ: {policy}", flush=True)
-            if policy.get("audited"):
+            if policy.get("audited") or policy.get("versioned"):
                 print(f"[_log_audit] AUDIT TRIGGERED!", flush=True)
                 tenant = self.context.get("tenant_id", self.context.get("user", "").split(".")[0]) if "user" in self.context else "system"
                 audit_doc = {
@@ -466,6 +466,7 @@ class Interpreter:
                     "action": action,
                     "gid": f"{bucket}:{gid}",
                     "timestamp": int(time.time()),
+                    "ts_ms": int(time.time() * 1000),
                 }
                 if before is not None:
                     audit_doc["before"] = before
@@ -750,6 +751,17 @@ class Interpreter:
             documents = getattr(stmt, "json_array", [])
             if isinstance(documents, str):
                 documents = json.loads(documents)
+            for doc in documents:
+                if not isinstance(doc, dict):
+                    continue
+                if not self.security.check_write(bucket, doc, self.context):
+                    return {
+                        "status": "error",
+                        "message": "Security Policy Violation: Write access denied by Document Security Level (DSL).",
+                    }
+                err = self._validate_guards(bucket, doc)
+                if err:
+                    return {"status": "error", "message": err}
             gids = []
             for doc in documents:
                 doc_id = (
@@ -787,7 +799,8 @@ class Interpreter:
         elif stmt_type == "ScoopStmt":
             mode = getattr(stmt, "mode", "EVERYTHING")
             if mode == "CHAIN":
-                current_gids = [self._namespace_gid(getattr(stmt, "chain_source", ""))]
+                current_time = int(time.time())
+                current_gids = [self.engine._ns_gid(getattr(stmt, "chain_source", ""))]
                 bonds_json = self._scan_bucket_rls("_bonds")
                 bonds = json.loads(bonds_json) if bonds_json else []
                 labels = getattr(stmt, "chain_labels", [])
@@ -867,11 +880,12 @@ class Interpreter:
                         effective_time = int(as_of)
 
                 label = getattr(stmt, "related_label", "")
-                source = self._namespace_gid(getattr(stmt, "related_source", ""))
+                source = self.engine._ns_gid(getattr(stmt, "related_source", ""))
                 bonds_data = self._scan_bucket_rls("_bonds")
                 bonds = json.loads(bonds_data) if bonds_data else []
 
                 related_docs = []
+                seen_targets = set()
                 for b_doc in bonds:
                     b = b_doc.get("body", {})
                     # Time Travel & Ephemeral Filter
@@ -926,8 +940,27 @@ class Interpreter:
                             if not is_active and not show_candidates:
                                 continue
 
+                            doc_gid = f"{t_bucket}:{t_id}"
+
+                            # Skip soft-deleted documents (those in _rubbish)
+                            tenant = (
+                                self.context.get(
+                                    "tenant_id", self.context.get("user", "").split(".")[0]
+                                )
+                                if "user" in self.context
+                                else "cron"
+                            )
+                            rubbish_key = f"{tenant}.{doc_gid}" if tenant != "cron" else doc_gid
+                            if self.engine.get(f"_rubbish:{rubbish_key}"):
+                                continue
+
+                            # Deduplicate: skip if we already returned this target
+                            if doc_gid in seen_targets:
+                                continue
+                            seen_targets.add(doc_gid)
+
                             wrapped_doc = {
-                                "gid": f"{t_bucket}:{t_id}",
+                                "gid": doc_gid,
                                 "body": t_body,
                                 "_bond": {"label": label, "source": source},
                             }
@@ -1316,6 +1349,72 @@ class Interpreter:
                         vis.append(b[len(t) + 1 :])
                 return {"status": "ok", "data": vis}
 
+            show_target = getattr(stmt, "target", "").lower()
+            if show_target == "bonds":
+                raw = self._scan_bucket_rls("_bonds")
+                rows = []
+                for d in (json.loads(raw) if raw else []):
+                    b = d.get("body", {})
+                    row = {
+                        "source": b.get("source"),
+                        "label": b.get("label"),
+                        "target": b.get("target"),
+                    }
+                    for k in ("confidence", "affinity", "expires_at"):
+                        if b.get(k) is not None:
+                            row[k] = b[k]
+                    rows.append(row)
+                return {"status": "ok", "count": len(rows), "data": rows}
+
+            if show_target == "indexes":
+                raw = self._scan_bucket_rls("_indexes")
+                rows = [
+                    {"bucket": d["body"].get("bucket"), "fields": d["body"].get("fields")}
+                    for d in (json.loads(raw) if raw else [])
+                ]
+                return {"status": "ok", "count": len(rows), "data": rows}
+
+            if show_target == "webhooks":
+                raw = self._scan_bucket_rls("_webhooks")
+                rows = [
+                    {
+                        "name": d["body"].get("name"),
+                        "bucket": d["body"].get("bucket"),
+                        "action": d["body"].get("action"),
+                        "url": d["body"].get("url"),
+                    }
+                    for d in (json.loads(raw) if raw else [])
+                ]
+                return {"status": "ok", "count": len(rows), "data": rows}
+
+            if show_target == "stats":
+                t = (
+                    self.context.get(
+                        "tenant_id", self.context.get("user", "").split(".")[0]
+                    )
+                    if "user" in self.context
+                    else "cron"
+                )
+                buckets_data = self.engine.show("buckets")
+                per_bucket = {}
+                for b in (json.loads(buckets_data) if buckets_data else []):
+                    if b.startswith("_"):
+                        continue
+                    if t != "cron" and not b.startswith(f"{t}."):
+                        continue
+                    name = b[len(t) + 1 :] if t != "cron" else b
+                    raw = self.engine.scan_bucket(name)
+                    per_bucket[name] = len(json.loads(raw)) if raw else 0
+                bonds_raw = self._scan_bucket_rls("_bonds")
+                bond_count = len(json.loads(bonds_raw)) if bonds_raw else 0
+                return {
+                    "status": "ok",
+                    "buckets": len(per_bucket),
+                    "documents": sum(per_bucket.values()),
+                    "bonds": bond_count,
+                    "per_bucket": per_bucket,
+                }
+
         elif stmt_type == "SeverStmt":
             tenant = (
                 self.context.get(
@@ -1324,8 +1423,8 @@ class Interpreter:
                 if "user" in self.context
                 else "cron"
             )
-            source = self._namespace_gid(getattr(stmt, "source_gid", ""))
-            target = self._namespace_gid(getattr(stmt, "target_gid", ""))
+            source = self.engine._ns_gid(getattr(stmt, "source_gid", ""))
+            target = self.engine._ns_gid(getattr(stmt, "target_gid", ""))
             label = getattr(stmt, "label", "")
             count = 0
 
@@ -1333,7 +1432,9 @@ class Interpreter:
             if b_data:
                 for b_doc in json.loads(b_data):
                     b = b_doc.get("body", {})
-                    if b.get("source") == source and b.get("target") == target:
+                    if (b.get("source") == source and b.get("target") == target) or (
+                        b.get("source") == target and b.get("target") == source
+                    ):
                         if not label or b.get("label") == label:
                             # WAL 4D MVCC Append
                             hist_doc = dict(b)
@@ -1350,6 +1451,14 @@ class Interpreter:
                             )
 
                             self.engine.delete(b_doc["gid"])
+                            self.emitted_events.append(
+                                {
+                                    "event": "SEVER",
+                                    "target": b_doc["gid"],
+                                    "bucket": "_bonds",
+                                    "data": hist_doc,
+                                }
+                            )
                             count += 1
             return {"status": "ok", "message": f"Severed {count} bonds."}
 
@@ -1521,76 +1630,92 @@ class Interpreter:
             }
 
         elif stmt_type == "DistillStmt":
-            import ctypes
-            import os
             from collections import defaultdict
 
             bucket = getattr(stmt, "bucket", "")
-            agg_function = getattr(stmt, "agg_function", "").upper()
-            field = getattr(stmt, "field", "")
             group_by = getattr(stmt, "group_by", None)
-            alias = getattr(stmt, "alias", None)
+            where = getattr(stmt, "where", None)
+
+            aggs = getattr(stmt, "aggs", None)
+            if not aggs:
+                aggs = [{
+                    "function": getattr(stmt, "agg_function", ""),
+                    "field": getattr(stmt, "field", ""),
+                    "alias": getattr(stmt, "alias", None),
+                }]
+
+            valid_aggs = {"TOTAL", "SUM", "AVERAGE", "AVG", "MIN", "MAX", "SPREAD", "COUNT", "TALLY"}
+            for a in aggs:
+                if str(a["function"]).upper() not in valid_aggs:
+                    return {
+                        "status": "error",
+                        "message": f"Unknown aggregation: {str(a['function']).upper()}",
+                    }
 
             docs_json = self._scan_bucket_rls(bucket)
             docs = json.loads(docs_json) if docs_json else []
 
-            # Grouping
+            # Grouping: collect matching document bodies per group
             groups = defaultdict(list)
             for r in docs:
                 doc_str = self.engine.get(r["gid"])
-                if doc_str:
-                    doc_body = json.loads(doc_str)
-                    val = doc_body.get(field)
-                    if isinstance(val, (int, float)):
-                        g_key = doc_body.get(group_by) if group_by else "_all_"
-                        groups[g_key].append(val)
+                if not doc_str:
+                    continue
+                doc_body = json.loads(doc_str)
+                if where and not self._evaluate_where(where, doc_body):
+                    continue
+                g_key = doc_body.get(group_by) if group_by else "_all_"
+                if isinstance(g_key, (list, dict)):
+                    g_key = json.dumps(g_key, sort_keys=True)
+                groups[g_key].append(doc_body)
 
+            total_docs = sum(len(v) for v in groups.values())
             if not groups:
                 return {"status": "ok", "result": [], "count": 0}
 
             results = []
-            for g_key, values in groups.items():
-                if agg_function in ["TOTAL", "SUM"]:
-                    if len(values) > 0 and hasattr(self.engine, "simd_sum_avx512"):
-                        # C++ AVX-512 SIMD Execution!
-                        float_list = [float(v) for v in values]
-                        res = self.engine.simd_sum_avx512(float_list)
-                    else:
-                        res = sum(values)
-                elif agg_function == "AVERAGE":
-                    res = sum(values) / len(values)
-                elif agg_function == "MIN":
-                    res = min(values)
-                elif agg_function == "MAX":
-                    res = max(values)
-                elif agg_function == "SPREAD":
-                    res = max(values) - min(values)
-                else:
-                    return {
-                        "status": "error",
-                        "message": f"Unknown aggregation: {agg_function}",
-                    }
-
-                # Format output
+            for g_key, bodies in groups.items():
                 out_dict = {}
                 if group_by:
                     out_dict[group_by] = g_key
-                out_dict[alias if alias else agg_function.lower()] = res
+                for a in aggs:
+                    fn = str(a["function"]).upper()
+                    fld = a["field"]
+                    if fn in ("COUNT", "TALLY"):
+                        if fld in (None, "", "*"):
+                            res = len(bodies)
+                        else:
+                            res = sum(1 for b in bodies if b.get(fld) is not None)
+                    else:
+                        values = [
+                            b.get(fld) for b in bodies
+                            if isinstance(b.get(fld), (int, float)) and not isinstance(b.get(fld), bool)
+                        ]
+                        if not values:
+                            res = None
+                        elif fn in ("TOTAL", "SUM"):
+                            if hasattr(self.engine, "simd_sum_avx512"):
+                                # C++ AVX-512 SIMD Execution!
+                                res = self.engine.simd_sum_avx512([float(v) for v in values])
+                            else:
+                                res = sum(values)
+                        elif fn in ("AVERAGE", "AVG"):
+                            res = sum(values) / len(values)
+                        elif fn == "MIN":
+                            res = min(values)
+                        elif fn == "MAX":
+                            res = max(values)
+                        else:  # SPREAD
+                            res = max(values) - min(values)
+                    key = a.get("alias") or fn.lower()
+                    out_dict[key] = res
                 results.append(out_dict)
 
             # If no group_by, just return the single dict
             if not group_by and len(results) == 1:
-                return {
-                    "status": "ok",
-                    "result": results[0],
-                    "count": sum(len(v) for v in groups.values()),
-                }
+                return {"status": "ok", "result": results[0], "count": total_docs}
 
-            return {
-                "status": "ok",
-                "result": results,
-                "count": sum(len(v) for v in groups.values()),
-            }
+            return {"status": "ok", "result": results, "count": total_docs}
 
         elif stmt_type == "FindHowStmt":
             import dateparser
@@ -1612,7 +1737,7 @@ class Interpreter:
                 if not (ts1 <= evt_time <= ts2):
                     continue
 
-                doc_id_ns = self._namespace_gid(stmt.doc_id)
+                doc_id_ns = self.engine._ns_gid(stmt.doc_id)
                 if body.get("label") == stmt.bond_name and (
                     body.get("source") == doc_id_ns or body.get("target") == doc_id_ns
                 ):
@@ -1632,7 +1757,7 @@ class Interpreter:
             doc_id = getattr(stmt, "doc_key", "")
             bond_label = getattr(stmt, "bond_name", "")
             direction = getattr(stmt, "direction", "OUT").upper()
-            depth = getattr(stmt, "depth", 1)
+            depth = getattr(stmt, "depth", 1) or 1
             limit = getattr(stmt, "limit", 100)
 
             as_of = getattr(stmt, "as_of", None)
@@ -1676,7 +1801,7 @@ class Interpreter:
                     bonds[i]["body"] = bonds[i]["body"]
 
             visited = set()
-            queue = [(self._namespace_gid(doc_id), 0)]
+            queue = [(self.engine._ns_gid(doc_id), 0)]
             results = []
 
             # --- Neuro-Symbolic Pathfinding Setup ---
@@ -1759,7 +1884,6 @@ class Interpreter:
                 "show_fields": stmt.show_fields
             }
             
-            import uuid
             gid = f"replica_{uuid.uuid4().hex[:8]}"
             res = self.engine.pour("_replicas", gid, json.dumps(replica_def))
             if res.startswith("Error"):
@@ -1877,7 +2001,7 @@ class Interpreter:
 
         elif stmt_type == "BondStmt":
 
-            source_gid = self._namespace_gid(getattr(stmt, "source_gid", ""))
+            source_gid = self.engine._ns_gid(getattr(stmt, "source_gid", ""))
 
             # EXCLUSIVE
             current_time = int(time.time())
@@ -1904,7 +2028,7 @@ class Interpreter:
             )
 
             target_gids = [
-                self._namespace_gid(g)
+                self.engine._ns_gid(g)
                 for g in getattr(stmt, "target_gids", [getattr(stmt, "target_gid", "")])
             ]
 
@@ -2190,7 +2314,6 @@ class Interpreter:
             if getattr(stmt, "attention", False):
                 try:
                     import sys
-                    import os
                     from attention.sra import get_diagnostics
                     stats = get_diagnostics()
                 except Exception as e:
@@ -2239,12 +2362,26 @@ class Interpreter:
 
                 results_json = self._scan_bucket_rls(stmt.nodes[0].bucket)
                 if not results_json:
-                    return "[]"
+                    return {"status": "ok", "mode": "MATCH", "paths": [], "count": 0}
                 start_docs = json.loads(results_json)
 
                 paths = []
                 bonds_str = self.engine.scan_bucket("_bonds")
                 bonds = json.loads(bonds_str) if bonds_str else []
+
+                _tenant = (
+                    self.context.get(
+                        "tenant_id", self.context.get("user", "").split(".")[0]
+                    )
+                    if "user" in self.context
+                    else "cron"
+                )
+
+                def _plain(g):
+                    # Drop the "<tenant>." prefix so IDs compare as "bucket:id".
+                    if g and _tenant != "cron" and g.startswith(f"{_tenant}."):
+                        return g[len(_tenant) + 1 :]
+                    return g
 
                 def traverse(current_idx, current_gid, current_path):
                     if current_idx == len(stmt.edges):
@@ -2257,22 +2394,18 @@ class Interpreter:
                         body = b["body"]
                         if body["label"] == edge.label:
                             next_gid = None
-                            clean_cgid = (
-                                current_gid.split(".", 1)[-1]
-                                if "." in current_gid and ":" in current_gid
-                                else current_gid
-                            )
-                            if edge.direction == "->" and body["source"] == clean_cgid:
-                                next_gid = body["target"]
-                            elif (
-                                edge.direction == "<-" and body["target"] == clean_cgid
-                            ):
-                                next_gid = body["source"]
+                            clean_cgid = _plain(current_gid)
+                            b_src = _plain(body["source"])
+                            b_tgt = _plain(body["target"])
+                            if edge.direction == "->" and b_src == clean_cgid:
+                                next_gid = b_tgt
+                            elif edge.direction == "<-" and b_tgt == clean_cgid:
+                                next_gid = b_src
                             elif edge.direction == "-":
-                                if body["source"] == clean_cgid:
-                                    next_gid = body["target"]
-                                elif body["target"] == clean_cgid:
-                                    next_gid = body["source"]
+                                if b_src == clean_cgid:
+                                    next_gid = b_tgt
+                                elif b_tgt == clean_cgid:
+                                    next_gid = b_src
 
                             if next_gid and next_gid.startswith(next_node.bucket + ":"):
                                 target_doc_str = self.engine.get(next_gid)
@@ -2313,90 +2446,163 @@ class Interpreter:
                 raise e
 
         elif stmt_type == "SuggestStmt":
-            emb_json = self._scan_bucket_rls("_embeddings")
-            emb_docs = json.loads(emb_json) if emb_json else []
-            vectors = {}
-            for doc in emb_docs:
-                full_gid = doc.get("gid")
-                doc_str = self.engine.get(full_gid)
-                if doc_str:
-                    try:
-                        vec = json.loads(doc_str)
-                        # The doc_str might be wrapped in a dict by the engine, or it might just be the list.
-                        if isinstance(vec, dict) and "body" in vec:
-                            vec = vec["body"]
-                        if isinstance(vec, list):
-                            real_gid = full_gid.replace("_embeddings:", "", 1) if full_gid.startswith("_embeddings:") else full_gid
-                            vectors[real_gid] = vec
-                        else:
-                            print(f"SUGGEST WARN: vec is not a list. It is {type(vec)}")
-                    except Exception as e:
-                        pass
-                        
-            bonds_json = self._scan_bucket_rls("_bonds")
-            bonds_docs = json.loads(bonds_json) if bonds_json else []
-            existing_bonds = set()
-            for b in bonds_docs:
-                full_gid = doc.get("gid")
-                doc_str = self.engine.get(full_gid)
-                if doc_str:
-                    try:
-                        vec = json.loads(doc_str)
-                        if isinstance(vec, list):
-                            # Strip '_embeddings:' to get the real source gid
-                            real_gid = full_gid.replace("_embeddings:", "", 1) if full_gid.startswith("_embeddings:") else full_gid
-                            vectors[real_gid] = vec
-                    except Exception:
-                        pass
-                        
-            bonds_json = self._scan_bucket_rls("_bonds")
-            bonds_docs = json.loads(bonds_json) if bonds_json else []
-            existing_bonds = set()
-            for b in bonds_docs:
-                b_str = self.engine.get(b.get("gid"))
-                if b_str:
-                    try:
-                        b_body = json.loads(b_str)
-                        src = b_body.get("source")
-                        tgt = b_body.get("target")
-                        if src and tgt:
-                            existing_bonds.add((src, tgt))
-                            if b_body.get("mutual"):
-                                existing_bonds.add((tgt, src))
-                    except Exception:
-                        pass
-            
             import math
+
+            t = (
+                self.context.get("tenant_id", self.context.get("user", "").split(".")[0])
+                if "user" in self.context
+                else "cron"
+            )
+
+            def _plain(g):
+                if g and t != "cron" and g.startswith(f"{t}."):
+                    return g[len(t) + 1 :]
+                return g
+
+            # --- existing bonds (so we never suggest what already exists) ---
+            existing_bonds = set()
+            bonds_json = self._scan_bucket_rls("_bonds")
+            for b in (json.loads(bonds_json) if bonds_json else []):
+                b_body = b.get("body")
+                if not isinstance(b_body, dict):
+                    try:
+                        b_body = json.loads(self.engine.get(b.get("gid")) or "{}")
+                    except Exception:
+                        b_body = {}
+                src = _plain(b_body.get("source"))
+                tgt = _plain(b_body.get("target"))
+                if src and tgt:
+                    existing_bonds.add((src, tgt))
+                    existing_bonds.add((tgt, src))
+
+            suggestions = []
+            seen_pairs = set()
+
+            def _add(src, tgt, conf, reason):
+                if src == tgt or (src, tgt) in existing_bonds:
+                    return
+                key = tuple(sorted((src, tgt)))
+                if key in seen_pairs:
+                    return
+                seen_pairs.add(key)
+                suggestions.append(
+                    {"source": src, "target": tgt, "confidence": round(conf, 2), "reason": reason}
+                )
+
+            # --- 1. reference-based: a field value that points at another document ---
+            docs_by_gid = {}
+            ids_index = {}  # bare id -> [gid, ...]
+            buckets_data = self.engine.show("buckets")
+            for bname in (json.loads(buckets_data) if buckets_data else []):
+                if bname.startswith("_") or (t != "cron" and not bname.startswith(f"{t}.")):
+                    continue
+                plain_bucket = bname[len(t) + 1 :] if t != "cron" else bname
+                raw = self._scan_bucket_rls(plain_bucket)
+                for d in (json.loads(raw) if raw else []):
+                    gid = _plain(d.get("gid"))
+                    body = d.get("body")
+                    if gid and isinstance(body, dict):
+                        docs_by_gid[gid] = body
+                        ids_index.setdefault(gid.split(":", 1)[-1], []).append(gid)
+
+            for gid, body in docs_by_gid.items():
+                for fname, val in body.items():
+                    if not isinstance(val, str) or not val:
+                        continue
+                    if val in docs_by_gid:
+                        _add(gid, val, 0.95, f"Field '{fname}' references {val}")
+                    elif val in ids_index:
+                        for other in ids_index[val]:
+                            if other.split(":", 1)[0] != gid.split(":", 1)[0]:
+                                _add(gid, other, 0.75, f"Field '{fname}' matches the id of {other}")
+
+            # --- 2. embedding-based: high vector similarity ---
+            vectors = {}
+            emb_json = self._scan_bucket_rls("_embeddings")
+            for doc in (json.loads(emb_json) if emb_json else []):
+                full_gid = doc.get("gid")
+                vec = doc.get("body")
+                if not isinstance(vec, (list, dict)):
+                    try:
+                        vec = json.loads(self.engine.get(full_gid) or "null")
+                    except Exception:
+                        vec = None
+                if isinstance(vec, dict) and "body" in vec:
+                    vec = vec["body"]
+                if isinstance(vec, list):
+                    real_gid = full_gid.replace("_embeddings:", "", 1) if full_gid.startswith("_embeddings:") else full_gid
+                    vectors[_plain(real_gid)] = vec
+
             def cosine_sim(v1, v2):
                 dot = sum(a * b for a, b in zip(v1, v2))
                 norm1 = math.sqrt(sum(a * a for a in v1))
                 norm2 = math.sqrt(sum(a * a for a in v2))
                 return dot / (norm1 * norm2) if norm1 > 0 and norm2 > 0 else 0.0
-                
-            suggestions = []
+
             gids = list(vectors.keys())
             for i in range(len(gids)):
                 for j in range(i + 1, len(gids)):
-                    g1 = gids[i]
-                    g2 = gids[j]
-                    
-                    if (g1, g2) in existing_bonds or (g2, g1) in existing_bonds:
-                        continue
-                        
-                    sim = cosine_sim(vectors[g1], vectors[g2])
+                    sim = cosine_sim(vectors[gids[i]], vectors[gids[j]])
                     if sim > 0.50:
-                        suggestions.append({
-                            "source": g1,
-                            "target": g2,
-                            "confidence": round(sim, 2),
-                            "reason": "High vector similarity in _embeddings"
-                        })
-            
+                        _add(gids[i], gids[j], sim, "High vector similarity in _embeddings")
+
             suggestions.sort(key=lambda x: x["confidence"], reverse=True)
-            
+            return {"status": "ok", "count": len(suggestions), "suggestions": suggestions}
+
+        elif stmt_type == "RewindStmt":
+            import dateparser
+
+            doc_id = stmt.doc_id
+            if ":" not in doc_id:
+                return {"status": "error", "message": "REWIND needs a full document id like \"bucket:id\"."}
+            bucket, did = doc_id.split(":", 1)
+
+            raw_t = str(stmt.target_time).strip()
+            if raw_t.replace(".", "", 1).isdigit():
+                target_ms = float(raw_t)
+                if target_ms < 1e11:  # epoch seconds
+                    target_ms *= 1000
+            else:
+                parsed = dateparser.parse(raw_t, settings={"PREFER_DATES_FROM": "past"})
+                if parsed is None:
+                    return {"status": "error", "message": f"Could not understand time '{raw_t}'."}
+                target_ms = parsed.timestamp() * 1000
+
+            audit_raw = self._scan_bucket_rls(f"_audit_{bucket}")
+            entries = []
+            for a in (json.loads(audit_raw) if audit_raw else []):
+                ab = a.get("body")
+                if not isinstance(ab, dict):
+                    try:
+                        ab = json.loads(self.engine.get(a.get("gid")) or "{}")
+                    except Exception:
+                        ab = {}
+                if ab.get("gid") == f"{bucket}:{did}":
+                    entries.append((ab.get("ts_ms") or ab.get("timestamp", 0) * 1000, ab))
+            entries.sort(key=lambda e: e[0])
+
+            if not entries:
+                return {
+                    "status": "error",
+                    "message": f"No history for '{doc_id}'. Run SHAPE BUCKET {bucket} AUDITED (or VERSIONED) before changing documents.",
+                }
+
+            earlier = [e for e in entries if e[0] <= target_ms]
+            if earlier:
+                state = earlier[-1][1].get("after")
+            else:
+                state = entries[0][1].get("before")
+            if state is None:
+                return {"status": "error", "message": f"'{doc_id}' did not exist at that time."}
+
+            current_json = self.engine.get(f"{bucket}:{did}")
+            current = json.loads(current_json) if current_json else None
+            self.engine.pour(bucket, did, json.dumps(state))
+            self._log_audit(bucket, "REWIND", did, current, state)
             return {
                 "status": "ok",
-                "suggestions": suggestions
+                "message": f"Rewound {doc_id} to {stmt.target_time}.",
+                "document": state,
             }
 
         elif stmt_type == "DrainStmt":

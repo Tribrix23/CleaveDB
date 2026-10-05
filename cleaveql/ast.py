@@ -59,6 +59,7 @@ class DistillStmt(ASTNode):
     group_by: Optional[str] = None
     alias: Optional[str] = None
     where: Optional[WhereClause] = None
+    aggs: Optional[list] = None  # [{"function","field","alias"}, ...]
 
 @dataclass
 class FollowStmt(ASTNode):
