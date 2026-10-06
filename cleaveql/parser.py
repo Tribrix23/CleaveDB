@@ -239,6 +239,14 @@ class Parser:
             return self.peer_stmt()
         if self.match(TokenType.SUGGEST):
             return self.suggest_stmt()
+        
+        if self.match(TokenType.UNDO):
+            from .ast import UndoStmt
+            if self.match(TokenType.SHOW):
+                return UndoStmt(show=True)
+            target = self.consume_string("Expected undo ID.") if self.check(TokenType.STRING) else self.consume_identifier("Expected undo ID.")
+            return UndoStmt(target_id=target)
+
         if self.match(TokenType.EVERY):
             return self.cron_stmt()
         if self.match(TokenType.MATCH):

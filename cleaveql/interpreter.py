@@ -451,6 +451,23 @@ class Interpreter:
 
 
 
+    def _push_undo(self, action: str, target: str, before: dict, after: dict):
+        if str(target).startswith("_undo_stack") or str(target).startswith("_audit_"): return
+        if str(target).startswith("_history") or str(target).startswith("_log_"): return
+        tenant = self.context.get("tenant_id", self.context.get("user", "").split(".")[0] if "user" in self.context else "system")
+        import time, uuid, json
+        uid = tenant + "." + str(int(time.time() * 1000)) + "_" + str(uuid.uuid4())[:4]
+        doc = {
+            "uid": uid,
+            "action": action,
+            "target": target,
+            "before": before,
+            "after": after,
+            "tenant": tenant,
+            "ts": int(time.time() * 1000)
+        }
+        self.engine.pour("_undo_stack", uid, json.dumps(doc))
+
     def _log_audit(self, bucket: str, action: str, gid: str, before: dict = None, after: dict = None):
         print(f"[_log_audit] CHECKING {bucket} for action {action}", flush=True)
         policy_str = self.engine.get(f"_bucket_policies:{bucket}")
@@ -686,7 +703,10 @@ class Interpreter:
                 gid_check = f"{bucket}:{doc_id}" if doc_id else None
                 old_val = self.engine.get(gid_check) if gid_check else None
 
+            old_raw = self.engine.get(f"{bucket}:{doc_id}") if doc_id else None
+            old_doc = json.loads(old_raw) if old_raw else None
             gid = self.engine.pour(bucket, doc_id, json_str)
+            self._push_undo("POUR", gid, old_doc, body)
             
             if _evict_algo:
                 self.engine.pour("_lru_tracking", gid.split(":")[-1], str(time.time()))
@@ -1310,10 +1330,12 @@ class Interpreter:
                     if err:
                         return {"status": "error", "message": err}
                         
+                    original_doc = json.loads(doc_json)
                     self.engine.pour(bucket, doc_id, json.dumps(body))
+                    self._push_undo("CHANGE", f"{bucket}:{doc_id}", original_doc, body)
                     
                     # Hook Audit Trail
-                    self._log_audit(bucket, "CHANGE", doc_id, json.loads(doc_json), body)
+                    self._log_audit(bucket, "CHANGE", doc_id, original_doc, body)
                     
                     try:
                         tenant_bucket = self.engine._ns(bucket)
@@ -1626,6 +1648,45 @@ class Interpreter:
                 "message": f"Scheduled task added to background worker. Will execute every {stmt.interval_seconds} seconds.",
                 "job_id": job_id,
             }
+
+        elif stmt_type == "UndoStmt":
+            if getattr(stmt, "show", False):
+                raw = self._scan_bucket_rls("_undo_stack")
+                docs = json.loads(raw) if raw else []
+                docs.sort(key=lambda x: x.get("body", {}).get("ts", 0), reverse=True)
+                return {"status": "ok", "undo_log": [d["body"] for d in docs]}
+            elif getattr(stmt, "target_id", None):
+                target_uid = getattr(stmt, "target_id")
+                raw = self._scan_bucket_rls("_undo_stack")
+                docs = json.loads(raw) if raw else []
+                docs.sort(key=lambda x: x.get("body", {}).get("ts", 0), reverse=True)
+                
+                idx = -1
+                for i, d in enumerate(docs):
+                    if d.get("body", {}).get("uid") == target_uid:
+                        idx = i
+                        break
+                if idx == -1: return {"status": "error", "message": f"Undo ID '{target_uid}' not found"}
+                
+                reverted = 0
+                for i in range(idx + 1):
+                    op = docs[i].get("body", {})
+                    action = op.get("action")
+                    target = op.get("target")
+                    before = op.get("before")
+                    
+                    if action in ("POUR", "CHANGE"):
+                        if before is None:
+                            self.engine.delete(target)
+                        else:
+                            bkt, plain = target.split(":", 1)
+                            self.engine.pour(bkt, plain, json.dumps(before))
+                    reverted += 1
+                    
+                    uid = op.get("uid")
+                    self.engine.delete(f"_undo_stack:{uid}")
+                
+                return {"status": "ok", "message": f"Successfully reverted {reverted} operations.", "reverted": reverted}
 
         elif stmt_type == "DescribeStmt":
             target = getattr(stmt, "target", getattr(stmt, "bucket", ""))

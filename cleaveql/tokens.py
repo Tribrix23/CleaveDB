@@ -146,6 +146,7 @@ class TokenType(Enum):
     TRANSACTION = auto()
     COMMIT = auto()
     ROLLBACK = auto()
+    UNDO = auto()
     ENFORCE = auto()
     OVERWRITE = auto()
     CURRENT = auto()
@@ -321,6 +322,7 @@ KEYWORDS = {
     'transaction': TokenType.TRANSACTION,
     'commit': TokenType.COMMIT,
     'rollback': TokenType.ROLLBACK,
+    'undo': TokenType.UNDO,
     'enforce': TokenType.ENFORCE,
     'overwrite': TokenType.OVERWRITE,
     'current': TokenType.CURRENT,

@@ -357,3 +357,9 @@ class ProjectStage(ASTNode):
 class PipeStmt(ASTNode):
     source_bucket: str = ""
     stages: List[ASTNode] = field(default_factory=list)
+
+class UndoStmt(ASTNode):
+    def __init__(self, show=False, target_id=None):
+        self.show = show
+        self.target_id = target_id
+

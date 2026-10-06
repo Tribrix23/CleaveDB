@@ -1,6 +1,6 @@
 # CleaveQL Quick Reference — Complete Command Guide
 
-Thirty-one CleaveQL commands, every variant, all bond types, combinations, and chaining recipes.
+Thirty-two CleaveQL commands, every variant, all bond types, combinations, and chaining recipes.
 **Every example was executed against a live CleaveDB instance and returned `status: ok`** (except where an error is shown on purpose).
 
 | # | Command | Purpose | Aliases |
@@ -36,6 +36,7 @@ Thirty-one CleaveQL commands, every variant, all bond types, combinations, and c
 | 29 | `PEER`    | Analyze query execution cost and index usage | — |
 | 30 | `SET CONTEXT` | Inject arbitrary key-value pairs into the session context | `SET` |
 | 31 | `MATCH`   | Perform Cypher-like advanced graph pattern traversal | — |
+| 32 | `UNDO`    | View global operation history and revert past changes | — |
 
 Document IDs are written `bucket:id` (e.g. `"users:jane"`). Bonds use these full IDs.
 
@@ -861,6 +862,26 @@ This returns a list of matched subgraphs mapping each alias to the resolved docu
 
 ---
 
+## 32. UNDO — View and revert global operation history
+
+CleaveDB maintains a global timeline of all structural modifications (`POUR` and `CHANGE`). You can view this history and instantly roll back the database state to a specific point in time. 
+
+When you undo a specific operation ID, CleaveDB recursively reverts **that operation and all subsequent operations** chronologically up to the present.
+
+**Step 1: View History**
+```sql
+UNDO SHOW
+```
+*Returns an ordered list of changes. Each contains a `uid`, the `action`, and the `before` and `after` states.*
+
+**Step 2: Revert to a specific state**
+```sql
+UNDO "tester.1791248457533_7852"
+```
+*Reverts the target operation and all newer modifications.*
+
+---
+
 
 
 
@@ -1242,19 +1263,19 @@ POUR INTO emp "z1" {"name": "Zed", "age": 50, "dept": "IT"} PIPE FROM emp THEN W
 ### B. Transactions
 
 ```sql
-BEGIN TRANSACTION POUR INTO users "t1" {"name": "T1"} POUR INTO users "t2" {"name": "T2"} COMMIT TRANSACTION
+BEGIN POUR INTO users "t1" {"name": "T1"} POUR INTO users "t2" {"name": "T2"} COMMIT
 ```
 
 ```sql
-BEGIN TRANSACTION POUR INTO mix "m3" {"v": 3} LINK "mix:m3" TO "mix:m1" AS "tx" CHANGE mix "m3" SET v TO 4 COMMIT TRANSACTION
+BEGIN POUR INTO mix "m3" {"v": 3} LINK "mix:m3" TO "mix:m1" AS "tx" CHANGE mix "m3" SET v TO 4 COMMIT
 ```
 
 ```sql
-BEGIN TRANSACTION POUR INTO users "t3" {"name": "T3"} ROLLBACK TRANSACTION
+BEGIN POUR INTO users "t3" {"name": "T3"} ROLLBACK
 ```
 After the `ROLLBACK`, `FIND users "t3"` returns 0 documents.
 
-> **Limitation:** `ROLLBACK` only undoes `POUR` / `POUR MANY` writes. `CHANGE`, `LINK`, `SEVER` and `DRAIN` run inside a transaction are **not** reverted. Use transactions for groups of `POUR`s.
+> **Limitation:** `ROLLBACK` only rolls back `POUR` / `POUR MANY` writes. `CHANGE`, `LINK`, `SEVER` and `DRAIN` run inside a transaction are **not** reverted. Use transactions for groups of `POUR`s.
 
 ### C. Multi-hop bond chains
 Follow bonds across several hops in one `FIND`:
@@ -1355,4 +1376,18 @@ LINK "users:2" TO "docs:42" AS "owns"
 
 -- Find the documents owned by a friend of a specific user
 MATCH (u FROM users)-["friend"]->(f FROM users)-["owns"]->(d FROM docs) WHERE u.name = "Alice"
+```
+
+### UNDO + SHOW (Global Rollback)
+Instead of relying on transactions, you can make permanent writes, audit them via the global `UNDO SHOW` stack, and dynamically roll back mistakes.
+
+```sql
+POUR INTO products "1" {"price": 100}
+CHANGE products "1" SET price TO 9999    -- Accidental bad price update
+
+-- Check the undo stack
+UNDO SHOW
+
+-- Roll back to the original POUR operation, reverting the CHANGE automatically
+UNDO "tester.1791248457533_7852"
 ```
