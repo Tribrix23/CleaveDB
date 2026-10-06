@@ -1,6 +1,6 @@
 # CleaveQL Quick Reference — Complete Command Guide
 
-Seventeen CleaveQL commands, every variant, all bond types, combinations, and chaining recipes.
+Thirty-one CleaveQL commands, every variant, all bond types, combinations, and chaining recipes.
 **Every example was executed against a live CleaveDB instance and returned `status: ok`** (except where an error is shown on purpose).
 
 | # | Command | Purpose | Aliases |
@@ -22,6 +22,20 @@ Seventeen CleaveQL commands, every variant, all bond types, combinations, and ch
 | 15 | `HEAL`    | Repair broken bonds and stale data | — |
 | 16 | `SUGGEST BONDS` | Propose bonds you haven't created yet | — |
 | 17 | `REWIND`  | Restore a document to how it was at an earlier time | — |
+| 18 | `INCINERATE` | Permanently delete from the `_rubbish` bin | — |
+| 19 | `DROP`    | Remove a whole bucket (recoverable via `RESTORE`) | — |
+| 20 | `RESTORE` | Bring a dropped bucket back from `_rubbish` | — |
+| 21 | `MIGRATE` | Reshape every document in a bucket with a pattern | — |
+| 22 | `AUTHENTICATE`| Change the current session user | `SET` |
+| 23 | `LIMIT`   | Set rate limits (queries per minute) for a role | — |
+| 24 | `POLICY`  | Enforce memory eviction rules or access control | `ENFORCE` |
+| 25 | `MASK`    | Conditionally redact fields from read queries | — |
+| 26 | `EVERY`   | Schedule background repeating commands | `CRON` |
+| 27 | `ENRICH`  | Inject computed virtual fields into queries | — |
+| 28 | `LISTEN`  | Open a real-time data subscription to a bucket/document | — |
+| 29 | `PEER`    | Analyze query execution cost and index usage | — |
+| 30 | `SET CONTEXT` | Inject arbitrary key-value pairs into the session context | `SET` |
+| 31 | `MATCH`   | Perform Cypher-like advanced graph pattern traversal | — |
 
 Document IDs are written `bucket:id` (e.g. `"users:jane"`). Bonds use these full IDs.
 
@@ -629,6 +643,228 @@ FIND "pal" OF "staff:a"                                -- bonds still intact
 
 ---
 
+## 18. INCINERATE — hard delete from the bin
+
+`DRAIN` only moves a document to `_rubbish`. `INCINERATE` removes it from `_rubbish` **permanently**.
+
+```sql
+INCINERATE "a"             -- one drained document (plain id)
+INCINERATE EVERYTHING      -- empty the whole bin
+INCINERATE "a" FROM _rubbish   -- optional FROM _rubbish, same effect
+```
+
+- Only documents already in the bin are affected; a live document is never touched (`Incinerated 0 documents.`).
+- There is no undo — `SALVAGE` and `RESTORE` find nothing afterwards.
+
+```sql
+DRAIN staff "a"
+INCINERATE "a"            -- Incinerated 1 documents.
+```
+
+---
+
+## 19. DROP — remove a whole bucket (recoverable)
+
+Moves **every** document of a bucket to `_rubbish` and removes the bucket.
+
+```sql
+DROP pets
+DROP BUCKET pets          -- BUCKET keyword is optional
+DROP "pets"               -- quoted name also works
+```
+
+After the drop `SHOW buckets` no longer lists it and `FIND pets` returns 0 documents. Bonds are kept and work again after `RESTORE`.
+
+---
+
+## 20. RESTORE — bring a dropped bucket back
+
+Takes every document of that bucket out of `_rubbish` and pours it back.
+
+```sql
+RESTORE pets
+RESTORE BUCKET pets       -- BUCKET keyword is optional
+```
+
+- Also brings back documents that were individually `DRAIN`ed from that bucket.
+- If the bin was emptied with `INCINERATE`, you get `Restored 0 documents`.
+- For a single document use `SALVAGE "id"`; for the whole bin use `SALVAGE EVERYTHING`.
+
+```sql
+DROP pets
+RESTORE pets
+FIND pets
+```
+
+---
+
+## 21. MIGRATE — reshape every document in a bucket
+
+Rewrites documents that match a `FROM` pattern into a `TO` pattern. Capture values with `$1`, `$2`, … and reuse them on the right. It runs in the background without blocking, and each migrated document gets its `_version` raised.
+
+```sql
+MIGRATE users FROM {"fname":"$1"} TO {"first":"$1"}                    -- rename a field
+MIGRATE users FROM {"lname":"$1"} TO {"last":"$1","surname":"$1"}      -- copy to two fields
+MIGRATE users FROM {"first":"$1"} TO {"first":"$1","tag":"v2"}         -- add a field
+MIGRATE "users" FROM {"fname":"$1"} TO {"first":"$1"}                  -- quoted bucket name
+```
+
+- Documents missing the `FROM` fields are left alone.
+- Fields not mentioned in the pattern are untouched.
+- Allow a moment to finish, then `FIND` the bucket to see the result.
+
+---
+
+## 22. AUTHENTICATE — set session user
+
+Changes the current user context. This affects which security policies match, how rate limits apply, and the `tenant` field on webhooks and audit logs.
+
+```sql
+AUTHENTICATE AS "david"
+AUTHENTICATE AS "users:david"
+```
+
+You can also use `SET` to place arbitrary variables into your session context for policies to read:
+```sql
+SET role = "viewer"
+```
+
+---
+
+## 23. LIMIT — set rate quotas
+
+Limits the number of CleaveQL queries a specific role can execute per minute. If a user exceeds it, the server returns a `429 Rate limit exceeded` error.
+
+```sql
+LIMIT 100 QUERIES PER MINUTE FOR "viewer"
+LIMIT 5 QUERIES PER MINUTE FOR admin
+LIMIT 0 QUERIES PER MINUTE FOR "guest"      -- blocks entirely
+```
+
+---
+
+## 24. POLICY — memory limits and access rules
+
+### Memory Management / Quota Policies
+Defines what happens when a bucket hits its `MAX DOCUMENTS` limit (set via `SHAPE BUCKET`).
+
+```sql
+SHAPE BUCKET logs MAX DOCUMENTS 2
+ENFORCE POLICY ON logs TO REPLACE LEAST RECENTLY USED    -- (default) evict oldest read
+ENFORCE POLICY ON logs TO REPLACE OLDEST UPDATES         -- evict oldest write
+ENFORCE POLICY ON logs TO OVERWRITE CURRENT              -- evict newest
+```
+Note: updating an existing document does not trigger an eviction.
+
+### Document Security Level (DSL) Policies
+Controls read and write access to documents. Context variables like `my role` or `@user_id` can be matched against document fields. If a `write` policy fails, the query errors. If a `read` policy fails, the document is simply hidden from `FIND`.
+
+```sql
+ENFORCE SECURITY POLICY "lvl" ON docs TO ALLOW read IF level < 3
+ENFORCE SECURITY "own" ON docs TO ALLOW write IF owner = @user_id
+ENFORCE SECURITY "adm" ON docs TO ALLOW all IF my role = "admin"
+```
+*Note: `SHAPE POLICY ...` is an alias for `ENFORCE SECURITY ...`.*
+
+To remove a policy:
+```sql
+DROP SECURITY "lvl" ON docs
+```
+
+---
+
+## 25. MASK — conditionally redact fields
+
+Instead of blocking the whole document, `MASK` removes specific fields from the JSON returned by `FIND`.
+
+```sql
+MASK "secret" ON docs IF my role = "viewer"
+MASK "salary" ON staff IF level > 3
+```
+
+To remove a mask:
+```sql
+DROP SECURITY "secret" ON docs
+```
+
+## 26. EVERY (CRON) — schedule repeating background tasks
+
+Executes a command periodically in the background.
+
+```sql
+EVERY 5 SECONDS DO ( FIND docs )
+EVERY 1 HOURS DO ( DISTILL FROM logs )
+EVERY 30 MINUTES DO ( MIGRATE users FROM {"status":"old"} TO {"status":"stale"} )
+```
+
+---
+
+## 27. ENRICH — add computed virtual fields
+
+Automatically injects calculated fields into the documents returned by `FIND`.
+
+```sql
+ENRICH users WITH full_name AS CONCAT(first, " ", last)
+ENRICH sales WITH tax AS price * 0.2
+ENRICH items WITH margin AS price - cost, status AS "active"
+```
+Once enriched, the computed fields act as if they are stored in the document, and you can query or filter by them using `FIND`.
+
+---
+
+## 28. LISTEN — subscribe to real-time changes
+
+Opens a live subscription that pushes events over the websocket whenever data changes in the target bucket or document.
+
+```sql
+LISTEN TO docs
+LISTEN TO docs "1"
+```
+
+---
+
+## 29. PEER — analyze queries and AI engine status
+
+`PEER` is used for debugging and profiling query execution costs, acting similarly to `EXPLAIN` in SQL databases. It analyzes the nested statement and returns index suggestions without actually executing the query or modifying data.
+
+```sql
+PEER INTO COST ( FIND docs WHERE a = 1 )
+```
+You can also use it to peek at the status of the semantic vector engine:
+```sql
+PEER INTO ATTENTION
+```
+
+---
+
+## 30. SET (CONTEXT) — inject session variables
+
+Sets custom arbitrary variables in the active session context. These are evaluated in real-time by DSL Security Policies and Rate Limits.
+
+```sql
+SET role = "admin"
+SET tenant_id = "acme_corp"
+SET max_retries = 5
+```
+
+---
+
+## 31. MATCH — Cypher-like advanced graph pattern traversal
+
+While `FIND PATTERN` looks for a path starting from a single document, `MATCH` lets you search the entire graph for a specific shape using Cypher-like syntax (similar to Neo4j). You can assign aliases to nodes (`u` and `f`) and apply a `WHERE` clause across all resolved nodes.
+
+```sql
+MATCH (u FROM users)-["friend"]->(f FROM users)
+MATCH (u FROM users)-["friend"]->(f FROM users) WHERE f.age > 20
+```
+This returns a list of matched subgraphs mapping each alias to the resolved document.
+
+---
+
+
+
+
+
 ## Combining the core commands
 
 ### FIND — mixing filters, sorting, limits and projection
@@ -861,8 +1097,124 @@ FIND "pal" OF "staff:a"                        -- bond still there
 CHANGE staff "a" SET age TO 51 REWIND "staff:a" TO "now" DISTILL FROM staff MAX age
 ```
 
----
+### DRAIN + SALVAGE + INCINERATE — the recycle-bin lifecycle
 
+```sql
+POUR INTO staff "a" {"name":"Ana","age":35} POUR INTO staff "b" {"name":"Ben","age":28}
+LINK "staff:a" TO "staff:b" AS "pal"
+DRAIN staff "a" FIND staff FIND _rubbish SALVAGE "a" FIND staff FIND "pal" OF "staff:a"
+DRAIN staff "b" INCINERATE "b" FIND _rubbish SALVAGE "b" FIND staff
+```
+`SALVAGE "b"` after `INCINERATE "b"` brings back 0 documents — incinerated means gone.
+
+### DROP + RESTORE + DISTILL — drop a bucket, bring it back, same numbers
+
+```sql
+POUR INTO pets "p1" {"name":"Rex","age":3} POUR INTO pets "p2" {"name":"Tom","age":5}
+DISTILL FROM pets TOTAL age DROP pets SHOW buckets RESTORE pets DISTILL FROM pets TOTAL age
+```
+
+### DRAIN + DROP + RESTORE — drained documents come back too
+
+```sql
+POUR INTO pets "p3" {"name":"Zed","age":7}
+DRAIN pets "p3" DROP pets RESTORE pets FIND pets
+```
+`RESTORE` brings back every document of the bucket in the bin, including ones drained earlier.
+
+### DROP + RESTORE + LINK — bonds survive a drop
+
+```sql
+LINK "pets:p1" TO "pets:p2" AS "pal" DROP pets RESTORE pets FIND "pal" OF "pets:p1"
+```
+
+### SHAPE AUDITED + DROP + RESTORE — edits are kept
+
+```sql
+SHAPE BUCKET pets AUDITED
+CHANGE pets "p1" SET age TO 4
+DROP pets RESTORE pets FIND pets "p1"           -- age is still 4
+```
+
+### DROP + INCINERATE — a bucket you can never get back
+
+```sql
+DROP pets INCINERATE EVERYTHING RESTORE pets SHOW buckets
+```
+`RESTORE` reports `Restored 0 documents`, and `SHOW buckets` does not list `pets`.
+
+### MIGRATE + FIND + DISTILL — reshape, then query and aggregate
+
+```sql
+POUR INTO users "u1" {"fname":"Al","lname":"Bo","age":3}
+MIGRATE users FROM {"fname":"$1"} TO {"first":"$1"}
+FIND users                                      -- {"first":"Al","lname":"Bo","age":3,...}
+DISTILL FROM users TOTAL age                    -- other fields are untouched
+```
+
+### MIGRATE twice — stack migrations
+
+```sql
+MIGRATE users FROM {"first":"$1"} TO {"first":"$1","tag":"v2"}
+FIND users WHERE tag = "v2"
+```
+
+### MIGRATE + DRAIN + SALVAGE — migrated documents are what get recycled
+
+```sql
+DRAIN users "u1" FIND _rubbish SALVAGE "u1" FIND users
+```
+
+### AUTHENTICATE + ENFORCE SECURITY + FIND (Role-Based Access)
+Restrict document access to specific tenants or roles.
+
+```sql
+AUTHENTICATE AS "users:alice"
+SET role = "admin"
+
+-- Only Alice can write to her own documents
+ENFORCE SECURITY "own" ON docs TO ALLOW write IF owner_id = @user
+
+-- Only admins can read this bucket
+ENFORCE SECURITY "adm" ON docs TO ALLOW read IF my role = "admin"
+
+FIND docs
+```
+
+### AUTHENTICATE + MASK + DISTILL (Redaction)
+Masks apply to `FIND` to redact fields in the output JSON. However, `DISTILL` reads the raw document, bypassing the mask for aggregate stats.
+
+```sql
+AUTHENTICATE AS "guest"
+SET role = "viewer"
+
+-- Hide salary field from viewers in FIND results
+MASK "salary" ON staff IF my role = "viewer"
+
+FIND staff                               -- Salary is redacted
+DISTILL FROM staff AVERAGE salary        -- Still returns the aggregate!
+```
+
+### SHAPE BUCKET + POLICY (Memory & Quotas)
+Create a temporary bucket that automatically purges the oldest documents when it hits capacity.
+
+```sql
+SHAPE BUCKET temp_logs MAX DOCUMENTS 100
+ENFORCE POLICY ON temp_logs TO REPLACE LEAST RECENTLY USED
+POUR INTO temp_logs "1" {"event": "start"}
+```
+
+### AUTHENTICATE + LIMIT + FIND (Rate Limiting)
+Prevent abuse by throttling queries for specific roles. Note that limits are enforced per-minute and checked during the websocket connection loop.
+
+```sql
+LIMIT 60 QUERIES PER MINUTE FOR "viewer"
+LIMIT 1000 QUERIES PER MINUTE FOR "admin"
+SET role = "viewer"
+
+-- Over 60 queries in a minute will return a 429 Error
+FIND docs
+```
 ## Chaining commands
 
 ### A. Several commands in one line
@@ -935,4 +1287,72 @@ PIPE FROM emp THEN WHERE dept = "IT" THEN ARRANGED BY age GOING UP THEN SHOW nam
 
 ```sql
 PIPE FROM emp THEN GROUP BY dept TALLY AS n, MIN OF age AS youngest, MAX OF age AS oldest, AVERAGE OF age AS avg
+```
+
+### EVERY + DISTILL (Scheduled Reporting)
+Periodically calculate aggregates and store the result or trigger a webhook.
+
+```sql
+EVERY 1 HOURS DO ( DISTILL FROM sales TOTAL price )
+EVERY 1 DAYS DO ( DRAIN temp_logs FIND _rubbish )
+```
+
+### ENRICH + FIND + MASK (Virtual Redaction)
+You can compute a virtual field and then apply security masks or filters to it.
+
+```sql
+ENRICH users WITH is_adult AS age >= 18
+MASK "is_adult" ON users IF my role = "guest"
+FIND users WHERE is_adult = true
+```
+
+### LISTEN + POUR + ENRICH (Live Computed Feeds)
+Open a subscription to a bucket that has computed fields. As new documents are `POUR`ed in, the `LISTEN` stream will automatically push the document *including* the virtual enriched fields to your connected clients.
+
+```sql
+ENRICH sensors WITH fahrenheit AS (celsius * 9/5) + 32
+LISTEN TO sensors
+-- (In another session) POUR INTO sensors "s1" {"celsius": 20}
+-- (The listener will receive {"celsius": 20, "fahrenheit": 68})
+```
+
+### SET + LIMIT + ENFORCE SECURITY (Testing Security Rules)
+Dynamically mock the execution environment to test user policies or quotas.
+
+```sql
+AUTHENTICATE AS "cron"
+SET role = "admin"
+SET location = "US"
+
+-- Because context variables were set, this will pass
+ENFORCE SECURITY "loc" ON docs TO ALLOW write IF region = @location
+LIMIT 5 QUERIES PER MINUTE FOR "admin"
+```
+
+### PEER + INDEX + FIND (Performance Tuning)
+When querying a large bucket, use `PEER INTO COST` first to check if the query does a full table scan. After creating the index, run `PEER` again to verify it is using the index, then run the query.
+
+```sql
+-- Step 1: Check the cost. If it returns "scan_type": "FULL_BUCKET_SCAN", it's slow.
+PEER INTO COST ( FIND logs WHERE level = "error" )
+
+-- Step 2: Create the recommended index.
+INDEX logs ON (level)
+
+-- Step 3: Check again. Now it returns "scan_type": "INDEX_SCAN".
+PEER INTO COST ( FIND logs WHERE level = "error" )
+
+-- Step 4: Run the actual query quickly.
+FIND logs WHERE level = "error"
+```
+
+### LINK + MATCH (Multi-hop Graph Queries)
+Connect distinct documents with semantic edge labels and then query deeply across the entire graph. You can enforce conditions across any node in the path.
+
+```sql
+LINK "users:1" TO "users:2" AS "friend"
+LINK "users:2" TO "docs:42" AS "owns"
+
+-- Find the documents owned by a friend of a specific user
+MATCH (u FROM users)-["friend"]->(f FROM users)-["owns"]->(d FROM docs) WHERE u.name = "Alice"
 ```

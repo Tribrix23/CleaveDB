@@ -645,30 +645,37 @@ class Interpreter:
             if err:
                 return {"status": "error", "message": err}
 
-            # LRU Memory Management
+            # Memory management / quota (LRU, REPLACE_OLDEST, OVERWRITE_CURRENT)
+            _evict_algo = None
             policy_data = self.engine.get(f"_bucket_policies:{bucket}")
             if policy_data:
                 p = json.loads(policy_data)
-                if p.get("algorithm") == "LRU":
-                    self.engine.pour(
-                        "_lru_tracking", f"{bucket}:{doc_id}", str(time.time())
-                    )
+                _evict_algo = p.get("algorithm")
+                if _evict_algo in ("LRU", "REPLACE_OLDEST", "OVERWRITE_CURRENT"):
                     capacity = p.get("capacity", 100)
                     b_docs_data = self._scan_bucket_rls(bucket)
                     if b_docs_data:
                         b_docs = json.loads(b_docs_data)
-                        if len(b_docs) >= capacity:
-                            # Evict oldest
-                            lru_doc = min(
-                                b_docs,
-                                key=lambda d: float(
-                                    self.engine.get(
-                                        f"_lru_tracking:{bucket}:{d['gid'].split(':')[-1]}"
-                                    )
-                                    or 0
-                                ),
+                        _plain_id = str(doc_id).split(":")[-1] if doc_id else None
+                        _exists = _plain_id is not None and any(
+                            d["gid"].split(":")[-1].split(".")[-1] == _plain_id.split(".")[-1]
+                            for d in b_docs
+                        )
+
+                        def _stamp(d):
+                            return float(
+                                self.engine.get(
+                                    f"_lru_tracking:{bucket}:{d['gid'].split(':')[-1]}"
+                                )
+                                or 0
                             )
-                            self.engine.delete(lru_doc["gid"])
+
+                        if not _exists and len(b_docs) >= capacity:
+                            if _evict_algo == "OVERWRITE_CURRENT":
+                                victim = max(b_docs, key=_stamp)  # newest
+                            else:
+                                victim = min(b_docs, key=_stamp)  # oldest / least recently used
+                            self.engine.delete(victim["gid"])
 
             json_str = (
                 json.dumps(body)
@@ -681,6 +688,9 @@ class Interpreter:
 
             gid = self.engine.pour(bucket, doc_id, json_str)
             
+            if _evict_algo:
+                self.engine.pour("_lru_tracking", gid.split(":")[-1], str(time.time()))
+
             self._log_audit(bucket, "POUR", gid.split(":")[-1], None, body)
 
             if self.in_transaction:
@@ -1524,7 +1534,7 @@ class Interpreter:
                     self.engine.pour(
                         bucket,
                         body.get("original_id"),
-                        json.dumps(body.get("document", {})),
+                        json.dumps(body.get("document", body.get("body", {}))),
                     )
                     self.engine.delete(r_gid)
                     count += 1
@@ -1583,8 +1593,12 @@ class Interpreter:
                             for p in self.security.policies[bucket][action]
                             if p.get("name") != name
                         ]
+            _tenant = self.context.get(
+                "tenant_id", self.context.get("user", "").split(".")[0]
+            )
+            _pfx = f"{_tenant}." if _tenant != "cron" else ""
             if self.engine:
-                self.engine.delete(f"_security_policies:policy_{bucket}_{name}")
+                self.engine.delete(f"_security_policies:{_pfx}policy_{bucket}_{name}")
 
             # Remove from masks
             if hasattr(self.security, "masks") and bucket in self.security.masks:
@@ -1592,7 +1606,7 @@ class Interpreter:
                     m for m in self.security.masks[bucket] if m.get("field") != name
                 ]
             if self.engine:
-                self.engine.delete(f"_security_policies:mask_{bucket}_{name}")
+                self.engine.delete(f"_security_policies:{_pfx}mask_{bucket}_{name}")
 
             return {
                 "status": "ok",
@@ -2139,12 +2153,15 @@ class Interpreter:
 
             if algorithm:
                 # It's an LRU / Memory Management Policy
+                existing = self.engine.get(f"_bucket_policies:{bucket}")
+                p_doc = json.loads(existing) if existing else {}
+                p_doc["algorithm"] = algorithm
+                p_doc["updated_at"] = int(time.time())
+                
                 self.engine.pour(
                     "_bucket_policies",
                     bucket,
-                    json.dumps(
-                        {"algorithm": algorithm, "updated_at": int(time.time())}
-                    ),
+                    json.dumps(p_doc),
                 )
                 return {
                     "status": "ok",
@@ -2814,7 +2831,7 @@ class Interpreter:
                         self.engine.pour(
                             rb["original_bucket"],
                             rb["original_id"],
-                            json.dumps(rb["body"]),
+                            json.dumps(rb.get("body", rb.get("document", {}))),
                         )
                         self.engine.delete(r_gid)
                         count += 1

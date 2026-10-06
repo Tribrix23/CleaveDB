@@ -241,6 +241,8 @@ class Parser:
             return self.suggest_stmt()
         if self.match(TokenType.EVERY):
             return self.cron_stmt()
+        if self.match(TokenType.MATCH):
+            return self.match_stmt()
 
         # If it doesn't match any statement, throw an error
         raise self.error(self.peek(), "Expected a statement.")
