@@ -46,7 +46,7 @@ async def run_test():
             await asyncio.sleep(0.5)
         
         print("\n4. Performing Semantic Search again...")
-        await ws.send('FIND articles MEANING "cute dog"')
+        await ws.send('FIND "cute dog" IN articles')
         res = json.loads(await ws.recv())
         
         if res and len(res) > 0 and len(res[0].get('documents', [])) > 0:

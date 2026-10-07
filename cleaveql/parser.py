@@ -288,25 +288,36 @@ class Parser:
         if self.match(TokenType.CANDIDATE):
             show_candidates = True
         
-        # Check for FIND "label" OF "source" (Alias for SCOOP RELATED)
+        # Check for FIND "label" OF "source" OR FIND "semantic query" IN "bucket"
         if self.check(TokenType.STRING):
-            # It's a graph relationship query
-            related_label = self.consume_string("Expected relationship label.")
-            self.consume(TokenType.OF, "Expected 'of'.")
-            related_source = self.consume_string("Expected source document ID.")
-            stmt = ScoopStmt(line=self.previous().line, column=self.previous().column)
-            stmt.mode = "RELATED"
-            stmt.related_label = related_label
-            stmt.related_source = related_source
-            stmt.show_candidates = show_candidates
-            
-            if self.match(TokenType.AS):
-                self.consume(TokenType.OF, "Expected 'of' after 'as'.")
-                if self.match(TokenType.STRING):
-                    stmt.as_of = self.previous().value
-                else:
-                    stmt.as_of = self.consume_identifier("Expected 'yesterday' or timestamp.")
-            return stmt
+            first_str = self.consume_string("Expected string.")
+            if self.match(TokenType.OF):
+                # It's a graph relationship query
+                related_label = first_str
+                related_source = self.consume_string("Expected source document ID.")
+                stmt = ScoopStmt(line=self.previous().line, column=self.previous().column)
+                stmt.mode = "RELATED"
+                stmt.related_label = related_label
+                stmt.related_source = related_source
+                stmt.show_candidates = show_candidates
+                
+                if self.match(TokenType.AS):
+                    self.consume(TokenType.OF, "Expected 'of' after 'as'.")
+                    if self.match(TokenType.STRING):
+                        stmt.as_of = self.previous().value
+                    else:
+                        stmt.as_of = self.consume_identifier("Expected 'yesterday' or timestamp.")
+                return stmt
+            elif self.match(TokenType.IN):
+                # It's a semantic vector search
+                stmt = ScoopStmt(line=self.previous().line, column=self.previous().column)
+                stmt.mode = "EVERYTHING"
+                stmt.bucket = self.consume_identifier("Expected bucket name.")
+                stmt.meaning = first_str
+                # Fast return, or we could allow WHERE etc, but let's keep it simple for this syntax sugar
+                return stmt
+            else:
+                raise self.error(self.peek(), "Expected 'OF' or 'IN' after FIND string.")
 
         # Check for SCOOP RELATED "label" FROM "doc" (Legacy)
         if self.match(TokenType.RELATED):

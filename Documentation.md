@@ -6,7 +6,8 @@ Thirty-two CleaveQL commands, every variant, all bond types, combinations, and c
 | # | Command | Purpose | Aliases |
 |---|---------|---------|---------|
 | 1 | `POUR`     | Create / write documents | — |
-| 2 | `FIND`     | Read / query documents and bonds | `SCOOP` |
+| 2 | `SCOOP`    | Read / query structured data with filters | - |
+| - | `FIND`     | Search vectors / graphs (Semantic Search, Patterns, Bonds) | `SCOOP` (Alias) |
 | 3 | `CHANGE`   | Update fields of a document | `UPDATE` |
 | 4 | `DRAIN`    | Soft-delete (moves to `_rubbish`) | — |
 | 5 | `LINK`     | Create a bond (graph edge) between documents | `BOND` |
@@ -64,10 +65,17 @@ POUR INTO users "jane" {"name": "Jane", "age": 25, "city": "Manila"}
 
 ---
 
-## 2. FIND — query
+## 2. SCOOP and FIND - Read and Query
+
+In CleaveQL, reading data is done via the `SCOOP` or `FIND` commands. Historically, `FIND` was simply an alias for `SCOOP`. However, they have now been given distinct semantic roles to make your queries read like natural language:
+
+*   **`SCOOP`**: Used for structured querying, filtering, and bulk data retrieval (think SQL `SELECT`).
+*   **`FIND`**: Used as a shorthand for Graph queries (e.g., `FIND "friend" OF...`), Pattern matching (`FIND PATTERN...`), and Semantic Vector Searches (`FIND "search text" IN...`).
+
+*Note: Since they share the same underlying AST parser, you can still use them interchangeably (e.g., `SCOOP PATTERN` or `FIND EVERYTHING FROM users`), but adhering to their semantic roles is highly recommended.*
 
 ```sql
-FIND users
+SCOOP EVERYTHING FROM users
 ```
 
 ### 2a. Documents
