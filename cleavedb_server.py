@@ -578,10 +578,15 @@ async def cron_worker():
                     for t in ttls:
                         b = t.get("body", {})
                         if b.get("expires_at", 0) < current_time:
-                            # It expired! Hard-delete the actual document and the TTL tracker
-                            engine.delete(b.get("target"))
-                            engine.delete(t['gid'])
-                            print(f"[Cron] TTL Sweeper incinerated expired document: {b.get('target')}")
+                            # Re-verify the tracker in case a concurrent thread modified it
+                            current_tracker_json = engine.get(t['gid'])
+                            if current_tracker_json:
+                                cb = json.loads(current_tracker_json)
+                                if cb.get("expires_at", 0) < current_time:
+                                    # It is still expired! Hard-delete the actual document and the TTL tracker
+                                    engine.delete(cb.get("target"))
+                                    engine.delete(t['gid'])
+                                    print(f"[Cron] TTL Sweeper incinerated expired document: {cb.get('target')}")
             except Exception as e:
                 print(f"[Cron] Error in TTL cleanup: {e}")
 

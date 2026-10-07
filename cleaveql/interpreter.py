@@ -733,9 +733,12 @@ class Interpreter:
                 # Put a fast-lookup pointer in _ttl bucket for the cron worker
                 self.engine.pour(
                     "_ttl",
-                    gid.split(":")[-1],
+                    gid,
                     json.dumps({"target": gid, "expires_at": expires_at}),
                 )
+            else:
+                self.engine.delete(f"_ttl:{gid}")
+                self.engine.delete(f"_ttl:{gid.split(':')[-1]}")
 
             # --- Vector Indexing Queue ---
             if self.indexing_queue is not None and isinstance(body, dict):
@@ -1592,6 +1595,8 @@ class Interpreter:
                     r_gid = f"{tenant}.{gid}" if tenant != "cron" else gid
                     self.engine.pour("_rubbish", r_gid, json.dumps(rubbish_entry))
                 self.engine.delete(gid)
+                self.engine.delete(f"_ttl:{gid}")
+                self.engine.delete(f"_ttl:{gid.split(':')[-1]}")
                 count += 1
 
             if hasattr(self.engine, "delete_bucket"):
@@ -2809,6 +2814,8 @@ class Interpreter:
                 r_gid = f"{tenant}.{gid}" if tenant != "cron" else gid
                 self.engine.pour("_rubbish", r_gid, json.dumps(rubbish_entry))
                 self.engine.delete(gid)
+                self.engine.delete(f"_ttl:{gid}")
+                self.engine.delete(f"_ttl:{gid.split(':')[-1]}")
                 self._fire_triggers(
                     "DRAIN", bucket, gid.split(":")[-1], json.loads(doc_json)
                 )
