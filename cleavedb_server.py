@@ -590,6 +590,24 @@ async def cron_worker():
             except Exception as e:
                 print(f"[Cron] Error in TTL cleanup: {e}")
 
+            # --- Graph Relation TTL Cleanup ---
+            try:
+                bonds_data = engine.scan_bucket("_bonds")
+                if bonds_data:
+                    bonds = json.loads(bonds_data)
+                    for b_doc in bonds:
+                        body = b_doc.get("body", {})
+                        if body.get("expires_at") and body.get("expires_at") < current_time:
+                            # Re-verify the bond in case a concurrent thread modified or severed it
+                            current_bond_json = engine.get(b_doc['gid'])
+                            if current_bond_json:
+                                cb = json.loads(current_bond_json)
+                                if cb.get("expires_at") and cb.get("expires_at") < current_time:
+                                    engine.delete(b_doc['gid'])
+                                    print(f"[Cron] Graph Sweeper incinerated expired bond: {b_doc['gid']}")
+            except Exception as e:
+                print(f"[Cron] Error in Graph Relation TTL cleanup: {e}")
+
             # Scan the hidden _cron bucket
             cron_data = engine.scan_bucket("_cron")
             if not cron_data:
