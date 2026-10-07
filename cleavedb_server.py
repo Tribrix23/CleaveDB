@@ -848,6 +848,41 @@ async def handle_client(reader, writer):
             await writer.drain()
             continue
 
+        if req_action == "forgot_step1":
+            u = req.get("username")
+            user_doc_str = engine.get(f"_auth:{u}")
+            if user_doc_str:
+                user_data = json.loads(user_doc_str)
+                decrypted_q = cipher.decrypt(user_data["security_question"].encode()).decode()
+                resp = {"status": "ok", "question": decrypted_q}
+            else:
+                resp = {"status": "error", "message": "User not found"}
+            response = json.dumps({"_req_id": req_id, "payload": resp}) if req_id else json.dumps(resp)
+            writer.write((response + "\n").encode())
+            await writer.drain()
+            continue
+            
+        if req_action == "forgot_step2":
+            u = req.get("username")
+            ans = req.get("answer", "").lower()
+            new_pw = req.get("new_password")
+            user_doc_str = engine.get(f"_auth:{u}")
+            resp = {"status": "error", "message": "Invalid answer or recovery failed"}
+            if user_doc_str:
+                user_data = json.loads(user_doc_str)
+                decrypted_ans = cipher.decrypt(user_data["security_answer"].encode()).decode()
+                if decrypted_ans == ans:
+                    pw_hash, pw_salt = hash_password(new_pw)
+                    user_data["password_hash"] = pw_hash
+                    user_data["password_salt"] = pw_salt
+                    engine.pour("_auth", u, json.dumps(user_data))
+                    resp = {"status": "ok", "message": "Password reset successfully!"}
+            
+            response = json.dumps({"_req_id": req_id, "payload": resp}) if req_id else json.dumps(resp)
+            writer.write((response + "\n").encode())
+            await writer.drain()
+            continue
+
         try:
             client_id = req_id.split('_')[0] if req_id else "0"
             session = SESSION_STORE.get(client_id, {"username": "guest", "auth_level": "none"})

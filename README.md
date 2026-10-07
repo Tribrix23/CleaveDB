@@ -26,42 +26,46 @@
 
 #
 
-##  Installation & Build Instructions
+## 💾 Installation
 
-CleaveDB is built for extreme performance using hardware-accelerated memory access and vector search, so it compiles a core engine out of **Rust** and **C++ SIMD** (Fully wired to C++ AVX-512 extensions). 
+### Option A: Download Pre-Compiled Binary (Recommended)
+You do **not** need to install Python, Rust, or C++ build tools. We provide a single, self-contained executable that has the hardware-accelerated C++ AVX-512 extensions and Rust engine fully baked in.
 
-### 1. Prerequisites
-You will need:
+1. Go to the [Releases](https://github.com/Tribrix23/CleaveDB/releases) page.
+2. Download `CleaveShell.exe` (or the equivalent for your OS).
+3. Double-click the executable to start the database server and interactive shell.
+
+> [!NOTE]
+> **Windows SmartScreen Notice**
+> Because CleaveDB is an independent, open-source project, the Windows installer does not use an expensive corporate EV certificate. When downloading or running the `.exe`, Windows or Edge might flag it as "unrecognized".
+> To bypass this, click **Keep -> Keep anyway** in Edge, and **More info -> Run anyway** on the blue Windows screen.
+
+*(You can now execute all CleaveQL queries directly in your terminal, or connect via the NPM Client!)*
+
+---
+
+### Option B: Compile from Source (Advanced / Contributors)
+If you want to modify the source code, you can compile the engine from scratch. 
+
+**Prerequisites:**
 - **Python 3.10+**
-- **Rust Toolchain** (Install via `rustup` from [rustup.rs](https://rustup.rs/) - takes ~1 minute)
-- *(Optional)* **Go** (Only needed if compiling the distributed cluster coordinator logic)
+- **Rust Toolchain** (Install via `rustup` from [rustup.rs](https://rustup.rs/))
+- **C++ Build Tools** (For compiling the AVX-512 SIMD extensions)
+- *(Optional)* **Go** (For distributed cluster coordinator logic)
 
-### 2. Install Python Dependencies
+**1. Install Python Dependencies**
 ```bash
 pip install -r requirements.txt
 ```
-*(This installs everything from `websockets` and `numpy` for the AI semantic search, up to `maturin`, which is the Rust-to-Python compiler tool).*
 
-### 3. Run the Master Build Script
-CleaveDB comes with a master `build.py` orchestrator script. Simply run:
+**2. Run the Master Build Script**
+Simply run the orchestrator script, which compiles the C++ SIMD layers, the Go Coordinator, and the Rust storage engine via PyO3/maturin:
 ```bash
 python build.py
 ```
 
-### 4. Start the Database Engine
-Once the engine is built, you can start the database server and interactive shell by running the compiled executable:
-```bash
-./CleaveShell.exe
-```
-*(You can now execute all CleaveQL queries directly in your terminal, or connect via the NPM Client!)*
-
-**What `build.py` automatically does in the background:**
-1. Compiles the **C++ SIMD** layers.
-2. Compiles the optional **Go Coordinator** into a shared library (fully wired to storage engine).
-3. Compiles the **Custom Rust Storage Engine**.
-4. Uses `maturin` to bind the Rust engine into a Python module (`cleavedb3_storage`) and installs it to your local environment.
-
-Once it prints `Run: python -m cleaveql.repl`, you can immediately start the server with:
+**3. Start the Server**
+Once compiled, start the TCP server:
 ```bash
 python cleavedb_server.py
 ```
@@ -226,23 +230,13 @@ wscat -c ws://127.0.0.1:8301
 
 ## 🚀 Getting Started
 
-### Requirements
-- Python 3.13+, Rust 2021 (`cargo`), C++ build tools
-- `onnxruntime`, `tokenizers`, `numpy`
+The easiest way to get started is to download the pre-compiled executable from the [Releases](https://github.com/Tribrix23/CleaveDB/releases) page. This requires **zero dependencies**—no Python, no Rust, and no C++ tools.
 
-### Installation
+If you are a developer compiling from source, you can build the native extensions by running:
 ```bash
-# 1. Install Python dependencies (AI Semantic Search & PyO3 compilation)
 pip install -r requirements.txt
-
-# 2. Compile native extensions (Rust storage, Go coordinator, C++ SIMD)
 python build.py
-
-# 3. Start the TCP Server
 python cleavedb_server.py
-
-# 4. In a new terminal, open the CLI
-python cleave_cli.py
 ```
 
 ---

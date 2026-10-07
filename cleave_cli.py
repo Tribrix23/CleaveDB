@@ -11,11 +11,32 @@ from prompt_toolkit.key_binding import KeyBindings
 import socket
 import json
 import sys
+import asyncio
+import questionary
+
+# --- Server Interceptor for PyInstaller ---
+if "--run-server" in sys.argv:
+    import cleavedb_server
+    sys.argv.remove("--run-server")
+    try:
+        asyncio.run(cleavedb_server.main())
+    except KeyboardInterrupt:
+        pass
+    sys.exit(0)
+# ------------------------------------------
 import pathlib
 import getpass
 import argparse
 import os
-
+from questionary import Style
+custom_style = Style([
+    ('qmark', 'fg:#61D6D6 bold'),
+    ('question', 'bold'),
+    ('answer', 'fg:#61D6D6 bold'),
+    ('pointer', 'fg:#61D6D6 bold'),
+    ('highlighted', 'fg:#61D6D6 bold'),
+    ('instruction', 'fg:#555555 italic')
+])
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -982,31 +1003,32 @@ SHAPE WEBHOOK "<name>" ON <bucket> WHEN action = "<act>" POST TO "<url>"
 """
 
 def do_register(f):
-    print("\n--- Register New User ---")
-    username = input("Username: ").strip()
-    password = getpass.getpass("Password: ")
-    confirm = getpass.getpass("Confirm password: ")
+    from rich.console import Console
+    console = Console()
+    console.print("\n[bold cyan]◈ REGISTER ◈[/]")
+    username = questionary.text("Username:", qmark="➔", style=custom_style).ask()
+    if not username: return
+    password = questionary.password("Password:", qmark="➔", style=custom_style).ask()
+    if not password: return
+    confirm = questionary.password("Confirm password:", qmark="➔", style=custom_style).ask()
     if password != confirm:
         print("Passwords do not match.")
         return
         
-    dev_password = getpass.getpass("Dev Password (superuser override): ")
+    dev_password = questionary.password("Dev Password (superuser override):", qmark="➔").ask()
     
-    print("\nSelect a security question for account recovery:")
-    for i, q in enumerate(SECURITY_QUESTIONS):
-        print(f"[{i+1}] {q}")
+    question = questionary.select(
+        "Select a security question for account recovery:",
+        qmark="◈",
+        pointer="➔",
+        choices=SECURITY_QUESTIONS, style=custom_style
+    ).ask()
     
-    try:
-        q_idx = int(input("Choice (1-5): "))
-        if not (1 <= q_idx <= len(SECURITY_QUESTIONS)):
-            raise ValueError()
-        question = SECURITY_QUESTIONS[q_idx - 1]
-    except ValueError:
-        print("Invalid choice.")
-        return
+    if not question: return
         
     print(f"\nQuestion: {question}")
-    answer = input("Answer: ").strip()
+    answer = questionary.text("Answer:", qmark="➔", style=custom_style).ask()
+    if not answer: return
     
     req = {
         "action": "register",
@@ -1026,15 +1048,20 @@ def do_register(f):
         sys.exit(1)
         
     resp = json.loads(resp_str)
+    if isinstance(resp, list): resp = resp[0] if resp else {}
     if resp.get("status") == "ok":
         print(f"\n[+] {resp.get('message')}\n")
     else:
         print(f"\n[-] Error: {resp.get('message')}\n")
 
 def do_login(f):
-    print("\n--- Login ---")
-    username = input("Username: ").strip()
-    password = getpass.getpass("Password: ")
+    from rich.console import Console
+    console = Console()
+    console.print("\n[bold cyan]◈ LOGIN ◈[/]")
+    username = questionary.text("Username:", qmark="➔", style=custom_style).ask()
+    if not username: return None
+    password = questionary.password("Password:", qmark="➔", style=custom_style).ask()
+    if not password: return None
     
     req = {
         "action": "login",
@@ -1051,6 +1078,7 @@ def do_login(f):
         sys.exit(1)
         
     resp = json.loads(resp_str)
+    if isinstance(resp, list): resp = resp[0] if resp else {}
     if resp.get("status") == "ok":
         print(f"\n[+] {resp.get('message')}\n")
         return resp
@@ -1059,8 +1087,11 @@ def do_login(f):
         return False
 
 def do_forgot(f):
-    print("\n--- Forgot Password ---")
-    username = input("Username: ").strip()
+    from rich.console import Console
+    console = Console()
+    console.print("\n[bold cyan]◈ FORGOT PASSWORD ◈[/]")
+    username = questionary.text("Username:", qmark="➔", style=custom_style).ask()
+    if not username: return
     
     f.write(json.dumps({"action": "forgot_step1", "username": username}) + "\n")
     f.flush()
@@ -1071,13 +1102,16 @@ def do_forgot(f):
         sys.exit(1)
         
     resp = json.loads(resp_str)
+    if isinstance(resp, list): resp = resp[0] if resp else {}
     if resp.get("status") == "error":
         print(f"\n[-] Error: {resp.get('message')}\n")
         return
         
     print(f"\nSecurity Question: {resp['question']}")
-    answer = input("Answer: ").strip()
-    new_pw = getpass.getpass("Enter new password: ")
+    answer = questionary.text("Answer:", qmark="➔", style=custom_style).ask()
+    if not answer: return
+    new_pw = questionary.password("Enter new password:", qmark="➔", style=custom_style).ask()
+    if not new_pw: return
     
     req = {
         "action": "forgot_step2",
@@ -1123,7 +1157,10 @@ def main():
                         root_dir = str(d)
                         break
                         
-                if server_path:
+                if getattr(sys, 'frozen', False):
+                    flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    subprocess.Popen([sys.executable, "--run-server"], cwd=str(exe_dir), creationflags=flags)
+                elif server_path:
                     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                     # Run the server in the correct root directory
                     subprocess.Popen(["python", "cleavedb_server.py"], cwd=root_dir, creationflags=flags)
@@ -1158,53 +1195,36 @@ def main():
         f = s.makefile('rw')
         
         try:
-            # Create a rich panel
-            grid = Table.grid(expand=True)
-            grid.add_column(justify="center", ratio=1)
-            grid.add_column(justify="left", ratio=2)
-            
-            logo = """
-[bold cyan]  _____ _                   ___  ____  
- / ___/| |___ ___ ___ _____/ _ \/ __ )
-/ /__  | / -_) _ `/ _ \___/ // / _  | 
-\___/  |_\__/\_,_/\___/  /____/____/  [/]"""
-            
-            tips = """[bold]Tips for getting started[/]
-[dim]Type [bold cyan]help[/] to see all available commands.
-Scroll the output window directly with your [bold]mouse wheel[/].
-
-[bold]Recent activity[/]
-[dim]No recent activity[/]"""
-            
-            grid.add_row(logo, tips)
-            panel = Panel(grid, title="[bold orange3]CleaveDB Shell v1.0[/]", border_style="orange3", padding=(1, 2))
-            console.print(panel)
+            # Minimalist Teal UI
+            console.print("\n[bold #61D6D6]" + r"""  ██████╗██╗     ███████╗ █████╗ ██╗   ██╗███████╗██████╗ ██████╗ 
+ ██╔════╝██║     ██╔════╝██╔══██╗██║   ██║██╔════╝██╔══██╗██╔══██╗
+ ██║     ██║     █████╗  ███████║██║   ██║█████╗  ██║  ██║██████╔╝
+ ██║     ██║     ██╔══╝  ██╔══██║╚██╗ ██╔╝██╔══╝  ██║  ██║██╔══██╗
+ ╚██████╗███████╗███████╗██║  ██║ ╚████╔╝ ███████╗██████╔╝██████╔╝
+  ╚═════╝╚══════╝╚══════╝╚═╝  ╚═╝  ╚═══╝  ╚══════╝╚═════╝ ╚═════╝ """ + "[/]\n")
         except Exception as e:
             print(f"RICH ERROR: {e}")
             import traceback
             traceback.print_exc()
-            print("========================================")
-            print("        Welcome to CleaveDB Shell       ")
-            print("========================================")
-            print("Not logged in. Type a command to begin.")
-            print("  login    - Log into an existing account")
-            print("  register - Create a new user account")
-            print("  forgot   - Recover a lost password")
-            print("  exit     - Close the shell")
 
         import questionary
-        from questionary import Style
-        custom_style = Style([
-            ('pointer', 'fg:#FF9D00 bold'),
-            ('highlighted', 'fg:#FF9D00 bold'),
-        ])
+
+
+
+
+
+
+
 
         auth_data = False
         while not auth_data:
             try:
                 cmd = questionary.select(
-                    "What would you like to do?",
+                    "Welcome to CleaveDB. Please authenticate:",
                     style=custom_style,
+                    qmark="◈",
+                    pointer="➔",
+                    instruction="(Use ↑/↓ arrows)",
                     choices=[
                         questionary.Choice("Log into an existing account", value="login"),
                         questionary.Choice("Create a new user account", value="register"),
@@ -1234,26 +1254,13 @@ Scroll the output window directly with your [bold]mouse wheel[/].
         from prompt_toolkit.styles import Style
         session = PromptSession()
 
-        grid = Table.grid(expand=True)
-        grid.add_column(justify="center", ratio=1)
-        grid.add_column(justify="left", ratio=2)
-        
-        logo_text = """
-[bold cyan]  _____ _                   ___  ____  
- / ___/| |___ ___ ___ _____/ _ \/ __ )
-/ /__  | / -_) _ `/ _ \___/ // / _  | 
-\___/  |_\__/\_,_/\___/  /____/____/  [/]"""
-
-        tips = """[bold]Tips for getting started[/]
-[dim]Type [bold cyan]help[/] to see all available commands.
-Scroll naturally with your mouse wheel.
-
-[bold]Recent activity[/]
-[dim]No recent activity[/]"""
-        
-        grid.add_row(logo_text, tips)
-        panel = Panel(grid, title="[bold orange3]CleaveDB Shell v1.0[/]", border_style="orange3", padding=(1, 2))
-        console.print(panel)
+        # Minimalist Teal UI for logged in state
+        console.print("\n[bold #61D6D6]" + r"""  ██████╗██╗     ███████╗ █████╗ ██╗   ██╗███████╗██████╗ ██████╗ 
+ ██╔════╝██║     ██╔════╝██╔══██╗██║   ██║██╔════╝██╔══██╗██╔══██╗
+ ██║     ██║     █████╗  ███████║██║   ██║█████╗  ██║  ██║██████╔╝
+ ██║     ██║     ██╔══╝  ██╔══██║╚██╗ ██╔╝██╔══╝  ██║  ██║██╔══██╗
+ ╚██████╗███████╗███████╗██║  ██║ ╚████╔╝ ███████╗██████╔╝██████╔╝
+  ╚═════╝╚══════╝╚══════╝╚═╝  ╚═╝  ╚═══╝  ╚══════╝╚═════╝ ╚═════╝ """ + "[/]\n")
 
         console.print(f"\n[+] Login successful! (Level: {auth_data.get('auth_level', 'standard')})")
         console.print("========================================")
@@ -1315,6 +1322,8 @@ Scroll naturally with your mouse wheel.
             
         s.close()
         if logout_requested:
+            os.system("cls" if os.name == "nt" else "clear")
+            console.clear()
             continue
         else:
             sys.exit(0)

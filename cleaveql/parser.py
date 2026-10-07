@@ -244,7 +244,16 @@ class Parser:
             from .ast import UndoStmt
             if self.match(TokenType.SHOW):
                 return UndoStmt(show=True)
-            target = self.consume_string("Expected undo ID.") if self.check(TokenType.STRING) else self.consume_identifier("Expected undo ID.")
+            
+            if self.check(TokenType.STRING):
+                target = self.consume_string("Expected undo ID.")
+            else:
+                target_parts = []
+                while not self.is_at_end() and self.peek().type not in (TokenType.SEMICOLON, TokenType.EOF):
+                    target_parts.append(self.advance().lexeme)
+                target = "".join(target_parts).strip()
+                if not target:
+                    raise self.error(self.peek(), "Expected undo ID.")
             return UndoStmt(target_id=target)
 
         if self.match(TokenType.EVERY):
