@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/CleaveDB.png" alt="CleaveDB 3.9.0" width="500"/>
+  <img src="assets/CleaveDB.png" alt="CleaveDB 4.0.0" width="500"/>
   <br/><br/>
   <p><strong>The polyglot, AVX-512 ready , hybrid relational-document graph database with Transformer attention layers.</strong></p>
   
@@ -12,7 +12,7 @@
 
 <br/>
 
-**CleaveDB 3.9.0** is a ground-up, hybrid Relational Document & Graph database that eliminates the complexity of traditional SQL `JOIN`s, external vector search services, and opaque graph databases. It ships with:
+**CleaveDB 4.0.0** is a ground-up, hybrid Relational Document & Graph database that eliminates the complexity of traditional SQL `JOIN`s, external vector search services, and opaque graph databases. It ships with:
 
 
 
@@ -21,7 +21,7 @@
 - **AVX-512 / AVX2 C++ SIMD extensions** exist in the Rust engine (vector search runs on C++ AVX-512 extensions).
 - A **Python interpreter frontend** (via PyO3 bindings) that runs the **CleaveQL** query language.
 - **Real neural Transformer embeddings** for semantic search via a quantized ONNX model, using ~22MB of RAM.
-- A **Go-based distributed coordinator** for multi-shard deployments (fully wired to storage engine).
+- A **Go distributed coordinator** (`coordinator.exe`) providing high-concurrency Scatter-Gather query routing and Min-Heap K-Way result merging across cluster shards.
 - A **TCP server** (`cleavedb_server.py`) with full authentication, background Cron worker, and **multi-tenant Document-Level Security (DLS)**.
 
 #
@@ -211,7 +211,7 @@ wscat -c ws://127.0.0.1:8301
 │   BPlusTree ── WAL (Group Commit) ── Buffer Pool        │
 │   Bloom Filter ── LZ4 Page Compression ── AES-256-GCM  │
 │   SIMD FFI: AVX-512 dot_product, softmax, gelu, matmul │
-│   Coordinator FFI ─── Go Coordinator (compiled but not actively wired)   │
+│   Go Coordinator ── coordinator.exe (Scatter-Gather & K-Way Merge)    │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -221,7 +221,7 @@ wscat -c ws://127.0.0.1:8301
 |---|---|---|---|
 | **Storage** | Rust 2021 | `storage/src/` | Hand-built B+Tree, 16KB pages with CRC32, CLOCK-sweep buffer pool, WAL with group commit, Bloom filters, AES-256-GCM at-rest encryption |
 | **SIMD** | C++ (AVX-512/AVX2) | `simd/src/` | Fully wired to C++ AVX-512 extensions for dot-product, softmax, GELU, sigmoid, layer norm, matrix multiply. Auto-fallback to scalar on unsupported CPUs |
-| **Coordinator** | Go 1.21 | `coordinator/src/` | Coordinator logic (Fully wired to storage engine) |
+| **Coordinator** | Go 1.22+ | `coordinator/src/` | Standalone high-concurrency microservice (`coordinator.exe`) listening on :8305. Performs parallel TCP query distribution and K-Way Min-Heap result merging across shards |
 | **Interpreter** | Python 3.13 | `cleaveql/` | Recursive-descent parser producing ~38 AST node types, security policy engine (GBAC + RBAC + DLS + Masking) |
 | **AI Search** | ONNX Runtime | `attention/sra.py` | Semantic Relevance Attention — quantized `all-MiniLM-L6-v2` Transformer generating 384-dim embeddings, cosine similarity ranking |
 | **Bindings** | PyO3 / Maturin | `storage/src/python.rs` | Rust↔Python bridge exposing `pour`, `get`, `scan_bucket`, `delete`, `heal`, `show` |
@@ -909,6 +909,8 @@ All messages are newline-delimited. Request: raw CleaveQL string + `\n`. Respons
 ### CLI Built-in Commands
 | Command | Description |
 |---|---|
+| `cluster <query>` | Scatter query across shards via Go Coordinator on :8305 |
+| `cluster status` | Check Go Coordinator shard health and topology |
 | `help` / `?` | Print the complete CleaveQL manual |
 | `logout` | Close session, return to login screen |
 | `cls` / `clear` | Clear terminal screen |
@@ -930,7 +932,6 @@ dsc/
 │       ├── bloom.rs          # Bloom filter
 │       ├── crypto.rs         # AES-256-GCM at-rest encryption
 │       ├── simd_ffi.rs       # AVX-512/AVX2 C++ FFI bindings
-│       ├── coordinator_ffi.rs# Go coordinator FFI bindings
 │       ├── engine/           # Database, ShardManager, InvertedIndex
 │       │   ├── operations.rs # put/get/delete with bond enforcement
 │       │   └── volcano.rs    # Volcano-model query executor
@@ -950,9 +951,10 @@ dsc/
 │   ├── sra.py                # Semantic Relevance Attention (ONNX Q8_0)
 │   └── __init__.py           # QUA, SRA, BDA, AQP layer registry
 │
-├── coordinator/              # Go distributed coordinator
+├── coordinator/              # Go distributed coordinator service
+│   ├── coordinator.exe       # Standalone compiled binary (:8305)
 │   └── src/
-│       ├── main.go           # ScatterGather, FreeCString, BackgroundWorkers
+│       ├── main.go           # High-concurrency TCP Scatter-Gather server
 │       └── merge.go          # K-Way merge via min-heap O(N log K)
 │
 ├── simd/                     # C++ SIMD vector extensions
@@ -1054,6 +1056,44 @@ When you send a POUR or CHANGE write command to the cluster:
 *Note: TCP connections bypass Raft and write directly to the local engine. Only WebSocket and HTTP requests replicate through Raft.*
 
 ---
+
+### 32. Go Distributed Coordinator (`coordinator.exe`)
+
+CleaveDB ships with a dedicated, standalone **Go Coordinator** (`coordinator.exe`) built for horizontal query scaling, multi-shard routing, and high-concurrency Scatter-Gather orchestration.
+
+```
+Client / Shell ──▶ Go Coordinator (:8305) ──▶ Concurrent Goroutines ──▶ [Shard 1, Shard 2, Shard N] ──▶ K-Way Min-Heap Merge
+```
+
+#### Key Architecture
+* **Pure Go (Zero CGO):** Statically compiled with `CGO_ENABLED=0` into a standalone 5 MB binary. It requires no external C/C++ runtimes or DLLs, ensuring zero runtime conflicts with Python or Rust.
+* **Concurrent Scatter-Gather:** Dispatches parallel queries across all configured cluster shards via Goroutines with context timeout deadlines.
+* **Intelligent JSON Merging & Deduplication:** When shards return document arrays, the coordinator merges them, deduplicates documents by global ID (`gid`), recalculates result counts, and applies sort key ordering.
+* **Min-Heap K-Way Merge:** Implements an $O(N \log K)$ min-heap merge algorithm in `coordinator/src/merge.go` for streaming sorted items across shards.
+* **Auto-Boot Integration:** `cleavedb_server.py` automatically detects and launches `coordinator.exe` in the background on port `8305`, configuring it with all active local and peer shard addresses.
+
+#### CLI Usage
+In the `cleaveshell` interactive terminal, execute cluster queries natively:
+
+```sql
+-- Check cluster coordinator health and active shard topology
+CLUSTER STATUS
+
+-- Scatter a query across all cluster shards and merge results
+CLUSTER SCOOP FROM users WHERE age > 21
+
+-- Or using the SCATTER keyword
+SCATTER POUR INTO products "item_42" {"name": "Widget", "price": 99.95}
+```
+
+#### Running Standalone
+```bash
+# Launch coordinator manually with custom shards and timeout
+coordinator.exe -port=8305 -shards="127.0.0.1:8300,192.168.1.10:8300" -timeout=5
+```
+
+---
+
 ### Feature 22. Hardware-Accelerated SIMD Aggregation Pushdowns
 CleaveDB repurposes its internal C++ AVX-512 vector math engine (used for Vector Embeddings) to accelerate aggregation queries to literal hardware limits. CleaveQL dynamically pivots document properties into contiguous columnar float arrays and pushes them down to the SIMD layer.
 ```sql

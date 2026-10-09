@@ -821,7 +821,7 @@ Example:
 
 HELP_TEXT = """
 ================================================================================
-  CleaveDB 3.9.0 Manual (CleaveQL) - Complete Reference
+  CleaveDB 4.0.0 Manual (CleaveQL) - Complete Reference
 ================================================================================
 
 1. WRITE & UPDATE (Mutations)
@@ -1134,6 +1134,7 @@ def main():
     parser = argparse.ArgumentParser(description="CleaveDB Interactive Shell")
     parser.add_argument("-H", "--host", default="127.0.0.1", help="Server host IP")
     parser.add_argument("-p", "--port", type=int, default=8300, help="Server port number")
+    parser.add_argument("--coord-port", type=int, default=8305, help="Go Coordinator port number")
     args = parser.parse_args()
 
     while True:
@@ -1304,6 +1305,39 @@ def main():
                 console.print(HELP_TEXT)
                 continue
                 
+            if cmd.lower().startswith('cluster ') or cmd.lower().startswith('scatter '):
+                coord_port = getattr(args, 'coord_port', 8305)
+                sub_cmd = cmd.split(' ', 1)[1].strip()
+                try:
+                    cs = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    cs.settimeout(6.0)
+                    cs.connect((args.host, coord_port))
+                    if sub_cmd.lower() in ['status', 'ping', 'shards']:
+                        cs.send(b'{"action": "ping"}\n')
+                    else:
+                        req_payload = {
+                            "action": "scatter_gather",
+                            "query": sub_cmd,
+                            "auth": {"username": auth_data.get("username", "guest"), "password": ""},
+                        }
+                        cs.send((json.dumps(req_payload) + '\n').encode('utf-8'))
+                    c_resp = cs.recv(1024 * 1024).decode('utf-8').strip()
+                    cs.close()
+                    if c_resp:
+                        try:
+                            c_json = json.loads(c_resp)
+                            console.print(f"[bold cyan][Go Coordinator :: Port {coord_port}][/]")
+                            console.print(Syntax(json.dumps(c_json, indent=2), "json", theme="monokai"))
+                        except:
+                            console.print(f"[bold cyan][Go Coordinator][/] {c_resp}")
+                    else:
+                        console.print("[yellow]Empty response from Go Coordinator.[/]")
+                    console.print("")
+                    continue
+                except Exception as ce:
+                    console.print(f"[red]Failed to reach Go Coordinator on port {coord_port}: {ce}[/]\n")
+                    continue
+
             s.send((cmd.replace('\n', ' ') + '\n').encode('utf-8'))
             
             response_str = s.recv(1024 * 1024).decode('utf-8').strip()

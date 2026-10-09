@@ -22,7 +22,4 @@ fn main() {
         .flag_if_supported("-O3")
         .flag_if_supported("-std=c++17")
         .compile("cleavedb_simd");
-
-    println!("cargo:rustc-link-search=native=../coordinator");
-    println!("cargo:rustc-link-lib=coordinator");
 }

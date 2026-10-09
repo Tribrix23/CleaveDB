@@ -20,8 +20,16 @@ HOST = '127.0.0.1'
 PORT = 8300
 DB_DIR = 'cleavedb_server_data'
 
+import platform
+if platform.system() == "Windows":
+    _base_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'CleaveDB')
+else:
+    _base_dir = os.path.join(os.path.expanduser('~'), '.cleavedb')
+
+os.makedirs(_base_dir, exist_ok=True)
+
 # Ensure encryption key exists for Q&A
-KEY_FILE = "cleavedb.key"
+KEY_FILE = os.path.join(_base_dir, "cleavedb.key")
 if not os.path.exists(KEY_FILE):
     with open(KEY_FILE, "wb") as f:
         f.write(Fernet.generate_key())
@@ -33,7 +41,11 @@ GLOBAL_DB = None
 
 class DistributedEngine(SyncObj):
     def __init__(self, selfNodeAddr, otherNodeAddrs, db_dir):
-        conf = SyncObjConf(dynamicMembershipChange=True)
+        conf = SyncObjConf(
+            dynamicMembershipChange=True,
+            journalFile=os.path.join(_base_dir, 'journal.bin'),
+            fullDumpFile=os.path.join(_base_dir, 'dump.bin')
+        )
         super(DistributedEngine, self).__init__(selfNodeAddr, otherNodeAddrs, conf)
         global GLOBAL_DB
         if GLOBAL_DB is None:
@@ -659,6 +671,7 @@ async def handle_client(reader, writer):
     authenticated = False
     username = None
     auth_level = None
+    first_query_line = None
     
     # 1. Shell Auth Loop
     while not authenticated:
@@ -776,6 +789,13 @@ async def handle_client(reader, writer):
                 writer.write(b'{"status": "error", "message": "Invalid answer or recovery failed"}\n')
                 await writer.drain()
                 
+            elif action == "query" or (isinstance(req, dict) and "query" in req):
+                authenticated = True
+                username = req.get("username", "admin")
+                auth_level = req.get("auth_level", "dev")
+                first_query_line = auth_line
+                break
+                
             else:
                 writer.write(b'{"status": "error", "message": "Unknown action"}\n')
                 await writer.drain()
@@ -803,9 +823,13 @@ async def handle_client(reader, writer):
     })
 
     while True:
-        data = await reader.readline()
-        if not data:
-            break
+        if first_query_line is not None:
+            data = first_query_line
+            first_query_line = None
+        else:
+            data = await reader.readline()
+            if not data:
+                break
         
         query = data.decode().strip()
         if not query:
@@ -1024,7 +1048,7 @@ async def main():
     parser.add_argument('--port', type=int, default=8301)
     parser.add_argument('--raft-port', type=int, default=8311)
     parser.add_argument('--peers', type=str, default="")
-    parser.add_argument('--data', type=str, default="cleavedb_server_data")
+    parser.add_argument('--data', type=str, default=os.path.join(_base_dir, "cleavedb_server_data"))
     args = parser.parse_args()
     
     peers = [p.strip() for p in args.peers.split(',')] if args.peers else []
@@ -1056,6 +1080,20 @@ async def main():
         subprocess.Popen([rust_gateway_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         print(f"   WARNING: Rust Edge Gateway not found. (Did you compile it?)")
+        
+    # Automatically boot the Go Coordinator!
+    coord_paths = ["coordinator.exe", os.path.join("coordinator", "coordinator.exe")]
+    go_coord_path = next((p for p in coord_paths if os.path.exists(p)), None)
+    if go_coord_path:
+        coord_port = args.port + 4
+        shards_arg = f"127.0.0.1:{args.port - 1}"
+        if args.peers:
+            all_shards = [shards_arg] + [p.strip() for p in args.peers.split(',') if p.strip()]
+            shards_arg = ",".join(all_shards)
+        print(f"   CleaveDB Go Coordinator starting natively on {coord_port}")
+        subprocess.Popen([go_coord_path, f"-port={coord_port}", f"-shards={shards_arg}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        print(f"   NOTICE: Go Coordinator not found.")
         
     print(f"   CleaveDB WS  Server on {args.port + 1}")
     print(f"   CleaveDB Raft Node  on {args.raft_port}")

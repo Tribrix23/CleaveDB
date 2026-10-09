@@ -21,7 +21,7 @@ def check_tool(name):
 
 def main():
     print("=" * 60)
-    print("CleaveDB 3.9.0 — Master Build Script")
+    print("CleaveDB 4.0.0 — Master Build Script")
     print(f"Platform: {platform.system()} {platform.machine()}")
     print("=" * 60)
     is_windows = platform.system() == 'Windows'
@@ -32,9 +32,15 @@ def main():
 
     print("\n[2/4] Go Coordinator")
     if check_tool('go'):
-        ext = '.dll' if is_windows else '.so'
-        run(f'go build -buildmode=c-shared -o libcoordinator{ext} src/main.go src/merge.go',
-            cwd=os.path.join(root, 'coordinator'), required=False)
+        ext = '.exe' if is_windows else ''
+        cmd_env = 'set CGO_ENABLED=0 && ' if is_windows else 'CGO_ENABLED=0 '
+        run(f'{cmd_env}go build -o ../coordinator{ext} main.go merge.go',
+            cwd=os.path.join(root, 'coordinator', 'src'), required=True)
+        src_bin = os.path.join(root, 'coordinator', f'coordinator{ext}')
+        dst_bin = os.path.join(root, f'coordinator{ext}')
+        if os.path.exists(src_bin):
+            shutil.copy2(src_bin, dst_bin)
+        print(f"  Built coordinator{ext} successfully.")
     else:
         print("  SKIPPED: Go not found on PATH (coordinator features disabled)")
 
@@ -52,7 +58,7 @@ def main():
         print("  Install maturin for Python bindings: pip install maturin")
 
     print("\n" + "=" * 60)
-    print("Build complete! CleaveDB 3.9.0 is ready.")
+    print("Build complete! CleaveDB 4.0.0 is ready.")
     print("Run: python -m cleaveql.repl")
     print("=" * 60)
 

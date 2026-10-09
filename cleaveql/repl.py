@@ -6,7 +6,7 @@ from .interpreter import Interpreter
 from .formatter import Formatter
 
 def start_repl(engine=None):
-    print("CleaveDB 3.9.0 REPL")
+    print("CleaveDB 4.0.0 REPL")
     print("Type 'exit' or 'quit' to leave. Type 'help' for commands.\n")
     
     analyzer = SemanticAnalyzer()
@@ -62,7 +62,7 @@ def start_repl(engine=None):
 
 def print_help():
     help_text = """================================================================================
-  CleaveDB 3.9.0 Manual (CleaveQL) - Complete Reference
+  CleaveDB 4.0.0 Manual (CleaveQL) - Complete Reference
 ================================================================================
 
  MUTATIONS: POUR INTO, POUR MANY, CHANGE, DRAIN, SALVAGE, INCINERATE

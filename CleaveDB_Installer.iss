@@ -1,10 +1,10 @@
 [Setup]
 AppName=CleaveDB
-AppVersion=3.9.0
+AppVersion=4.0.0
 DefaultDirName={autopf}\CleaveDB
 DefaultGroupName=CleaveDB
 OutputDir=dist
-OutputBaseFilename=CleaveDB-v3.9.0-Setup
+OutputBaseFilename=CleaveDB-v4.0.0-Setup
 SetupIconFile=cleavedb.ico
 Compression=lzma
 SolidCompression=yes
@@ -13,8 +13,9 @@ ChangesEnvironment=yes
 PrivilegesRequired=admin
 
 [Files]
-Source: "dist\cleaveshell.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\cleaveshell\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "edge_gateway.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "coordinator.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -26,6 +27,11 @@ Name: "{group}\Uninstall CleaveDB"; Filename: "{uninstallexe}"
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
     ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; \
     Check: NeedsAddPath(ExpandConstant('{app}'))
+
+[UninstallRun]
+Filename: "{cmd}"; Parameters: "/c taskkill /f /im cleaveshell.exe /t"; RunOnceId: "KillCleaveShell"; Flags: runhidden
+Filename: "{cmd}"; Parameters: "/c taskkill /f /im edge_gateway.exe /t"; RunOnceId: "KillEdgeGateway"; Flags: runhidden
+Filename: "{cmd}"; Parameters: "/c taskkill /f /im coordinator.exe /t"; RunOnceId: "KillCoordinator"; Flags: runhidden
 
 [Code]
 function NeedsAddPath(Param: string): boolean;

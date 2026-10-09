@@ -25,7 +25,6 @@ pub mod bloom;
 pub mod simd_ffi;
 pub mod engine;
 pub mod python;
-pub mod coordinator_ffi;
 
 // Re-export key types
 pub use error::{StorageError, StorageResult};
