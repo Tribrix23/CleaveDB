@@ -17,7 +17,39 @@ Once a patch is developed and verified, we will issue a security advisory and cr
 
 ---
 
-## Latest Patch: CleaveDB 3.9.0
+## Latest Patch: CleaveDB 4.0.1
+
+### [Security Audit & Patch] Non-Existent Bucket Boundary Enforcement & Introspection Hardening
+**Release Date**: October 10, 2026
+**Impact**: Medium to High
+**Components Affected**: `cleaveql/interpreter.py`, `cleaveql/parser.py`, `ScoopStmt`, `CountStmt`, `DescribeStmt`, `DistillStmt`, `PipeStmt`, `ForecastStmt`, `ChangeStmt`, `DrainStmt`, `ShowStmt`.
+
+This audit covers query validation robustness, tenant namespace boundary integrity, and schema introspection improvements released in CleaveDB v4.0.1.
+
+#### 1. Silent Execution & Information Misdirection on Non-Existent Buckets (CDB-SEC-2026-019)
+**Vulnerability Engine Assessment**: Prior to this patch, when executing statements targeting non-existent or uninitialized buckets (including `SCOOP`, `COUNT`, `DESCRIBE`, `DISTILL`, `PIPE`, `FORECAST`, `CHANGE`, and `DRAIN`), the underlying Rust storage scan returned an empty JSON array string (`"[]"`). Because the string was truthy in the Python interpreter, boundary checks were bypassed and queries returned false-positive success payloads (such as `{"status": "ok", "count": 0}` or empty datasets) rather than rejecting invalid bucket targets.
+**Exploit Scenario / Attack Vector**: In multi-tenant environments, this silent handling masked unallocated or deleted schema objects. Malicious actors or flawed tenant scripts could query arbitrary nonexistent or out-of-scope bucket references without triggering syntax or authorization rejection, creating ambiguous audit trails, masking improper tenant separation, and leading client-side logic to falsely conclude that records were validly empty rather than non-existent.
+**Patch Implementation**:
+* Implemented a centralized `_bucket_exists(bucket)` validation mechanism in `Interpreter` within `cleaveql/interpreter.py`.
+* Pre-validates bucket targets against engine-registered buckets, tenant-isolated namespaces (`{tenant}.{bucket}`), bucket-level policies, and projections prior to scanning.
+* Operations against non-existent buckets across `ScoopStmt`, `CountStmt`, `DescribeStmt`, `DistillStmt`, `PipeStmt`, `ForecastStmt`, `ChangeStmt`, and `DrainStmt` now strictly abort with a standardized error message: `Bucket '<bucket>' does not exist. Use 'SHOW BUCKETS' to see available buckets.`
+
+#### 2. Parser Grammar Inconsistency on Introspection Commands (CDB-SEC-2026-020)
+**Vulnerability Engine Assessment**: The CleaveQL parser strictly mandated plural grammar (`SHOW BUCKETS`) and threw an uncaught syntax exception when supplied with singular syntax (`SHOW BUCKET`), while other introspection statements tolerated standard terminology.
+**Exploit Scenario / Attack Vector**: Unhandled syntax crashes in client shell integrations disrupted user sessions and triggered malformed request bursts or unhandled exception reporting.
+**Patch Implementation**:
+* Updated `cleaveql/parser.py` (`show_stmt`) to register `TokenType.BUCKET` as a valid native alias for `buckets`, ensuring parser tolerance and clean AST generation for both singular and plural forms.
+
+#### 3. Graceful Error Reporting for Empty Introspection Results
+**Vulnerability Engine Assessment / Improvement**: Metadata and diagnostic queries (`SHOW BUCKETS`, `SHOW BONDS`, `SHOW INDEXES`, `SHOW WEBHOOKS`) previously returned bare empty JSON arrays (`[]`) when no entities existed, causing confusion between engine failure, network truncation, and empty state.
+**Patch Implementation**:
+* Hardened `cleaveql/interpreter.py` to return descriptive error responses when an entity query finds zero items (e.g., `"No buckets found. Use a SCOOP INTO query to create one."` or `"No bonds found."`), standardizing responses across the CleaveQL diagnostic suite.
+
+---
+
+<details>
+<summary><b>October 3, 2026 - Patch Build v3.9.0</b></summary>
+<br>
 
 ### [Security Audit & Patch] Event-Pipeline Integrity, Webhook SSRF & Analytics Resource Limits
 **Release Date**: October 3, 2026
@@ -57,7 +89,7 @@ This audit covered the feature set added in this cycle (`GUARD`, `AUDITED`, `ENR
 * `FORECAST` and `PIPE` read their source documents through the same row-level-security scan path as `SCOOP`, so `ENFORCE SECURITY` policies and tenant isolation apply to their inputs.
 * `SHAPE REPLICA` copies only the fields named in `SHOW`, so hidden fields (for example cost or margin) never reach the replica bucket.
 
----
+</details>
 
 <details>
 <summary><b>October 3, 2026 - Patch Build v3.6.0</b></summary>
@@ -102,7 +134,7 @@ This audit covered the feature set added in this cycle (`GUARD`, `AUDITED`, `ENR
 
 #### 2. Document Security Level (DSL) Evaluator Expansion (CDB-SEC-2026-012)
 **Vulnerability Engine Assessment**: The CleaveQL `ENFORCE SECURITY` evaluator inside the `PolicyEngine` utilized an outdated, restrictive regex that only allowed string equality evaluations. If a numeric constraint was supplied (e.g., `IF age > 18`), the parser silently failed to evaluate it, defaulting the boolean result to `False`. 
-**Exploit Scenario / Attack Vector**: An attacker with partial RBAC permissions could intentionally update a bucket's security policy to rely on a numeric evaluation (e.g., `allow read if request.clearance_level > 3`). Because the parser failed to cast the mathematical boundary, it evaluated to `False` for ALL incoming requests—including requests from the global System Administrators. The attacker essentially weaponized the security engine against itself, creating an irreversible lockout condition and taking the database hostage.
+**Exploit Scenario / Attack Vector**: An attacker with partial RBAC permissions could intentionally update a bucket's security policy to rely on a numeric evaluation (e.g., `allow read if request.clearance_level > 3`). Because the parser failed to cast the mathematical boundary, it evaluated to `False` for ALL incoming requestsâ€”including requests from the global System Administrators. The attacker essentially weaponized the security engine against itself, creating an irreversible lockout condition and taking the database hostage.
 **Patch Implementation**: 
 * Injected a comprehensive recursive mathematical and boolean evaluator into `cleaveql/security.py`.
 * The Policy Engine now safely extracts variables, auto-casts numeric values to `float`, and natively supports standard operational bounds (`>`, `<`, `>=`, `<=`, `==`, `!=`). Numeric lockouts are fully mitigated.
