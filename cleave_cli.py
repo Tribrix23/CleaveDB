@@ -268,16 +268,46 @@ Example:
 
 "link": """
 ================================================================================
-  LINK / BOND — Create 15-Dimensional Graph Relationships
+  LINK — Create Direct Document & Resource Links
 ================================================================================
 
-  LINK creates a directional relationship (bond) between two documents.
+  LINK creates a direct structural connection between documents or external URLs.
+  Links are stored in the hidden _links bucket and can be inspected with SHOW LINKS.
+  Unlike BOND, LINK does not require a relationship label and does not support
+  dynamic bond modifiers (affinity, confidence, conditions, or TTL).
+
+  SYNTAX:
+    LINK "<source>" TO "<target>"
+    LINK "<source>" TO "<target>" AS "<label>"
+    LINK "<source>" TO ANY("<t1>", "<t2>")
+    LINK "<source>" AND "<target>" AS MUTUAL
+    LINK "<source>" TO "<url>"
+
+  EXAMPLES:
+    LINK "users:alice" TO "users:bob"
+    LINK "users:alice" TO "https://github.com/alice"
+    LINK "orders:101" TO "users:alice" AS "placed_by"
+    LINK "users:alice" TO ANY("team:a", "team:b")
+
+  INSPECTION & REMOVAL:
+    SHOW LINKS
+    FIND LINKS OF "users:alice"
+    UNLINK "users:alice" FROM "users:bob"
+""",
+
+"bond": """
+================================================================================
+  BOND — Create Semantic Graph Relationships
+================================================================================
+
+  BOND creates a rich, weighted, conditional relationship between two documents.
+  Requires an explicit relationship label (e.g. AS "friend").
   Bonds are stored in the hidden _bonds bucket and can be traversed with FIND.
 
   SYNTAX:
-    LINK "<source>" TO "<target>" AS "<label>"
-    LINK "<source>" TO "<target>" AS MUTUAL "<label>"
-    LINK "<source>" TO ANY("<t1>", "<t2>") AS "<label>"
+    BOND "<source>" TO "<target>" AS "<label>"
+    BOND "<source>" TO "<target>" AS MUTUAL "<label>"
+    BOND "<source>" TO ANY("<t1>", "<t2>") AS "<label>"
 
   MODIFIERS (combinable):
     MUTUAL                  Creates bonds in BOTH directions automatically.
@@ -294,30 +324,26 @@ Example:
     TO ANY("<id1>", "<id2>") Creates bonds to multiple targets at once.
 
   EXAMPLES:
-    LINK "users:alice" TO "users:bob" AS "friend"
-    LINK "users:alice" TO "users:bob" AS MUTUAL "friend"
-    LINK "users:alice" TO "session:s1" AS "active" EXPIRING IN 1 HOUR
-    LINK "order:55" TO "users:alice" ON DELETE CASCADE
-    LINK "doc:1" TO "topic:ai" AS "tagged" WITH CONFIDENCE 0.94
-    LINK "users:bob" TO "product:shoes" AS "interested" WITH AFFINITY 0.87
-    LINK "users:alice" TO "project:x" AS "member" EXCLUSIVELY
-    LINK "users:alice" TO "file:secret.pdf" AS "can_read" IF target clearance IS "public"
-    LINK "users:alice" TO ANY("team:a", "team:b") AS "belongs_to"
+    BOND "users:alice" TO "users:bob" AS "friend"
+    BOND "users:alice" TO "users:bob" AS MUTUAL "colleague"
+    BOND "users:alice" TO "users:bob" AS "friend" WITH AFFINITY 0.95
+    BOND "users:alice" TO "file:secret.pdf" AS "can_read" IF target clearance IS "public"
+    BOND "users:alice" TO "session:s1" AS "active" EXPIRING IN 1 HOUR
+    BOND "order:55" TO "users:alice" AS "belongs_to" ON DELETE CASCADE
 
-  TRAVERSAL (after creating bonds):
+  TRAVERSAL & REMOVAL:
+    SHOW BONDS
     FIND "friend" OF "users:alice"
     FIND THE friend OF THE friend OF users "alice"
-    FIND RELATED "friend" FROM "users:alice"
+    SEVER "users:alice" FROM "users:bob" AS "friend"
 """,
-
-"bond": """  BOND is an alias for LINK. Type 'help link' for the full reference.""",
 
 "sever": """
 ================================================================================
-  SEVER / UNLINK — Destroy Graph Bonds
+  SEVER — Destroy Graph Bonds
 ================================================================================
 
-  SEVER removes bonds between two documents.
+  SEVER removes semantic graph bonds between two documents.
 
   SYNTAX:
     SEVER "<source>" FROM "<target>" AS "<label>"   Remove specific bond.
@@ -328,7 +354,21 @@ Example:
     SEVER "users:alice" FROM "project:x"
 """,
 
-"unlink": """  UNLINK is an alias for SEVER. Type 'help sever' for the full reference.""",
+"unlink": """
+================================================================================
+  UNLINK — Destroy Document Links
+================================================================================
+
+  UNLINK removes direct structural links between documents or URLs.
+
+  SYNTAX:
+    UNLINK "<source>" FROM "<target>"               Remove link.
+    UNLINK "<source>" FROM "<target>" AS "<label>"  Remove specific labelled link.
+
+  EXAMPLES:
+    UNLINK "users:alice" FROM "users:bob"
+    UNLINK "users:alice" FROM "https://github.com/alice"
+""",
 
 
 "transaction": """
@@ -871,12 +911,13 @@ HELP_TEXT = """
   ... AS OF "<timestamp>" | yesterday           Time-travel historical query.
   ... CANDIDATE                                 Include dormant conditional bonds.
 
-3. GRAPH RELATIONS & TRAVERSAL (15D Bonds)
-  LINK "<src>" TO "<tgt>" AS "<label>"          Create a directional bond.
-  (Aliases: BOND)
+3. GRAPH BONDS & DOCUMENT LINKS
+  [Graph Bonds (Semantic Relationships)]
+  BOND "<src>" TO "<tgt>" AS "<label>"          Create a semantic bond (label required).
+  BOND "<src>" TO "<tgt>" AS MUTUAL "<label>"   Bidirectional bond.
+  BOND "<src>" TO ANY("<t1>", "<t2>") AS "<l>"  Multiple targets.
 
   [Bond Modifiers - combinable]
-  ... AS MUTUAL "<label>"                       Bidirectional (both directions).
   ... EXCLUSIVELY                               Expires prior bonds (same src+label).
   ... ON DELETE CASCADE                         Auto-delete target when src drained.
   ... WITH CONFIDENCE <float>                   Edge confidence weight (0.0-1.0).
@@ -885,24 +926,22 @@ HELP_TEXT = """
   ... IF <subject> <field> IS <value>           Conditional (dormant until true).
       Subjects: source, target, their, its, my
   ... THROUGH "<node>"                          Route through intermediate node.
-  ... TO ANY("<id1>", "<id2>")                  Multi-target bond creation.
 
-  [Bond Queries]
-  FIND "<label>" OF "<source_id>"               Direct 1-hop lookup.
-  FIND THE <rel1> OF THE <rel2> OF <bucket> "<id>"
-                                                Deep multi-hop chain traversal.
-  TRACE "<rel1>", "<rel2>" FROM "<source_id>"   Alternative chain syntax.
-  FIND RELATED "<label>" FROM "<source_id>"     Bond metadata query.
+  [Bond Traversal & Removal]
+  FIND "<label>" OF "<source_id>"               Direct 1-hop bond lookup.
+  FIND THE <rel1> OF THE <rel2> OF <bkt> "<id>" Deep multi-hop chain traversal.
   FIND CANDIDATE "<label>" OF "<id>"            Include inactive conditional bonds.
-  FIND "<label>" OF "<id>" AS OF yesterday      Time-travel bond query.
+  SHOW BONDS                                    List all stored graph bonds.
+  SEVER "<src>" FROM "<tgt>" [AS "<label>"]     Destroy graph bond.
 
-  [Bond Removal]
-  SEVER "<src>" FROM "<tgt>" AS "<label>"       Destroy specific bond.
-  SEVER "<src>" FROM "<tgt>"                    Destroy all bonds between pair.
-  (Aliases: UNLINK)
-
-  [Legacy Graph API]
-  FOLLOW "<id>" THROUGH "<bond>" DIRECTION OUT|IN|BOTH DEPTH <n> LIMIT <n>
+  [Document & Resource Links]
+  LINK "<src>" TO "<tgt>"                       Create direct structural link.
+  LINK "<src>" TO "<tgt>" AS "<label>"          Optional link label.
+  LINK "<src>" TO "<url>"                       Link document to external URL.
+  LINK "<src>" AND "<tgt>" AS MUTUAL            Bidirectional link.
+  SHOW LINKS                                    List all document & resource links.
+  FIND LINKS OF "<source_id>"                   Retrieve linked documents/URLs.
+  UNLINK "<src>" FROM "<tgt>" [AS "<label>"]    Destroy document link.
 
 4. DATA-LEVEL SECURITY (GBAC / RBAC / Masking)
   ENFORCE SECURITY "<name>" ON "<bucket>" TO ALLOW read|write IF <condition>

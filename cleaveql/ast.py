@@ -145,8 +145,26 @@ class ShapeProjectionStmt(ASTNode):
 class BondStmt(ASTNode):
     source_gid: str = ""
     target_gid: str = ""
+    target_gids: List[str] = field(default_factory=list)
     mutual: bool = False
     label: str = ""
+    exclusive: bool = False
+    cascade: bool = False
+    affinity: Optional[float] = None
+    confidence: Optional[float] = None
+    through: Optional[str] = None
+    expires_at: Optional[int] = None
+    condition_subject: str = "target"
+    condition_field: Optional[str] = None
+    condition_value: Any = None
+
+@dataclass
+class LinkStmt(ASTNode):
+    source_gid: str = ""
+    target_gid: str = ""
+    target_gids: List[str] = field(default_factory=list)
+    label: str = "linked"
+    mutual: bool = False
 
 @dataclass
 class IndexStmt(ASTNode):
@@ -252,6 +270,12 @@ class MatchStmt(ASTNode):
 
 @dataclass
 class SeverStmt(ASTNode):
+    source_gid: str = ""
+    target_gid: str = ""
+    label: str = ""
+
+@dataclass
+class UnlinkStmt(ASTNode):
     source_gid: str = ""
     target_gid: str = ""
     label: str = ""

@@ -95,6 +95,7 @@ class TokenType(Enum):
     BUCKET = auto()     # SHAPE BUCKET
     ATTENTION = auto()  # PEER INTO ATTENTION
     BONDS = auto()      # SHOW BONDS
+    LINKS = auto()      # SHOW LINKS
     BUCKETS = auto()    # SHOW BUCKETS
     INDEXES = auto()    # SHOW INDEXES
     STATS = auto()      # SHOW STATS
@@ -399,6 +400,7 @@ KEYWORDS = {
     'bucket': TokenType.BUCKET,
     'attention': TokenType.ATTENTION,
     'bonds': TokenType.BONDS,
+    'links': TokenType.LINKS,
     'buckets': TokenType.BUCKETS,
     'indexes': TokenType.INDEXES,
     'stats': TokenType.STATS,

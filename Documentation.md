@@ -10,8 +10,11 @@ Thirty-two CleaveQL commands, every variant, all bond types, combinations, and c
 | - | `FIND`     | Search vectors / graphs (Semantic Search, Patterns, Bonds) | `SCOOP` (Alias) |
 | 3 | `CHANGE`   | Update fields of a document | `UPDATE` |
 | 4 | `DRAIN`    | Soft-delete (moves to `_rubbish`) | — |
-| 5 | `LINK`     | Create a bond (graph edge) between documents | `BOND` |
-| 6 | `SHOW`     | List buckets, bonds, indexes, stats, webhooks | — |
+| 5 | `BOND`     | Create a semantic graph relationship (edge) between documents (requires `AS "<label>"`) | — |
+| - | `LINK`     | Create a direct structural document or external URL reference | — |
+| - | `SEVER`    | Sever / remove semantic graph bonds between documents | — |
+| - | `UNLINK`   | Remove document or external URL links | — |
+| 6 | `SHOW`     | List buckets, bonds, links, indexes, stats, webhooks | — |
 | 7 | `DESCRIBE` | Summarise a bucket | — |
 | 8 | `SHAPE`    | Configure a bucket (audit, versioning, limits) or register a webhook | — |
 | 9 | `GUARD`    | Validation rules enforced on writes | — |
@@ -167,42 +170,127 @@ Drained documents go to `_rubbish` and their bonds are cascaded. Companions:
 
 ---
 
-## 5. LINK — create bonds
+## 5. BOND & LINK — Relationships and References
+
+CleaveDB provides two distinct relationship mechanisms with different architectures, semantics, and capabilities:
+- **`BOND`**: Rich semantic graph relationships (edges) stored in `_bonds`. A bond **requires an explicit relationship label** via `AS "<label>"` (e.g. `AS "friend"`). Bonds represent graph meaning and support dynamic weights (`WITH CONFIDENCE`, `WITH AFFINITY`), conditions (`IF`, `ONLY WHEN`), TTL (`EXPIRING IN`), `MUTUAL`, and `EXCLUSIVELY`. Removed with `SEVER`.
+- **`LINK`**: Direct structural document or external URL references stored in `_links`. Does not require a relationship label (defaults to `"linked"`) and cannot take graph modifiers like weights or conditions. Removed with `UNLINK`.
+- **Clean Terminology**: The legacy term "15-Dimensional Bond" has been completely removed in favor of clean **"Graph Bond"** terminology.
+- **Strict Existence Validation**: Both source and target buckets and documents must exist prior to creating bonds or links (external URLs are validated as URLs and exempt from local bucket checks). Creating ghost edges on non-existent buckets or documents is strictly rejected.
+
+### Summary Comparison: BOND vs LINK
+
+| Feature | `BOND` (Graph Relationship) | `LINK` (Document / URL Reference) |
+|---|---|---|
+| **Primary Purpose** | Semantic graph relationships with meaning (edges) | Direct document / external URL references |
+| **Relationship Label** | **Required** via `AS "<label>"` (e.g. `AS "friend"`) | **Optional** (defaults to `"linked"`) |
+| **Internal Storage** | Dedicated `_bonds` bucket | Dedicated `_links` bucket |
+| **External URL Targets** | No (internal document GIDs only) | **Yes** (supports `https://...`, `http://...`) |
+| **Confidence & Affinity** | **Yes** (`WITH CONFIDENCE`, `WITH AFFINITY`) | No (rejected by parser) |
+| **TTL Expiry** | **Yes** (`EXPIRING IN <n> SECONDS/MINUTES/HOURS`) | No |
+| **Conditional Activation**| **Yes** (`IF <field> = <val>`, `ONLY WHEN`) | No |
+| **Exclusivity** | **Yes** (`EXCLUSIVELY` replaces previous target) | No |
+| **Cascade on Delete** | **Yes** (`ON DELETE CASCADE`) | No |
+| **Graph Querying** | `FIND "<label>" OF <doc>`, `FOLLOW`, `TRACE`, `FIND PATTERN`, `MATCH`, `SHOW BONDS` | `FIND LINKS OF <doc>`, `SHOW LINKS` |
+| **Removal Command** | `SEVER <doc1> FROM <doc2> [AS "<label>"]` | `UNLINK <doc1> FROM <doc2>` |
+| **Maintenance / Healing**| `HEAL BONDS`, `HEAL ALL` | `HEAL LINKS`, `HEAL ALL` |
+
+---
+
+### 5a. BOND — Semantic Graph Relationships
+
+A bond represents a directed (or mutual) semantic relationship between two existing documents in the database.
 
 ```sql
-LINK "users:jane" TO "users:juan" AS "crush"
+BOND "users:jane" TO "users:juan" AS "crush"
 ```
 
-### 5a. Basic bond forms
+| Form | Syntax | Description |
+|------|--------|-------------|
+| Labelled bond (**Required**) | `BOND "users:jane" TO "users:juan" AS "friend"` | Creates a graph edge with the given label |
+| Several targets | `BOND "users:jane" TO "users:juan", "users:pedro" AS "knows"` | Bonds source to multiple target documents |
+| `ANY(...)` targets | `BOND "users:jane" TO ANY("users:juan", "users:pedro") AS "knows"` | Bonds source to each listed target |
+| Two-way (mutual) | `BOND "users:jane" AND "users:pedro" AS MUTUAL "bff"` | Creates bidirectional bonds between both documents |
 
-| Form | Syntax |
-|------|--------|
-| Labelled bond | `LINK "users:jane" TO "users:juan" AS "friend"` |
-| Default label (`linked`) | `LINK "users:jane" TO "users:juan"` |
-| Several targets | `LINK "users:jane" TO "users:juan", "users:pedro" AS "knows"` |
-| `ANY(...)` targets | `LINK "users:jane" TO ANY("users:juan", "users:pedro") AS "any_rel"` |
-| Two-way (mutual) | `LINK "users:jane" AND "users:pedro" AS MUTUAL "bff"` |
-| Alias | `BOND "users:juan" TO "users:pedro" AS "boss"` |
+> **Requirement:** `BOND` **always** requires `AS "<label>"`. If you omit `AS`, the command is rejected:
+> ```
+> cleave> BOND "user:alice" TO "user:david"
+> [{"status": "error", "message": "Error at '': BOND requires an explicit relationship label using AS \"<label>\" (e.g. BOND \"user:alice\" TO \"user:bob\" AS \"friend\"). Use LINK for unlabelled document links."}]
+> ```
 
-### 5b. Bond modifiers
+---
 
-Append after `AS "label"`. All can be combined on a single `LINK`.
+### 5b. LINK — Direct Document & URL References
+
+A link represents a structural pointer to another document or an external web resource.
+
+```sql
+LINK "users:jane" TO "users:juan"
+LINK "users:jane" TO "https://github.com/jane"
+```
+
+| Form | Syntax | Description |
+|------|--------|-------------|
+| Unlabelled document link | `LINK "users:jane" TO "users:juan"` | Links two documents (label defaults to `"linked"`) |
+| Labelled document link | `LINK "users:jane" TO "users:juan" AS "mentor"` | Custom label on a lightweight link |
+| External URL reference | `LINK "users:jane" TO "https://github.com/jane"` | Links an internal document to an external URL |
+| Two-way (mutual) link | `LINK "users:jane" AND "users:pedro" AS MUTUAL` | Creates bidirectional links |
+| Multiple targets | `LINK "users:jane" TO ANY("users:juan", "users:pedro")` | Links source to multiple targets |
+
+> **Note:** `LINK` targets may be web URLs (`http://` or `https://`). Bond modifiers such as `WITH`, `IF`, and `EXPIRING` are not supported on `LINK` and will produce a parse error directing you to `BOND`.
+
+---
+
+### 5c. Existence Validation — Preventing Ghost Relationships
+
+CleaveDB verifies that buckets and documents exist **before** any relationship is created:
+
+```text
+cleave> SHOW BUCKETS
+[{"status": "ok", "data": []}]
+
+cleave> BOND "user:alice" TO "user:david" AS "friend"
+[{"status": "error", "message": "Source bucket 'user' does not exist."}]
+
+cleave> LINK "user:alice" TO "user:david"
+[{"status": "error", "message": "Source bucket 'user' does not exist."}]
+```
+
+Once documents are written with `POUR`, bonds and links succeed:
+
+```text
+cleave> POUR INTO user "alice" {"name": "Alice"}
+cleave> POUR INTO user "david" {"name": "David"}
+cleave> BOND "user:alice" TO "user:david" AS "friend"
+[{"status": "ok", "message": "1 Graph Bond 'friend' created."}]
+
+cleave> LINK "user:alice" TO "user:david"
+[{"status": "ok", "message": "1 Document Link created."}]
+```
+
+---
+
+### 5d. Bond Modifiers
+
+Modifiers may be appended after `AS "label"` on `BOND`. Multiple modifiers can be combined on a single statement:
 
 | Modifier | Syntax | Effect |
 |----------|--------|--------|
 | Confidence score | `WITH CONFIDENCE 0.9` | Stores a 0–1 strength score on the bond |
 | Affinity score | `WITH AFFINITY 0.8` | Stores a 0–1 closeness score on the bond |
-| Both scores | `WITH CONFIDENCE 0.9 WITH AFFINITY 0.7` | Both scores on one bond |
-| Expiry (seconds) | `EXPIRING IN 30 SECONDS` | Bond auto-expires after 30 s |
-| Expiry (minutes) | `EXPIRING IN 5 MINUTES` | Bond auto-expires after 5 min |
-| Expiry (hours) | `EXPIRING IN 2 HOURS` | Bond auto-expires after 2 h |
+| Both scores | `WITH CONFIDENCE 0.9 WITH AFFINITY 0.7` | Combines both scores on one bond |
+| Expiry (seconds) | `EXPIRING IN 30 SECONDS` | Bond automatically expires after 30 s |
+| Expiry (minutes) | `EXPIRING IN 5 MINUTES` | Bond automatically expires after 5 min |
+| Expiry (hours) | `EXPIRING IN 2 HOURS` | Bond automatically expires after 2 h |
 | Exclusive | `EXCLUSIVELY` | Replaces any previous bond with the same label from this source |
-| Cascade on delete | `ON DELETE CASCADE` | When source is `DRAIN`ed, target is also drained |
+| Cascade on delete | `ON DELETE CASCADE` | When the source is `DRAIN`ed, target document is also drained |
 | Through bucket | `THROUGH hubs` | Tags the bond with an intermediate bucket reference |
 
-### 5c. Conditional bonds
+---
 
-Bonds that only activate when a field condition on the target (or source) is met.
+### 5e. Conditional Bonds
+
+Bonds can be defined with activation conditions that are dynamically evaluated against document fields. If the condition is false, the bond remains dormant:
 
 | Condition | Syntax | Checked against |
 |-----------|--------|-----------------|
@@ -217,25 +305,27 @@ Bonds that only activate when a field condition on the target (or source) is met
 
 ```sql
 -- Create a conditional bond
-LINK "staff:a" TO "staff:d" AS "gate" IF status = "active"
+BOND "staff:a" TO "staff:d" AS "gate" IF status = "active"
 
--- d.status is "active" → bond is live
+-- staff:d status is "active" → bond is live
 FIND "gate" OF "staff:a"                -- 1 result
 
--- Change the field so the condition fails
+-- Change target field so condition fails
 CHANGE staff "d" SET status TO "inactive"
-FIND "gate" OF "staff:a"                -- 0 results (condition not met)
+FIND "gate" OF "staff:a"                -- 0 results (inactive)
 FIND CANDIDATE "gate" OF "staff:a"      -- shows the bond with status "candidate"
 
--- Fix the field → bond activates again
+-- Restore target field → bond activates again automatically
 CHANGE staff "d" SET status TO "active"
 FIND "gate" OF "staff:a"                -- 1 result again
 ```
 
-### 5d. Fully-loaded bond (all modifiers at once)
+---
+
+### 5f. Fully-Loaded Bond (All Modifiers at Once)
 
 ```sql
-LINK "staff:a" TO "staff:b" AS "full"
+BOND "staff:a" TO "staff:b" AS "full"
   IF status = "active"
   WITH CONFIDENCE 0.9
   EXPIRING IN 2 HOURS
@@ -243,51 +333,88 @@ LINK "staff:a" TO "staff:b" AS "full"
   EXCLUSIVELY
 ```
 
-### 5e. Special bond cases
+---
+
+### 5g. Special Bond Cases
 
 | Case | Syntax | Behaviour |
 |------|--------|-----------|
-| Self-referencing | `LINK "users:ann" TO "users:ann" AS "self"` | Document bonds to itself |
-| Ghost bond | `LINK "users:ann" TO "users:ghost" AS "ghost"` | Bonds to a non-existent doc (FIND returns 0 results) |
-| Duplicate bonds | `LINK "a:1" TO "a:2" AS "dup"` twice | Both stored; `FIND` deduplicates by target |
+| Self-referencing | `BOND "users:ann" TO "users:ann" AS "self"` | Document bonds to itself (document must exist) |
+| Missing document | `BOND "users:ann" TO "users:ghost" AS "ghost"` | Rejected with error: `Target document 'users:ghost' does not exist in bucket 'users'.` |
+| Missing bucket | `BOND "missing:1" TO "users:ann" AS "rel"` | Rejected with error: `Source bucket 'missing' does not exist.` |
+| Duplicate bonds | `BOND "a:1" TO "a:2" AS "dup"` twice | Both stored; `FIND` deduplicates by target |
 
-### 5f. Exclusive bonds — replacing previous targets
+---
+
+### 5h. Exclusive Bonds — Replacing Previous Targets
 
 ```sql
-LINK "staff:a" TO "staff:b" AS "primary" EXCLUSIVELY
-LINK "staff:a" TO "staff:c" AS "primary" EXCLUSIVELY   -- replaces the b→ bond
+BOND "staff:a" TO "staff:b" AS "primary" EXCLUSIVELY
+BOND "staff:a" TO "staff:c" AS "primary" EXCLUSIVELY   -- replaces the a→b bond
 FIND "primary" OF "staff:a"                             -- returns only staff:c
 ```
 
-### 5g. Expiring bonds
+---
+
+### 5i. Expiring Bonds (TTL)
 
 ```sql
-LINK "staff:a" TO "staff:b" AS "temp" EXPIRING IN 1 SECONDS
+BOND "staff:a" TO "staff:b" AS "temp" EXPIRING IN 1 SECONDS
 FIND "temp" OF "staff:a"      -- 1 result (immediately after)
 -- wait 2 seconds …
 FIND "temp" OF "staff:a"      -- 0 results (expired)
 ```
 
-### 5h. Cascade on delete
+---
+
+### 5j. Cascade on Delete
 
 ```sql
-LINK "staff:a" TO "staff:b" AS "cascade_demo" ON DELETE CASCADE
-DRAIN staff "a"                -- also drains staff:b
+BOND "staff:a" TO "staff:b" AS "cascade_demo" ON DELETE CASCADE
+DRAIN staff "a"                -- drains staff:a AND cascades to drain staff:b
 ```
 
-### Removing bonds — SEVER
+---
 
+### 5k. Removing Relationships — SEVER vs UNLINK
+
+Bonds and links have dedicated removal commands:
+
+#### SEVER — Remove Bonds
 ```sql
 SEVER "users:jane" FROM "users:juan" AS "friend"
 ```
 
-| Variant | Syntax |
-|---------|--------|
-| One label | `SEVER "users:jane" FROM "users:juan" AS "friend"` |
-| Alias | `UNLINK "users:jane" FROM "users:juan" AS "crush"` |
-| All labels between the pair | `SEVER "users:jane" FROM "users:pedro"` |
+| Variant | Syntax | Effect |
+|---------|--------|--------|
+| One label | `SEVER "users:jane" FROM "users:juan" AS "friend"` | Removes bonds with matching label between the pair |
+| All labels between pair | `SEVER "users:jane" FROM "users:juan"` | Removes all bonds between the two documents in either direction |
 
-`SEVER` matches the pair in **either direction**, so argument order doesn't matter. Without `AS`, it removes **every** bond between the two documents.
+#### UNLINK — Remove Links
+```sql
+UNLINK "users:jane" FROM "users:juan"
+UNLINK "users:jane" FROM "https://github.com/jane"
+```
+
+| Variant | Syntax | Effect |
+|---------|--------|--------|
+| Document link | `UNLINK "users:jane" FROM "users:juan"` | Removes links between the two documents |
+| Labelled link | `UNLINK "users:jane" FROM "users:juan" AS "mentor"` | Removes specific labelled link |
+| URL link | `UNLINK "users:jane" FROM "https://github.com/jane"` | Removes link to external URL |
+
+---
+
+### 5l. Node Disappearance and Healing
+
+When a document is deleted via `DRAIN`, CleaveDB automatically detaches any bonds or links connected to it.
+
+To repair existing databases or prune any orphaned relationships left from external operations:
+
+| Command | Effect |
+|---------|--------|
+| `HEAL BONDS` | Scans `_bonds` and removes any edge whose source or target document no longer exists |
+| `HEAL LINKS` | Scans `_links` and removes any link whose source or target document no longer exists |
+| `HEAL ALL` | Performs full healing across bonds, links, and indexes |
 
 ---
 
@@ -296,7 +423,8 @@ SEVER "users:jane" FROM "users:juan" AS "friend"
 | Syntax | Returns |
 |--------|---------|
 | `SHOW BUCKETS` | Your bucket names: `{"data": ["emp", "mix"]}` |
-| `SHOW BONDS` | Every bond: `{"count": 1, "data": [{…}]}` |
+| `SHOW BONDS` | Every semantic graph bond: `{"count": 1, "data": [{…}]}` |
+| `SHOW LINKS` | Every document / URL link: `{"count": 1, "data": [{…}]}` |
 | `SHOW INDEXES` | Every index: `{"count": 1, "data": [{…}]}` |
 | `SHOW STATS` | Totals: `{"buckets": 1, "documents": 3, "bonds": 1, "per_bucket": {"emp": 3}}` |
 | `SHOW WEBHOOKS` | Webhooks: `{"count": 1, "data": [{…}]}` |
@@ -397,8 +525,8 @@ TRACE "reports_to" FROM "staff:bob"
 
 ```sql
 -- Setup: bob →reports_to→ di →reports_to→ cy
-LINK "staff:bob" TO "staff:di" AS "reports_to"
-LINK "staff:di" TO "staff:cy" AS "reports_to"
+BOND "staff:bob" TO "staff:di" AS "reports_to"
+BOND "staff:di" TO "staff:cy" AS "reports_to"
 
 TRACE "reports_to" FROM "staff:bob"
 -- Returns the chain: bob → di → cy
@@ -567,24 +695,26 @@ The bucket name may be quoted: `DISTILL FROM "staff" COUNT`.
 
 ## 15. HEAL — repair integrity
 
-Clean up dangling bonds (pointing to deleted/non-existent documents) and other stale data.
+Clean up dangling bonds, broken document links (pointing to deleted/non-existent documents), and other stale data.
 
 ```sql
 HEAL BONDS
+HEAL LINKS
 ```
 
 | Variant | Syntax | Effect |
 |---------|--------|--------|
-| Bonds only | `HEAL BONDS` | Removes bonds whose source or target no longer exists |
-| Full repair | `HEAL ALL` | Heals bonds plus any other detectable inconsistencies |
+| Bonds only | `HEAL BONDS` | Removes bonds whose source or target document no longer exists |
+| Links only | `HEAL LINKS` | Removes links whose source or target document no longer exists |
+| Full repair | `HEAL ALL` | Heals bonds, links, and any other detectable inconsistencies |
 
-Use `HEAL` after bulk deletes or when ghost bonds accumulate.
+Use `HEAL` after bulk deletes or when ghost relationships accumulate.
 
 ---
 
 ## 16. SUGGEST BONDS — find bonds you haven't made yet
 
-Scans your documents and proposes bonds that are likely missing. It **only suggests** — nothing is created until you `LINK`.
+Scans your documents and proposes bonds that are likely missing. It **only suggests** — nothing is created until you `BOND`.
 
 ```sql
 SUGGEST BONDS
@@ -610,12 +740,12 @@ Example result:
 
 ```sql
 SUGGEST BONDS                                          -- 1. see what's missing
-LINK "logs:l1" TO "staff:a" AS "by"                    -- 2. accept a suggestion
+BOND "logs:l1" TO "staff:a" AS "by"                    -- 2. accept a suggestion
 SUGGEST BONDS                                          -- 3. it no longer appears
 FIND "by" OF "logs:l1"                                 -- 4. use the new bond
 ```
 
-All in one line: `SUGGEST BONDS LINK "logs:l1" TO "staff:b" AS "seen" SUGGEST BONDS`.
+All in one line: `SUGGEST BONDS BOND "logs:l1" TO "staff:b" AS "seen" SUGGEST BONDS`.
 
 ---
 
@@ -925,21 +1055,31 @@ FIND emp "e1"
 FIND emp WHERE dept = "Ops"
 ```
 
-### LINK — combining modifiers
+### BOND — combining modifiers
 
 ```sql
-LINK "emp:e1" TO "emp:e2" AS "mentor" WITH CONFIDENCE 0.9 EXPIRING IN 2 HOURS
+BOND "emp:e1" TO "emp:e2" AS "mentor" WITH CONFIDENCE 0.9 EXPIRING IN 2 HOURS
 FIND "mentor" OF "emp:e1"                      -- result carries "confidence": 0.9
-LINK "emp:e1" AND "emp:e2" AS MUTUAL "peer" WITH AFFINITY 0.7
+BOND "emp:e1" AND "emp:e2" AS MUTUAL "peer" WITH AFFINITY 0.7
 FIND "peer" OF "emp:e2"                        -- works from either side
-LINK "emp:e1" TO ANY("emp:e2") AS "rep" EXCLUSIVELY
-LINK "emp:e1" TO "emp:e2", "emp:e1" AS "many" WITH CONFIDENCE 0.5
+BOND "emp:e1" TO ANY("emp:e2") AS "rep" EXCLUSIVELY
+BOND "emp:e1" TO "emp:e2", "emp:e1" AS "many" WITH CONFIDENCE 0.5
 ```
 
-### LINK + CHANGE + FIND — conditional bonds follow the data
+### LINK + UNLINK — lightweight document & URL references
 
 ```sql
-LINK "emp:e1" TO "emp:e2" AS "gate" IF role = "admin" ON DELETE CASCADE
+LINK "emp:e1" TO "emp:e2"
+LINK "emp:e1" TO "https://company.org/directory/e1"
+SHOW LINKS                                     -- lists all document & URL links
+FIND LINKS OF "emp:e1"                         -- shows all links originating from e1
+UNLINK "emp:e1" FROM "https://company.org/directory/e1" -- removes link
+```
+
+### BOND + CHANGE + FIND — conditional bonds follow the data
+
+```sql
+BOND "emp:e1" TO "emp:e2" AS "gate" IF role = "admin" ON DELETE CASCADE
 FIND "gate" OF "emp:e1"                        -- e2.role is "admin": 1 result, status "active"
 CHANGE emp "e2" SET role TO "user"
 FIND "gate" OF "emp:e1"                        -- condition no longer true: 0 results
@@ -948,7 +1088,7 @@ CHANGE emp "e2" SET role TO "admin"
 FIND "gate" OF "emp:e1"                        -- active again
 ```
 
-### DRAIN + SALVAGE + LINK — bonds travel with their documents
+### DRAIN + SALVAGE + BOND — bonds travel with their documents
 
 ```sql
 DRAIN emp WHERE dept = "HR" AND age > 26       -- drained doc's bonds disappear from FIND
@@ -960,7 +1100,7 @@ FIND "mentor" OF "emp:e1"                      -- ... and so is the bond
 ### DRAIN + CASCADE — deleting propagates through bonds
 
 ```sql
-LINK "staff:a" TO "staff:b" AS "backup" ON DELETE CASCADE
+BOND "staff:a" TO "staff:b" AS "backup" ON DELETE CASCADE
 DRAIN staff "a"                                -- also drains staff:b (cascade)
 FIND "backup" OF "staff:a"                     -- 0 results, both gone
 ```
@@ -976,8 +1116,8 @@ SEVER "emp:e1" FROM "emp:e2"                   -- removes every remaining bond b
 
 ```sql
 -- Set up a chain: bob →reports_to→ di →reports_to→ cy
-LINK "staff:bob" TO "staff:di" AS "reports_to"
-LINK "staff:di" TO "staff:cy" AS "reports_to"
+BOND "staff:bob" TO "staff:di" AS "reports_to"
+BOND "staff:di" TO "staff:cy" AS "reports_to"
 
 -- Walk the chain
 TRACE "reports_to" FROM "staff:bob"            -- returns [bob, di, cy]
@@ -990,8 +1130,8 @@ FIND PATTERN staff AS a LINKED VIA "reports_to" TO staff AS b LINKED VIA "report
 ### TRACE + mixed labels — cross-label traversal
 
 ```sql
-LINK "staff:ana" TO "staff:bob" AS "manages"
-LINK "staff:bob" TO "staff:dee" AS "mentors"
+BOND "staff:ana" TO "staff:bob" AS "manages"
+BOND "staff:bob" TO "staff:dee" AS "mentors"
 
 TRACE "manages", "mentors" FROM "staff:ana"    -- ana →manages→ bob →mentors→ dee
 ```
@@ -1025,7 +1165,7 @@ DISTILL FROM staff GROUP BY dept TOTAL age AS total_age  -- aggregate the whole 
 ### FIND PATTERN cross-bucket — staff → places
 
 ```sql
-LINK "staff:ana" TO "places:mnl" AS "lives_in"
+BOND "staff:ana" TO "places:mnl" AS "lives_in"
 FIND PATTERN staff AS s LINKED VIA "lives_in" TO places AS p
 -- Returns: s=ana, p=Manila
 ```
@@ -1033,7 +1173,7 @@ FIND PATTERN staff AS s LINKED VIA "lives_in" TO places AS p
 ### FIND PATTERN undirected — mutual bonds
 
 ```sql
-LINK "staff:ana" AND "staff:eve" AS MUTUAL "peer"
+BOND "staff:ana" AND "staff:eve" AS MUTUAL "peer"
 FIND PATTERN staff AS x LINKED VIA "peer" WITH staff AS y
 -- Returns paths from both sides
 ```
@@ -1041,22 +1181,22 @@ FIND PATTERN staff AS x LINKED VIA "peer" WITH staff AS y
 ### FIND HOW — bond history (drift)
 
 ```sql
-LINK "staff:ana" TO "staff:bob" AS "manages"
-LINK "staff:ana" TO "staff:cam" AS "manages"
+BOND "staff:ana" TO "staff:bob" AS "manages"
+BOND "staff:ana" TO "staff:cam" AS "manages"
 
 FIND HOW THE "manages" OF "staff:ana" CHANGED BETWEEN "yesterday" AND "tomorrow"
--- Returns: [{action: "LINK", target: "staff:bob"}, {action: "LINK", target: "staff:cam"}]
+-- Returns: [{action: "BOND", target: "staff:bob"}, {action: "BOND", target: "staff:cam"}]
 
 SEVER "staff:ana" FROM "staff:cam" AS "manages"
 
 FIND HOW THE "manages" OF "staff:ana" CHANGED BETWEEN "2000-01-01" AND "2999-01-01"
--- Now includes: [{action: "LINK", …}, {action: "LINK", …}, {action: "SEVER", target: "staff:cam"}]
+-- Now includes: [{action: "BOND", …}, {action: "BOND", …}, {action: "SEVER", target: "staff:cam"}]
 ```
 
-### Multi-command one-liner — POUR + LINK + FIND
+### Multi-command one-liner — POUR + BOND + FIND
 
 ```sql
-POUR INTO staff "f" {"name":"Fay","role":"dev","dept":"Eng","age":22} LINK "staff:a" TO "staff:f" AS "manages" FIND "manages" OF "staff:a"
+POUR INTO staff "f" {"name":"Fay","role":"dev","dept":"Eng","age":22} BOND "staff:a" TO "staff:f" AS "manages" FIND "manages" OF "staff:a"
 ```
 
 ### SHOW + INDEX + GUARD + SHAPE together
@@ -1090,11 +1230,11 @@ DRAIN staff "a"
 DISTILL FROM staff COUNT                       -- drained documents are not counted
 ```
 
-### SUGGEST BONDS + LINK + FOLLOW — discover, accept, explore
+### SUGGEST BONDS + BOND + FOLLOW — discover, accept, explore
 
 ```sql
 SUGGEST BONDS                                  -- logs:l1 → staff:a (field 'user' matches id 'a')
-LINK "logs:l1" TO "staff:a" AS "by"
+BOND "logs:l1" TO "staff:a" AS "by"
 SUGGEST BONDS                                  -- that pair is gone from the list
 FOLLOW "logs:l1" THROUGH "by"                  -- returns logs:l1 and staff:a
 FIND "by" OF "logs:l1"
@@ -1111,10 +1251,10 @@ FIND staff "a"
 DISTILL FROM staff TOTAL age                   -- totals use the restored value
 ```
 
-### REWIND + LINK — bonds survive a rewind
+### REWIND + BOND — bonds survive a rewind
 
 ```sql
-LINK "staff:a" TO "staff:b" AS "pal"
+BOND "staff:a" TO "staff:b" AS "pal"
 CHANGE staff "a" SET age TO 50
 REWIND "staff:a" TO "now"
 FIND "pal" OF "staff:a"                        -- bond still there
@@ -1130,7 +1270,7 @@ CHANGE staff "a" SET age TO 51 REWIND "staff:a" TO "now" DISTILL FROM staff MAX 
 
 ```sql
 POUR INTO staff "a" {"name":"Ana","age":35} POUR INTO staff "b" {"name":"Ben","age":28}
-LINK "staff:a" TO "staff:b" AS "pal"
+BOND "staff:a" TO "staff:b" AS "pal"
 DRAIN staff "a" FIND staff FIND _rubbish SALVAGE "a" FIND staff FIND "pal" OF "staff:a"
 DRAIN staff "b" INCINERATE "b" FIND _rubbish SALVAGE "b" FIND staff
 ```
@@ -1151,10 +1291,10 @@ DRAIN pets "p3" DROP pets RESTORE pets FIND pets
 ```
 `RESTORE` brings back every document of the bucket in the bin, including ones drained earlier.
 
-### DROP + RESTORE + LINK — bonds survive a drop
+### DROP + RESTORE + BOND — bonds survive a drop
 
 ```sql
-LINK "pets:p1" TO "pets:p2" AS "pal" DROP pets RESTORE pets FIND "pal" OF "pets:p1"
+BOND "pets:p1" TO "pets:p2" AS "pal" DROP pets RESTORE pets FIND "pal" OF "pets:p1"
 ```
 
 ### SHAPE AUDITED + DROP + RESTORE — edits are kept
@@ -1250,7 +1390,7 @@ FIND docs
 Statements are executed in order and return one result each. No separator is needed. All commands can be mixed:
 
 ```sql
-POUR INTO mix "m1" {"v": 1} POUR INTO mix "m2" {"v": 2} LINK "mix:m1" TO "mix:m2" AS "next" FIND "next" OF "mix:m1" CHANGE mix "m2" SET v TO 5 FIND mix WHERE v > 1 SEVER "mix:m1" FROM "mix:m2" AS "next" DRAIN mix "m2" FIND mix
+POUR INTO mix "m1" {"v": 1} POUR INTO mix "m2" {"v": 2} BOND "mix:m1" TO "mix:m2" AS "next" FIND "next" OF "mix:m1" CHANGE mix "m2" SET v TO 5 FIND mix WHERE v > 1 SEVER "mix:m1" FROM "mix:m2" AS "next" DRAIN mix "m2" FIND mix
 ```
 
 ```sql
@@ -1258,7 +1398,7 @@ POUR INTO chain "c3" {"v": 3} CHANGE chain "c3" SET v TO 99 FIND chain "c3" DRAI
 ```
 
 ```sql
-LINK "chain:c1" TO "chain:c2" AS "next" LINK "chain:c2" TO "chain:c1" AS "next" FIND "next" OF "chain:c1" SEVER "chain:c1" FROM "chain:c2" AS "next" FIND "next" OF "chain:c1"
+BOND "chain:c1" TO "chain:c2" AS "next" BOND "chain:c2" TO "chain:c1" AS "next" FIND "next" OF "chain:c1" SEVER "chain:c1" FROM "chain:c2" AS "next" FIND "next" OF "chain:c1"
 ```
 The final `FIND` returns 0 documents — the bond is gone.
 
@@ -1275,7 +1415,7 @@ BEGIN POUR INTO users "t1" {"name": "T1"} POUR INTO users "t2" {"name": "T2"} CO
 ```
 
 ```sql
-BEGIN POUR INTO mix "m3" {"v": 3} LINK "mix:m3" TO "mix:m1" AS "tx" CHANGE mix "m3" SET v TO 4 COMMIT
+BEGIN POUR INTO mix "m3" {"v": 3} BOND "mix:m3" TO "mix:m1" AS "tx" CHANGE mix "m3" SET v TO 4 COMMIT
 ```
 
 ```sql
@@ -1283,14 +1423,14 @@ BEGIN POUR INTO users "t3" {"name": "T3"} ROLLBACK
 ```
 After the `ROLLBACK`, `FIND users "t3"` returns 0 documents.
 
-> **Limitation:** `ROLLBACK` only rolls back `POUR` / `POUR MANY` writes. `CHANGE`, `LINK`, `SEVER` and `DRAIN` run inside a transaction are **not** reverted. Use transactions for groups of `POUR`s.
+> **Limitation:** `ROLLBACK` only rolls back `POUR` / `POUR MANY` writes. `CHANGE`, `BOND`, `LINK`, `SEVER`, `UNLINK` and `DRAIN` run inside a transaction are **not** reverted. Use transactions for groups of `POUR`s.
 
 ### C. Multi-hop bond chains
 Follow bonds across several hops in one `FIND`:
 
 ```sql
-LINK "users:jane" TO "users:juan" AS "boss"
-LINK "users:juan" TO "users:pedro" AS "knows"
+BOND "users:jane" TO "users:juan" AS "boss"
+BOND "users:juan" TO "users:pedro" AS "knows"
 FIND THE knows OF THE boss OF users "jane"      -- returns users:pedro
 ```
 
@@ -1375,12 +1515,12 @@ PEER INTO COST ( FIND logs WHERE level = "error" )
 FIND logs WHERE level = "error"
 ```
 
-### LINK + MATCH (Multi-hop Graph Queries)
+### BOND + MATCH (Multi-hop Graph Queries)
 Connect distinct documents with semantic edge labels and then query deeply across the entire graph. You can enforce conditions across any node in the path.
 
 ```sql
-LINK "users:1" TO "users:2" AS "friend"
-LINK "users:2" TO "docs:42" AS "owns"
+BOND "users:1" TO "users:2" AS "friend"
+BOND "users:2" TO "docs:42" AS "owns"
 
 -- Find the documents owned by a friend of a specific user
 MATCH (u FROM users)-["friend"]->(f FROM users)-["owns"]->(d FROM docs) WHERE u.name = "Alice"

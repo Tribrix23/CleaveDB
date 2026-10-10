@@ -28,11 +28,15 @@ class SemanticAnalyzer:
             if hasattr(stmt, 'bucket'):
                 self._check_bucket(stmt.bucket)
                 
-        if stmt_type == 'BondStmt':
-            if hasattr(stmt, 'from_bucket'):
+        if stmt_type in ('BondStmt', 'LinkStmt'):
+            if hasattr(stmt, 'from_bucket') and stmt.from_bucket:
                 self._check_bucket(stmt.from_bucket)
-            if hasattr(stmt, 'to_bucket'):
+            elif hasattr(stmt, 'source_gid') and stmt.source_gid and ':' in stmt.source_gid:
+                self._check_bucket(stmt.source_gid.split(':', 1)[0])
+            if hasattr(stmt, 'to_bucket') and stmt.to_bucket:
                 self._check_bucket(stmt.to_bucket)
+            elif hasattr(stmt, 'target_gid') and stmt.target_gid and ':' in stmt.target_gid:
+                self._check_bucket(stmt.target_gid.split(':', 1)[0])
                 
         if stmt_type == 'FollowStmt':
             if hasattr(stmt, 'bond_name') and stmt.bond_name:

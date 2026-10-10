@@ -73,7 +73,7 @@ class TenantEngineProxy:
                     if bucket == "_auth":
                         if gid == f"_auth:{t}":
                             filtered.append(d)
-                    elif bucket == "_bonds":
+                    elif bucket in ("_bonds", "_links"):
                         if ":" in gid and gid.split(":", 1)[1].startswith(f"{t}."):
                             filtered.append(d)
                     elif bucket == "_security_policies":
@@ -95,6 +95,51 @@ class TenantEngineProxy:
 class Interpreter:
     def _scan_bucket_rls(self, bucket):
         return self.engine.scan_bucket(bucket)
+
+    def _validate_doc_and_bucket(self, gid, role_desc="Document"):
+        if not gid or not isinstance(gid, str):
+            return {"status": "error", "message": f"{role_desc} ID cannot be empty."}
+        if ":" not in gid:
+            return {
+                "status": "error",
+                "message": f"Invalid {role_desc.lower()} ID '{gid}'. Expected 'bucket:id' format (e.g. 'users:alice').",
+            }
+        bucket, doc_id = gid.split(":", 1)
+        if not bucket or not doc_id:
+            return {
+                "status": "error",
+                "message": f"Invalid {role_desc.lower()} ID '{gid}'. Both bucket and document ID must be non-empty.",
+            }
+
+        if not self.engine:
+            return None
+
+        buckets_data = self.engine.show("buckets") if hasattr(self.engine, "show") else "[]"
+        all_buckets = json.loads(buckets_data) if buckets_data else []
+        ns_bucket = self.engine._ns(bucket) if hasattr(self.engine, "_ns") else bucket
+        has_policy = bool(self.engine.get(f"_bucket_policies:{bucket}")) if hasattr(self.engine, "get") else False
+
+        bucket_exists = (
+            bucket in all_buckets
+            or ns_bucket in all_buckets
+            or any(b == bucket or b.endswith(f".{bucket}") for b in all_buckets)
+            or has_policy
+        )
+
+        if not bucket_exists:
+            return {
+                "status": "error",
+                "message": f"{role_desc} bucket '{bucket}' does not exist.",
+            }
+
+        doc_json = self.engine.get(gid) if hasattr(self.engine, "get") else None
+        if not doc_json:
+            return {
+                "status": "error",
+                "message": f"{role_desc} document '{gid}' does not exist in bucket '{bucket}'.",
+            }
+
+        return None
 
     def __init__(self, engine=None, indexing_queue=None):
         self.context = {}
@@ -901,6 +946,42 @@ class Interpreter:
                         print(f"Error parsing projection WHERE clause: {e}")
             # --- END ALIAS PROJECTION INJECTION ---
 
+            if mode == "RELATED_LINKS":
+                source = self.engine._ns_gid(getattr(stmt, "related_source", ""))
+                l_data = self._scan_bucket_rls("_links")
+                links = json.loads(l_data) if l_data else []
+                related_docs = []
+                seen_targets = set()
+                for l_doc in links:
+                    l = l_doc.get("body", {})
+                    if l.get("source") == source:
+                        target = l.get("target")
+                        is_url = l.get("is_url", False)
+                        if target in seen_targets:
+                            continue
+                        seen_targets.add(target)
+                        if is_url:
+                            related_docs.append({
+                                "target": target,
+                                "is_url": True,
+                                "_link": {"source": source, "label": l.get("label", "linked")},
+                            })
+                        else:
+                            t_json = self.engine.get(target)
+                            if t_json:
+                                t_body = json.loads(t_json)
+                                related_docs.append({
+                                    "gid": target,
+                                    "body": t_body,
+                                    "_link": {"source": source, "label": l.get("label", "linked")},
+                                })
+                return {
+                    "status": "ok",
+                    "mode": "RELATED_LINKS",
+                    "count": len(related_docs),
+                    "documents": related_docs,
+                }
+
             if mode == "RELATED":
                 show_candidates = getattr(stmt, "show_candidates", False)
                 as_of = getattr(stmt, "as_of", None)
@@ -1358,9 +1439,47 @@ class Interpreter:
             return {"status": "error", "message": "No doc_id specified"}
 
         elif stmt_type == "HealStmt":
-            target = getattr(stmt, "target", "all")
-            result = self.engine.heal(target)
-            return {"status": "ok", "message": result}
+            target = getattr(stmt, "target", "all").lower()
+            heal_msgs = []
+            if target in ("bonds", "all"):
+                b_data = self._scan_bucket_rls("_bonds")
+                healed_bonds = 0
+                if b_data:
+                    for b_doc in json.loads(b_data):
+                        b = b_doc.get("body", {})
+                        src = b.get("source")
+                        tgt = b.get("target")
+                        if (src and not self.engine.get(src)) or (tgt and not self.engine.get(tgt)):
+                            self.engine.delete(b_doc["gid"])
+                            healed_bonds += 1
+                if healed_bonds > 0:
+                    heal_msgs.append(f"Healed {healed_bonds} broken bonds.")
+
+            if target in ("links", "all"):
+                l_data = self._scan_bucket_rls("_links")
+                healed_links = 0
+                if l_data:
+                    for l_doc in json.loads(l_data):
+                        l = l_doc.get("body", {})
+                        src = l.get("source")
+                        tgt = l.get("target")
+                        is_url = l.get("is_url", False)
+                        if (src and not self.engine.get(src)) or (tgt and not is_url and not self.engine.get(tgt)):
+                            self.engine.delete(l_doc["gid"])
+                            healed_links += 1
+                if healed_links > 0:
+                    heal_msgs.append(f"Healed {healed_links} broken links.")
+
+            rust_res = ""
+            if target in ("indexes", "all"):
+                try:
+                    rust_res = self.engine.heal(target)
+                except Exception:
+                    pass
+            if rust_res:
+                heal_msgs.append(rust_res)
+
+            return {"status": "ok", "message": " ".join(heal_msgs) if heal_msgs else "Heal complete."}
 
         elif stmt_type == "ShowStmt":
             if getattr(stmt, "target", "").upper() == "BUCKETS":
@@ -1398,6 +1517,21 @@ class Interpreter:
                     for k in ("confidence", "affinity", "expires_at"):
                         if b.get(k) is not None:
                             row[k] = b[k]
+                    rows.append(row)
+                return {"status": "ok", "count": len(rows), "data": rows}
+
+            if show_target == "links":
+                raw = self._scan_bucket_rls("_links")
+                rows = []
+                for d in (json.loads(raw) if raw else []):
+                    b = d.get("body", {})
+                    row = {
+                        "source": b.get("source"),
+                        "target": b.get("target"),
+                        "label": b.get("label", "linked"),
+                    }
+                    if b.get("is_url"):
+                        row["is_url"] = True
                     rows.append(row)
                 return {"status": "ok", "count": len(rows), "data": rows}
 
@@ -1496,6 +1630,55 @@ class Interpreter:
                             )
                             count += 1
             return {"status": "ok", "message": f"Severed {count} bonds."}
+
+        elif stmt_type == "UnlinkStmt":
+            tenant = (
+                self.context.get(
+                    "tenant_id", self.context.get("user", "").split(".")[0]
+                )
+                if "user" in self.context
+                else "cron"
+            )
+            source_raw = getattr(stmt, "source_gid", "")
+            target_raw = getattr(stmt, "target_gid", "")
+            label = getattr(stmt, "label", "")
+
+            source = self.engine._ns_gid(source_raw)
+            is_url = target_raw.startswith(("http://", "https://", "ftp://"))
+            target = target_raw if is_url else self.engine._ns_gid(target_raw)
+            count = 0
+
+            l_data = self._scan_bucket_rls("_links")
+            if l_data:
+                for l_doc in json.loads(l_data):
+                    l = l_doc.get("body", {})
+                    if (l.get("source") == source and l.get("target") == target) or (
+                        not is_url and l.get("source") == target and l.get("target") == source
+                    ):
+                        if not label or l.get("label") == label:
+                            hist_doc = dict(l)
+                            hist_doc["_event_type"] = "UNLINK"
+                            hist_doc["_event_time"] = time.time() * 1000
+                            self.engine.pour(
+                                "_history__links",
+                                (
+                                    f"{tenant}.{str(uuid.uuid4())}"
+                                    if tenant != "cron"
+                                    else str(uuid.uuid4())
+                                ),
+                                json.dumps(hist_doc),
+                            )
+                            self.engine.delete(l_doc["gid"])
+                            self.emitted_events.append(
+                                {
+                                    "event": "UNLINK",
+                                    "target": l_doc["gid"],
+                                    "bucket": "_links",
+                                    "data": hist_doc,
+                                }
+                            )
+                            count += 1
+            return {"status": "ok", "message": f"Unlinked {count} links."}
 
         elif stmt_type == "ShapeViewStmt":
             t = (
@@ -2080,8 +2263,26 @@ class Interpreter:
             }
 
         elif stmt_type == "BondStmt":
+            source_raw = getattr(stmt, "source_gid", "")
+            err = self._validate_doc_and_bucket(source_raw, "Source")
+            if err:
+                return err
 
-            source_gid = self.engine._ns_gid(getattr(stmt, "source_gid", ""))
+            target_gids_raw = getattr(stmt, "target_gids", [getattr(stmt, "target_gid", "")])
+            if not target_gids_raw:
+                return {"status": "error", "message": "Target document ID is required."}
+
+            for tg in target_gids_raw:
+                if tg.startswith(("http://", "https://", "ftp://")):
+                    return {
+                        "status": "error",
+                        "message": f"BOND does not support external URLs ('{tg}'). Use LINK to link to external URLs.",
+                    }
+                err = self._validate_doc_and_bucket(tg, "Target")
+                if err:
+                    return err
+
+            source_gid = self.engine._ns_gid(source_raw)
 
             # EXCLUSIVE
             current_time = int(time.time())
@@ -2109,10 +2310,19 @@ class Interpreter:
 
             target_gids = [
                 self.engine._ns_gid(g)
-                for g in getattr(stmt, "target_gids", [getattr(stmt, "target_gid", "")])
+                for g in target_gids_raw
             ]
 
             count = 0
+            label = getattr(stmt, "label", "")
+            tenant = (
+                self.context.get(
+                    "tenant_id", self.context.get("user", "").split(".")[0]
+                )
+                if "user" in self.context
+                else "cron"
+            )
+
             for target_gid in target_gids:
                 if not target_gid:
                     continue
@@ -2120,7 +2330,7 @@ class Interpreter:
                     "created_at": current_time,
                     "source": source_gid,
                     "target": target_gid,
-                    "label": getattr(stmt, "label", ""),
+                    "label": label,
                     "condition_subject": getattr(stmt, "condition_subject", "target"),
                     "condition_field": getattr(stmt, "condition_field", None),
                     "condition_value": getattr(stmt, "condition_value", None),
@@ -2131,13 +2341,6 @@ class Interpreter:
                     "exclusive": getattr(stmt, "exclusive", False),
                     "expires_at": expires,
                 }
-                tenant = (
-                    self.context.get(
-                        "tenant_id", self.context.get("user", "").split(".")[0]
-                    )
-                    if "user" in self.context
-                    else "cron"
-                )
                 bond_id = (
                     f"{tenant}.{str(uuid.uuid4())}"
                     if tenant != "cron"
@@ -2147,7 +2350,7 @@ class Interpreter:
 
                 # WAL 4D MVCC Append
                 hist_doc = dict(bond_doc)
-                hist_doc["_event_type"] = "LINK"
+                hist_doc["_event_type"] = "BOND"
                 hist_doc["_event_time"] = time.time() * 1000
                 self.engine.pour(
                     "_history__bonds",
@@ -2161,7 +2364,7 @@ class Interpreter:
 
                 self.emitted_events.append(
                     {
-                        "event": "LINK",
+                        "event": "BOND",
                         "target": bond_id,
                         "bucket": "_bonds",
                         "data": bond_doc,
@@ -2181,7 +2384,7 @@ class Interpreter:
                     self.engine.pour("_bonds", bond_id_2, json.dumps(bond_doc_2))
                     # WAL 4D MVCC Append
                     hist_doc2 = dict(bond_doc_2)
-                    hist_doc2["_event_type"] = "LINK"
+                    hist_doc2["_event_type"] = "BOND"
                     hist_doc2["_event_time"] = time.time() * 1000
                     self.engine.pour(
                         "_history__bonds",
@@ -2194,9 +2397,113 @@ class Interpreter:
                     )
                     count += 1
 
+            count_label = "Graph Bond" if count == 1 else "Graph Bonds"
             return {
                 "status": "ok",
-                "message": f"{count} 15-Dimensional Bonds '{getattr(stmt, 'label', '')}' created.",
+                "message": f"{count} {count_label} '{label}' created.",
+            }
+
+        elif stmt_type == "LinkStmt":
+            source_raw = getattr(stmt, "source_gid", "")
+            err = self._validate_doc_and_bucket(source_raw, "Source")
+            if err:
+                return err
+
+            target_gids_raw = getattr(stmt, "target_gids", [getattr(stmt, "target_gid", "")])
+            if not target_gids_raw:
+                return {"status": "error", "message": "Target document ID or URL is required."}
+
+            for tg in target_gids_raw:
+                if not tg.startswith(("http://", "https://", "ftp://")):
+                    err = self._validate_doc_and_bucket(tg, "Target")
+                    if err:
+                        return err
+
+            source_gid = self.engine._ns_gid(source_raw)
+            current_time = int(time.time())
+            count = 0
+            label = getattr(stmt, "label", "linked")
+            tenant = (
+                self.context.get(
+                    "tenant_id", self.context.get("user", "").split(".")[0]
+                )
+                if "user" in self.context
+                else "cron"
+            )
+
+            for target_raw in target_gids_raw:
+                if not target_raw:
+                    continue
+                is_url = target_raw.startswith(("http://", "https://", "ftp://"))
+                target_gid = target_raw if is_url else self.engine._ns_gid(target_raw)
+
+                link_doc = {
+                    "created_at": current_time,
+                    "source": source_gid,
+                    "target": target_gid,
+                    "label": label,
+                    "is_url": is_url,
+                }
+                link_id = (
+                    f"{tenant}.{str(uuid.uuid4())}"
+                    if tenant != "cron"
+                    else str(uuid.uuid4())
+                )
+                self.engine.pour("_links", link_id, json.dumps(link_doc))
+
+                hist_doc = dict(link_doc)
+                hist_doc["_event_type"] = "LINK"
+                hist_doc["_event_time"] = time.time() * 1000
+                self.engine.pour(
+                    "_history__links",
+                    (
+                        f"{tenant}.{str(uuid.uuid4())}"
+                        if tenant != "cron"
+                        else str(uuid.uuid4())
+                    ),
+                    json.dumps(hist_doc),
+                )
+
+                self.emitted_events.append(
+                    {
+                        "event": "LINK",
+                        "target": link_id,
+                        "bucket": "_links",
+                        "data": link_doc,
+                    }
+                )
+                count += 1
+
+                if getattr(stmt, "mutual", False) and not is_url:
+                    link_doc_2 = dict(link_doc)
+                    link_doc_2["source"] = target_gid
+                    link_doc_2["target"] = source_gid
+                    link_id_2 = (
+                        f"{tenant}.{str(uuid.uuid4())}"
+                        if tenant != "cron"
+                        else str(uuid.uuid4())
+                    )
+                    self.engine.pour("_links", link_id_2, json.dumps(link_doc_2))
+
+                    hist_doc2 = dict(link_doc_2)
+                    hist_doc2["_event_type"] = "LINK"
+                    hist_doc2["_event_time"] = time.time() * 1000
+                    self.engine.pour(
+                        "_history__links",
+                        (
+                            f"{tenant}.{str(uuid.uuid4())}"
+                            if tenant != "cron"
+                            else str(uuid.uuid4())
+                        ),
+                        json.dumps(hist_doc2),
+                    )
+                    count += 1
+
+            count_label = "Document Link" if count == 1 else "Document Links"
+            label_suffix = f" '{label}'" if label != "linked" else ""
+            return {
+                "status": "ok",
+                "message": f"{count} {count_label}{label_suffix} created.",
             }
 
         elif stmt_type == "SetContextStmt":
@@ -2839,9 +3146,7 @@ class Interpreter:
                 )
 
                 for b_doc in bonds:
-
                     b = b_doc.get("body", {})
-
                     if b.get("cascade") and (b.get("source") == unnamespaced_gid):
                         tgt = b.get("target")
                         t_bucket, t_id = (
@@ -2869,6 +3174,17 @@ class Interpreter:
                                 "_rubbish", r_t_gid, json.dumps(rubbish_entry)
                             )
                             self.engine.delete(t_gid)
+                    # Automatically detach bond connected to drained doc
+                    if b.get("source") == unnamespaced_gid or b.get("target") == unnamespaced_gid:
+                        self.engine.delete(b_doc["gid"])
+
+                # Detach links connected to drained doc
+                l_data = self._scan_bucket_rls("_links")
+                links = json.loads(l_data) if l_data else []
+                for l_doc in links:
+                    l = l_doc.get("body", {})
+                    if l.get("source") == unnamespaced_gid or l.get("target") == unnamespaced_gid:
+                        self.engine.delete(l_doc["gid"])
 
             if doc_id:
                 return {

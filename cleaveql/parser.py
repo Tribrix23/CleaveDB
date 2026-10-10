@@ -193,10 +193,14 @@ class Parser:
             return self.distill_stmt()
         if self.match(TokenType.FOLLOW):
             return self.follow_stmt()
-        if self.match(TokenType.BOND, TokenType.LINK):
+        if self.match(TokenType.BOND):
             return self.bond_stmt()
-        if self.match(TokenType.UNLINK, TokenType.SEVER):
+        if self.match(TokenType.LINK):
+            return self.link_stmt()
+        if self.match(TokenType.SEVER):
             return self.sever_stmt()
+        if self.match(TokenType.UNLINK):
+            return self.unlink_stmt()
         if self.match(TokenType.RESTORE):
             return self.restore_stmt()
         if self.match(TokenType.DROP):
@@ -287,6 +291,14 @@ class Parser:
         show_candidates = False
         if self.match(TokenType.CANDIDATE):
             show_candidates = True
+
+        if self.match(TokenType.LINKS):
+            self.consume(TokenType.OF, "Expected 'OF' after 'LINKS'.")
+            related_source = self.consume_string("Expected source document ID.")
+            stmt = ScoopStmt(line=self.previous().line, column=self.previous().column)
+            stmt.mode = "RELATED_LINKS"
+            stmt.related_source = related_source
+            return stmt
         
         # Check for FIND "label" OF "source" OR FIND "semantic query" IN "bucket"
         if self.check(TokenType.STRING):
@@ -876,9 +888,12 @@ class Parser:
         if self.match(TokenType.AS):
             if self.match(TokenType.MUTUAL):
                 mutual = True
-            label = self.consume_string("Expected relationship label.")
+            label = self.consume_string("Expected relationship label (e.g. AS \"friend\").")
         else:
-            label = "linked"
+            raise self.error(
+                self.peek(),
+                "BOND requires an explicit relationship label using AS \"<label>\" (e.g. BOND \"user:alice\" TO \"user:bob\" AS \"friend\"). Use LINK for unlabelled document links."
+            )
             
         stmt = BondStmt(line=self.previous().line, column=self.previous().column)
         stmt.source_gid = source_gid
@@ -937,6 +952,49 @@ class Parser:
             else:
                 break
                 
+        return stmt
+
+    def link_stmt(self) -> LinkStmt:
+        source_gid = self.consume_string("Expected source document ID.")
+        if self.match(TokenType.TO, TokenType.AND):
+            pass
+        else:
+            raise self.error(self.peek(), "Expected 'to' or 'and'.")
+        
+        target_gids = []
+        if self.match(TokenType.ANY):
+            self.consume(TokenType.LPAREN, "Expected '(' after ANY.")
+            target_gids.append(self.consume_string("Expected ANY arguments (string IDs or URLs)."))
+            while self.match(TokenType.COMMA):
+                target_gids.append(self.consume_string("Expected ANY args."))
+            self.consume(TokenType.RPAREN, "Expected ')'.")
+        else:
+            target_gids.append(self.consume_string("Expected target document ID or URL."))
+            while self.match(TokenType.COMMA):
+                target_gids.append(self.consume_string("Expected target document ID or URL after comma."))
+                
+        mutual = False
+        label = "linked"
+        if self.match(TokenType.AS):
+            if self.match(TokenType.MUTUAL):
+                mutual = True
+            if self.check(TokenType.STRING):
+                label = self.consume_string("Expected link label.")
+            elif not mutual:
+                label = self.consume_string("Expected link label.")
+
+        # Reject bond-only modifiers on LINK
+        if self.peek().type in [TokenType.IF, TokenType.ONLY, TokenType.WITH, TokenType.THROUGH, TokenType.EXCLUSIVELY, TokenType.EXPIRING]:
+            raise self.error(
+                self.peek(),
+                f"LINK does not support bond modifier '{self.peek().lexeme}'. Use BOND for rich semantic relationships with conditions, weights, or TTL."
+            )
+            
+        stmt = LinkStmt(line=self.previous().line, column=self.previous().column)
+        stmt.source_gid = source_gid
+        stmt.target_gids = target_gids
+        stmt.label = label
+        stmt.mutual = mutual
         return stmt
 
     def authenticate_stmt(self):
@@ -1052,14 +1110,14 @@ class Parser:
         return IndexStmt(bucket=bucket, fields=fields)
 
     def heal_stmt(self) -> HealStmt:
-        if self.match(TokenType.BONDS, TokenType.INDEXES, TokenType.ALL):
+        if self.match(TokenType.BONDS, TokenType.LINKS, TokenType.INDEXES, TokenType.ALL):
             return HealStmt(target=self.previous().lexeme)
-        raise self.error(self.peek(), "Expected 'bonds', 'indexes', or 'all' after 'heal'.")
+        raise self.error(self.peek(), "Expected 'bonds', 'links', 'indexes', or 'all' after 'heal'.")
 
     def show_stmt(self) -> ShowStmt:
-        if self.match(TokenType.BUCKETS, TokenType.BONDS, TokenType.INDEXES, TokenType.STATS, TokenType.WEBHOOKS):
+        if self.match(TokenType.BUCKETS, TokenType.BONDS, TokenType.LINKS, TokenType.INDEXES, TokenType.STATS, TokenType.WEBHOOKS):
             return ShowStmt(target=self.previous().lexeme)
-        raise self.error(self.peek(), "Expected 'buckets', 'bonds', 'indexes', 'stats', or 'webhooks' after 'show'.")
+        raise self.error(self.peek(), "Expected 'buckets', 'bonds', 'links', 'indexes', 'stats', or 'webhooks' after 'show'.")
 
     def describe_stmt(self) -> DescribeStmt:
         bucket = self.consume_identifier("Expected bucket name.")
@@ -1409,6 +1467,19 @@ class Parser:
         else:
             label = ""
         return SeverStmt(source_gid=source_gid, target_gid=target_gid, label=label)
+
+    def unlink_stmt(self) -> UnlinkStmt:
+        source_gid = self.consume_string("Expected source document ID.")
+        if self.match(TokenType.FROM, TokenType.TO, TokenType.AND):
+            pass
+        else:
+            self.consume(TokenType.FROM, "Expected 'from'.")
+        target_gid = self.consume_string("Expected target document ID or URL.")
+        if self.match(TokenType.AS):
+            label = self.consume_string("Expected label string.")
+        else:
+            label = ""
+        return UnlinkStmt(source_gid=source_gid, target_gid=target_gid, label=label)
 
     def restore_stmt(self) -> RestoreBucketStmt:
         self.match(TokenType.BUCKET) # Optional 'BUCKET' keyword
