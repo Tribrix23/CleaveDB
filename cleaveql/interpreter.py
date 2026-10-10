@@ -114,19 +114,7 @@ class Interpreter:
         if not self.engine:
             return None
 
-        buckets_data = self.engine.show("buckets") if hasattr(self.engine, "show") else "[]"
-        all_buckets = json.loads(buckets_data) if buckets_data else []
-        ns_bucket = self.engine._ns(bucket) if hasattr(self.engine, "_ns") else bucket
-        has_policy = bool(self.engine.get(f"_bucket_policies:{bucket}")) if hasattr(self.engine, "get") else False
-
-        bucket_exists = (
-            bucket in all_buckets
-            or ns_bucket in all_buckets
-            or any(b == bucket or b.endswith(f".{bucket}") for b in all_buckets)
-            or has_policy
-        )
-
-        if not bucket_exists:
+        if not self._bucket_exists(bucket):
             return {
                 "status": "error",
                 "message": f"{role_desc} bucket '{bucket}' does not exist.",
@@ -140,6 +128,48 @@ class Interpreter:
             }
 
         return None
+
+    def _bucket_exists(self, bucket: str) -> bool:
+        if not self.engine:
+            return True
+        if not bucket:
+            return False
+        if bucket.startswith("_"):
+            return True
+
+        t = (
+            self.context.get("tenant_id", self.context.get("user", "").split(".")[0])
+            if "user" in self.context
+            else "cron"
+        )
+        is_dev = self.context.get("auth_level") == "dev"
+
+        buckets_data = self.engine.show("buckets") if hasattr(self.engine, "show") else "[]"
+        all_buckets = json.loads(buckets_data) if buckets_data else []
+
+        ns_bucket = (
+            self.engine._ns(bucket)
+            if hasattr(self.engine, "_ns")
+            else (f"{t}.{bucket}" if t and t != "cron" else bucket)
+        )
+
+        # 1. Check physical buckets in engine
+        if ns_bucket in all_buckets or bucket in all_buckets:
+            return True
+        if is_dev and any(b == bucket or b.endswith(f".{bucket}") for b in all_buckets):
+            return True
+
+        # 2. Check for configured empty buckets (policies / projections)
+        try:
+            if hasattr(self.engine, "get"):
+                if self.engine.get(f"_bucket_policies:{ns_bucket}") or self.engine.get(f"_bucket_policies:{bucket}"):
+                    return True
+                if self.engine.get(f"_projections:{ns_bucket}") or self.engine.get(f"_projections:{bucket}"):
+                    return True
+        except Exception:
+            pass
+
+        return False
 
     def __init__(self, engine=None, indexing_queue=None):
         self.context = {}
@@ -1107,26 +1137,13 @@ class Interpreter:
             meaning = getattr(stmt, "meaning", None)
             include = getattr(stmt, "include", [])
 
+            if bucket and not self._bucket_exists(bucket):
+                return {
+                    "status": "error",
+                    "message": f"Bucket '{bucket}' does not exist. Use 'SHOW BUCKETS' to see available buckets.",
+                }
+
             results_json = self._scan_bucket_rls(bucket)
-
-            # Check if bucket actually exists when results_json is falsy
-            if not results_json:
-                # Cross-reference with the engine's known bucket list
-                t = (
-                    self.context.get("tenant_id", self.context.get("user", "").split(".")[0])
-                    if "user" in self.context
-                    else "cron"
-                )
-                all_buckets_raw = self.engine.show("buckets")
-                all_buckets = json.loads(all_buckets_raw) if all_buckets_raw else []
-                # Build the tenant-prefixed bucket name to check against
-                ns_bucket = f"{t}.{bucket}" if t and t != "cron" else bucket
-                if ns_bucket not in all_buckets and bucket not in all_buckets:
-                    return {
-                        "status": "error",
-                        "message": f"Bucket '{bucket}' does not exist. Use 'SHOW BUCKETS' to see available buckets.",
-                    }
-
             results = json.loads(results_json) if results_json else []
 
             docs = []
@@ -1369,8 +1386,12 @@ class Interpreter:
             }
 
         elif stmt_type == "CountStmt":
-
             bucket = getattr(stmt, "bucket", "")
+            if bucket and not self._bucket_exists(bucket):
+                return {
+                    "status": "error",
+                    "message": f"Bucket '{bucket}' does not exist. Use 'SHOW BUCKETS' to see available buckets.",
+                }
             results_json = self._scan_bucket_rls(bucket)
             results = json.loads(results_json) if results_json else []
             return {"status": "ok", "count": len(results)}
@@ -1383,6 +1404,11 @@ class Interpreter:
         elif stmt_type == "ChangeStmt":
             doc_id = getattr(stmt, "doc_id", None)
             bucket = getattr(stmt, "bucket", "")
+            if bucket and not self._bucket_exists(bucket):
+                return {
+                    "status": "error",
+                    "message": f"Bucket '{bucket}' does not exist. Use 'SHOW BUCKETS' to see available buckets.",
+                }
             assignments = getattr(stmt, "assignments", [])
             if doc_id:
                 # Use f"{bucket}:{doc_id}" for the global engine ID!
@@ -1520,6 +1546,8 @@ class Interpreter:
                         continue
                     if t != "cron" and b.startswith(f"{t}."):
                         vis.append(b[len(t) + 1 :])
+                if not vis:
+                    return {"status": "error", "message": "No buckets found. Use a POUR INTO query to create one."}
                 return {"status": "ok", "data": vis}
 
             show_target = getattr(stmt, "target", "").lower()
@@ -1537,6 +1565,8 @@ class Interpreter:
                         if b.get(k) is not None:
                             row[k] = b[k]
                     rows.append(row)
+                if not rows:
+                    return {"status": "error", "message": f"No {show_target} found."}
                 return {"status": "ok", "count": len(rows), "data": rows}
 
             if show_target == "links":
@@ -1552,6 +1582,8 @@ class Interpreter:
                     if b.get("is_url"):
                         row["is_url"] = True
                     rows.append(row)
+                if not rows:
+                    return {"status": "error", "message": f"No {show_target} found."}
                 return {"status": "ok", "count": len(rows), "data": rows}
 
             if show_target == "indexes":
@@ -1560,6 +1592,8 @@ class Interpreter:
                     {"bucket": d["body"].get("bucket"), "fields": d["body"].get("fields")}
                     for d in (json.loads(raw) if raw else [])
                 ]
+                if not rows:
+                    return {"status": "error", "message": f"No {show_target} found."}
                 return {"status": "ok", "count": len(rows), "data": rows}
 
             if show_target == "webhooks":
@@ -1573,6 +1607,8 @@ class Interpreter:
                     }
                     for d in (json.loads(raw) if raw else [])
                 ]
+                if not rows:
+                    return {"status": "error", "message": f"No {show_target} found."}
                 return {"status": "ok", "count": len(rows), "data": rows}
 
             if show_target == "stats":
@@ -1902,6 +1938,11 @@ class Interpreter:
                     "status": "ok",
                     "description": "TUTORIAL: Semantic Search (MEANING)\nUse SCOOP EVERYTHING FROM bucket MEANING text",
                 }
+            if target and not self._bucket_exists(target):
+                return {
+                    "status": "error",
+                    "message": f"Bucket '{target}' does not exist. Use 'SHOW BUCKETS' to see available buckets.",
+                }
             docs_json = self._scan_bucket_rls(target)
             docs = json.loads(docs_json) if docs_json else []
             if not docs:
@@ -1915,6 +1956,11 @@ class Interpreter:
             from collections import defaultdict
 
             bucket = getattr(stmt, "bucket", "")
+            if bucket and not self._bucket_exists(bucket):
+                return {
+                    "status": "error",
+                    "message": f"Bucket '{bucket}' does not exist. Use 'SHOW BUCKETS' to see available buckets.",
+                }
             group_by = getattr(stmt, "group_by", None)
             where = getattr(stmt, "where", None)
 
@@ -3017,6 +3063,11 @@ class Interpreter:
         elif stmt_type == "DrainStmt":
 
             bucket = getattr(stmt, "bucket", "")
+            if bucket and not self._bucket_exists(bucket):
+                return {
+                    "status": "error",
+                    "message": f"Bucket '{bucket}' does not exist. Use 'SHOW BUCKETS' to see available buckets.",
+                }
 
             doc_id = getattr(stmt, "doc_id", None)
 
@@ -3263,11 +3314,13 @@ class Interpreter:
             import math
             
             bucket = stmt.source_bucket
+            if bucket and not self._bucket_exists(bucket):
+                return {
+                    "status": "error",
+                    "message": f"Bucket '{bucket}' does not exist. Use 'SHOW BUCKETS' to see available buckets.",
+                }
             data_str = self._scan_bucket_rls(bucket)
-            if not data_str:
-                return {"status": "ok", "message": f"Bucket '{bucket}' empty.", "results": []}
-                
-            docs = json.loads(data_str)
+            docs = json.loads(data_str) if data_str else []
             # The current working set
             results = [d.get("body", {}) for d in docs]
             
@@ -3367,12 +3420,12 @@ class Interpreter:
             method = stmt.method
             window = stmt.window
             
+            if bucket and not self._bucket_exists(bucket):
+                return {"status": "error", "message": f"Bucket '{bucket}' does not exist. Use 'SHOW BUCKETS' to see available buckets."}
             data_str = self._scan_bucket_rls(bucket)
-            if not data_str:
-                return {"status": "error", "message": f"Bucket '{bucket}' not found or empty."}
-            
-
-            data = json.loads(data_str)
+            data = json.loads(data_str) if data_str else []
+            if not data:
+                return {"status": "error", "message": f"Bucket '{bucket}' is empty."}
             
             import numpy as np
             import datetime
