@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/CleaveDB.png" alt="CleaveDB 4.0.0" width="500"/>
+  <img src="assets/CleaveDB.png" alt="CleaveDB 4.0.1" width="500"/>
   <br/><br/>
   <p><strong>A database for documents, connected data, and semantic search.</strong></p>
 

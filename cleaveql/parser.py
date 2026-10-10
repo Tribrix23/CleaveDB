@@ -1117,7 +1117,10 @@ class Parser:
     def show_stmt(self) -> ShowStmt:
         if self.match(TokenType.BUCKETS, TokenType.BONDS, TokenType.LINKS, TokenType.INDEXES, TokenType.STATS, TokenType.WEBHOOKS):
             return ShowStmt(target=self.previous().lexeme)
-        raise self.error(self.peek(), "Expected 'buckets', 'bonds', 'links', 'indexes', 'stats', or 'webhooks' after 'show'.")
+        # Accept "show bucket" (singular) as a friendly alias for "show buckets"
+        if self.match(TokenType.BUCKET):
+            return ShowStmt(target="buckets")
+        raise self.error(self.peek(), "Expected 'buckets', 'bonds', 'links', 'indexes', 'stats', or 'webhooks' after 'show'. Did you mean 'show buckets'?")
 
     def describe_stmt(self) -> DescribeStmt:
         bucket = self.consume_identifier("Expected bucket name.")

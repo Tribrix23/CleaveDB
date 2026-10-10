@@ -11,7 +11,7 @@ def main():
 
     # Use a local directory for the database
     db_path = os.path.join(os.getcwd(), "cleavedb_data")
-    print(f"Starting CleaveDB 4.0.0 Engine at: {db_path}")
+    print(f"Starting CleaveDB 4.0.1 Engine at: {db_path}")
     
     # Initialize the Rust engine
     engine = cleavedb3_storage.CleaveDB(db_path)

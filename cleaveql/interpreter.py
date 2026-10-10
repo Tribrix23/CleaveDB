@@ -1108,6 +1108,25 @@ class Interpreter:
             include = getattr(stmt, "include", [])
 
             results_json = self._scan_bucket_rls(bucket)
+
+            # Check if bucket actually exists when results_json is falsy
+            if not results_json:
+                # Cross-reference with the engine's known bucket list
+                t = (
+                    self.context.get("tenant_id", self.context.get("user", "").split(".")[0])
+                    if "user" in self.context
+                    else "cron"
+                )
+                all_buckets_raw = self.engine.show("buckets")
+                all_buckets = json.loads(all_buckets_raw) if all_buckets_raw else []
+                # Build the tenant-prefixed bucket name to check against
+                ns_bucket = f"{t}.{bucket}" if t and t != "cron" else bucket
+                if ns_bucket not in all_buckets and bucket not in all_buckets:
+                    return {
+                        "status": "error",
+                        "message": f"Bucket '{bucket}' does not exist. Use 'SHOW BUCKETS' to see available buckets.",
+                    }
+
             results = json.loads(results_json) if results_json else []
 
             docs = []

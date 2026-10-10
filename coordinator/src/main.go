@@ -279,7 +279,7 @@ func handleClientConnection(conn net.Conn, cfg *CoordinatorConfig) {
 				"status":  "ok",
 				"role":    "coordinator",
 				"shards":  cfg.Shards,
-				"version": "4.0.0",
+				"version": "4.0.1",
 			})
 			conn.Write(append(statusResp, '\n'))
 			continue
@@ -340,7 +340,7 @@ func main() {
 	defer listener.Close()
 
 	fmt.Println("=========================================")
-	fmt.Printf("   CleaveDB Go Coordinator v4.0.0\n")
+	fmt.Printf("   CleaveDB Go Coordinator v4.0.1\n")
 	fmt.Printf("   Listening on TCP :%d\n", cfg.Port)
 	fmt.Printf("   Configured Shards: %v\n", cfg.Shards)
 	fmt.Printf("   Scatter Timeout:   %v\n", cfg.Timeout)
