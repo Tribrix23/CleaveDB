@@ -12,11 +12,12 @@ from cryptography.fernet import Fernet
 import cleavedb3_storage
 from cleaveql.lexer import Lexer
 from cleaveql.parser import Parser
+import socket
 from cleaveql.interpreter import Interpreter
 from pysyncobj import SyncObj, replicated_sync, SyncObjConf
 
 
-HOST = '127.0.0.1'
+HOST = '0.0.0.0'
 PORT = 8300
 DB_DIR = 'cleavedb_server_data'
 
@@ -1043,17 +1044,39 @@ def replica_worker():
 async def main():
     global dist_engine
     global engine
+    global HOST
     
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="CleaveDB Server")
+    parser.add_argument('-H', '--host', type=str, default='0.0.0.0', help="Host IP to bind TCP/WS/HTTP servers to (default: 0.0.0.0)")
+    parser.add_argument('--node-ip', type=str, default=None, help="Reachable LAN/public IP for this node in Raft consensus clustering")
     parser.add_argument('--port', type=int, default=8301)
     parser.add_argument('--raft-port', type=int, default=8311)
     parser.add_argument('--peers', type=str, default="")
     parser.add_argument('--data', type=str, default=os.path.join(_base_dir, "cleavedb_server_data"))
     args = parser.parse_args()
     
+    HOST = args.host
     peers = [p.strip() for p in args.peers.split(',')] if args.peers else []
     
-    dist_engine = DistributedEngine(f"127.0.0.1:{args.raft_port}", peers, args.data)
+    # Determine the node's broadcast/binding IP for Raft consensus
+    if args.node_ip:
+        node_ip = args.node_ip
+    elif args.peers and any(p.startswith("127.0.0.1") or p.startswith("localhost") for p in peers):
+        node_ip = "127.0.0.1"
+    elif args.host not in ('0.0.0.0', ''):
+        node_ip = args.host
+    elif not args.peers:
+        node_ip = "127.0.0.1"
+    else:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            node_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            node_ip = "127.0.0.1"
+    
+    dist_engine = DistributedEngine(f"{node_ip}:{args.raft_port}", peers, args.data)
     engine = GLOBAL_DB
 
 
@@ -1069,24 +1092,33 @@ async def main():
     server = await asyncio.start_server(handle_client, HOST, args.port - 2)
     ws_server = await websockets.serve(ws_handler, HOST, args.port + 1)
     print(f"=========================================")
-    print(f"   CleaveDB TCP Server on {args.port - 2}")
+    print(f"   CleaveDB TCP Server on {HOST}:{args.port - 2}")
     
     # Automatically boot the Rust Gateway!
-    gw_paths = ["edge_gateway.exe", os.path.join("edge_gateway", "target", "release", "edge_gateway.exe")]
+    exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
+    gw_paths = [
+        "edge_gateway.exe",
+        os.path.join(exe_dir, "edge_gateway.exe"),
+        os.path.join("edge_gateway", "target", "release", "edge_gateway.exe")
+    ]
     rust_gateway_path = next((p for p in gw_paths if os.path.exists(p)), None)
     
     if rust_gateway_path:
-        print(f"   CleaveDB Edge Gateway starting natively on {args.port - 1}")
+        print(f"   CleaveDB Edge Gateway starting natively on 0.0.0.0:{args.port - 1}")
         subprocess.Popen([rust_gateway_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         print(f"   WARNING: Rust Edge Gateway not found. (Did you compile it?)")
         
     # Automatically boot the Go Coordinator!
-    coord_paths = ["coordinator.exe", os.path.join("coordinator", "coordinator.exe")]
+    coord_paths = [
+        "coordinator.exe",
+        os.path.join(exe_dir, "coordinator.exe"),
+        os.path.join("coordinator", "coordinator.exe")
+    ]
     go_coord_path = next((p for p in coord_paths if os.path.exists(p)), None)
     if go_coord_path:
         coord_port = args.port + 4
-        shards_arg = f"127.0.0.1:{args.port - 1}"
+        shards_arg = f"{node_ip}:{args.port - 1}"
         if args.peers:
             all_shards = [shards_arg] + [p.strip() for p in args.peers.split(',') if p.strip()]
             shards_arg = ",".join(all_shards)
@@ -1095,12 +1127,9 @@ async def main():
     else:
         print(f"   NOTICE: Go Coordinator not found.")
         
-    print(f"   CleaveDB WS  Server on {args.port + 1}")
-    print(f"   CleaveDB Raft Node  on {args.raft_port}")
-    print(f"=========================================")
-
-    print(f"   CleaveDB TCP Server listening on {PORT}")
-    print(f"   CleaveDB WS  Server listening on 8301")
+    print(f"   CleaveDB WS  Server on {HOST}:{args.port + 1}")
+    print(f"   CleaveDB HTTP REST  on {HOST}:{args.port + 2}")
+    print(f"   CleaveDB Raft Node  on {node_ip}:{args.raft_port}")
     print(f"=========================================")
     async with server, ws_server:
         asyncio.create_task(cron_worker())

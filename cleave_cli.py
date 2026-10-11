@@ -1180,7 +1180,15 @@ def main():
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             s.connect((args.host, args.port))
-        except ConnectionRefusedError:
+        except (ConnectionRefusedError, socket.timeout, OSError) as conn_err:
+            if args.host not in ("127.0.0.1", "localhost", "::1"):
+                print(f"\n[Error] Unable to connect to CleaveDB server at {args.host}:{args.port}.")
+                print(f"Details: {conn_err}")
+                print(f"Please check that:")
+                print(f"  1. CleaveDB server is actively running on {args.host}")
+                print(f"  2. Inbound port {args.port} is allowed through the Windows Firewall on {args.host}")
+                print(f"  3. Both PCs are on the same local network / Wi-Fi / VPN\n")
+                sys.exit(1)
             import subprocess, time, os
             print(f"Server not found at {args.host}:{args.port}. Auto-starting background server...")
             try:
