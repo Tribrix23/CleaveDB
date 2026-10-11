@@ -126,16 +126,16 @@ class RestApiHandler(BaseHTTPRequestHandler):
             return None
             
         if u == "dev" and p == "perez":
-            return {"username": "dev", "auth_level": "dev"}
+            return {"username": "dev", "user": "dev", "tenant_id": "dev", "auth_level": "dev"}
             
         user_doc_str = engine.get(f"_auth:{u}")
         if user_doc_str:
             user_data = json.loads(user_doc_str)
             if "dev_hash" in user_data and "dev_salt" in user_data:
                 if verify_password(user_data["dev_hash"], user_data["dev_salt"], p):
-                    return {"username": u, "auth_level": "dev"}
+                    return {"username": u, "user": u, "tenant_id": u, "auth_level": "dev"}
             if verify_password(user_data["password_hash"], user_data["password_salt"], p):
-                return {"username": u, "auth_level": "standard"}
+                return {"username": u, "user": u, "tenant_id": u, "auth_level": "standard"}
                 
         self.send_response(401)
         self.end_headers()

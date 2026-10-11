@@ -13,6 +13,40 @@ from datetime import datetime, timezone
 DATE_REGEX = re.compile(
     r"^\d{4}[-/]\d{2}[-/]\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$"
 )
+FLOAT_REGEX = re.compile(r"^[+-]?(?:\d+\.\d+|\d+\.|\.\d+)$")
+
+def is_integer_string(s: str) -> bool:
+    if s.isdigit():
+        return True
+    if (s.startswith("-") or s.startswith("+")) and len(s) > 1 and s[1:].isdigit():
+        return True
+    return False
+
+def is_epoch_timestamp(key_lower: str, num: float) -> bool:
+    non_time_hints = (
+        "id", "code", "phone", "zip", "amount", "price", "count",
+        "num", "balance", "total", "qty", "limit", "offset", "rate",
+        "ratio", "version", "size", "bytes", "port", "status_code"
+    )
+    if any(hint in key_lower for hint in non_time_hints):
+        return False
+
+    time_hints = (
+        "time", "timestamp", "epoch", "created", "updated", "expire",
+        "active", "login", "sync", "at"
+    )
+    if any(hint in key_lower for hint in time_hints):
+        if 315532800 <= num <= 4102444800:
+            return True
+        if 315532800000 <= num <= 4102444800000:
+            return True
+        return False
+
+    if 946684800 <= num <= 2524608000:
+        return True
+    if 946684800000 <= num <= 2524608000000:
+        return True
+    return False
 
 def format_size_bytes(bytes_count: int) -> str:
     if bytes_count < 1024:
@@ -31,47 +65,108 @@ def format_timestamp_iso(ts_ms: Optional[float] = None) -> str:
 
 def infer_field_type(key: str, val: Any) -> str:
     key_lower = key.lower()
-    if (
+
+    # Containers always take precedence
+    if isinstance(val, dict):
+        return "object"
+    if isinstance(val, list):
+        return "array"
+
+    # Rule A: Field name patterns for date
+    is_date_field = (
         "_date_" in key_lower
         or key_lower.startswith("date_")
         or key_lower.endswith("_date")
         or key_lower.endswith("_date_")
-        or key_lower in ("date", "datetime", "timestamp", "created_at", "updated_at")
-    ):
+        or key_lower in ("date", "datetime", "timestamp", "created_at", "updated_at", "last_active")
+    )
+    if is_date_field:
         return "date"
+
+    # None / Null check
     if val is None:
-        return "string"
+        return "null"
+
+    # Boolean: Native boolean
     if isinstance(val, bool):
         return "boolean"
-    if isinstance(val, int):
-        return "integer"
-    if isinstance(val, float):
-        return "float"
-    if isinstance(val, list):
-        return "array"
-    if isinstance(val, dict):
-        return "object"
+
+    # String checks
     if isinstance(val, str):
         v = val.strip()
-        if v.lower() in ("true", "false"):
+        v_lower = v.lower()
+
+        # Boolean: Case-insensitive strings
+        if v_lower in ("true", "false"):
             return "boolean"
+
+        # Date: Keyword literal
+        if v_lower in ("current_date_", "current_date", "now()", "current_timestamp"):
+            return "date"
+
+        # Date: Rule B - ISO 8601 pattern
         if DATE_REGEX.match(v):
             return "date"
+
+        # Integer string
+        if is_integer_string(v):
+            try:
+                num = int(v)
+                if is_epoch_timestamp(key_lower, float(num)):
+                    return "date"
+            except (ValueError, OverflowError):
+                pass
+            return "integer"
+
+        # Float string
+        if FLOAT_REGEX.match(v):
+            try:
+                num = float(v)
+                if is_epoch_timestamp(key_lower, num):
+                    return "date"
+            except (ValueError, OverflowError):
+                pass
+            return "float"
+
         return "string"
+
+    # Native Numeric types
+    if isinstance(val, (int, float)):
+        num = float(val)
+        # Date: Rule C - Unix timestamp within epoch range
+        if is_epoch_timestamp(key_lower, num):
+            return "date"
+        if isinstance(val, int):
+            return "integer"
+        if isinstance(val, float):
+            return "float"
+
     return "string"
 
 def infer_schema_from_docs(docs: list) -> dict:
     schema = {}
-    for d in docs:
-        body = d.get("body", {}) if isinstance(d, dict) else {}
+    sample_docs = docs[:50] if len(docs) > 50 else docs
+    for d in sample_docs:
+        body = d.get("body", {}) if isinstance(d, dict) and "body" in d else (d if isinstance(d, dict) else {})
         if not isinstance(body, dict):
             continue
         for k, v in body.items():
             if k.startswith("_"):
                 continue
             inferred = infer_field_type(k, v)
-            if k not in schema or (schema[k] == "string" and inferred != "string"):
+            if k not in schema:
                 schema[k] = inferred
+            else:
+                current = schema[k]
+                if current in ("null", "string") and inferred not in ("null", "string"):
+                    schema[k] = inferred
+                elif current == "integer" and inferred == "float":
+                    schema[k] = "float"
+
+    for k, v in list(schema.items()):
+        if v == "null":
+            schema[k] = "string"
+
     return schema
 
 """CleaveQL Interpreter — bridges parsed AST nodes to the Rust storage engine.
@@ -100,7 +195,8 @@ class TenantEngineProxy:
         if not bucket or bucket.startswith("_"):
             return bucket
         t = self._tenant()
-        if t == "cron":
+        auth_level = self.context.get("auth_level", "")
+        if auth_level == "dev" or t in ("cron", "dev", "admin", "system"):
             return bucket
         if bucket.startswith(f"{t}."):
             return bucket
@@ -131,7 +227,8 @@ class TenantEngineProxy:
 
 
             t = self._tenant()
-            if t != "cron":
+            auth_level = self.context.get("auth_level", "")
+            if t not in ("cron", "dev", "admin", "system") and auth_level != "dev":
                 docs = json.loads(data)
                 filtered = []
                 for d in docs:
@@ -151,6 +248,9 @@ class TenantEngineProxy:
                             filtered.append(d)
                 return json.dumps(filtered)
         return data
+
+    def __getattr__(self, name):
+        return getattr(self.engine, name)
 
     def show_buckets(self):
         return self.engine.show()

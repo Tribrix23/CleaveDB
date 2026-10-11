@@ -1353,8 +1353,17 @@ class Parser:
                     escaped = tok.value.replace('\\', '\\\\').replace('"', '\\"') if isinstance(tok.value, str) else str(tok.value)
                     parts.append(f'"{escaped}"')
                 elif tok.type == TokenType.IDENTIFIER:
-                    # Identifiers in JSON context are typically keys — quote them
-                    parts.append(f'"{tok.lexeme}"')
+                    # Check if this identifier is a value following a colon
+                    last_non_ws = None
+                    for p in reversed(parts):
+                        if p.strip():
+                            last_non_ws = p.strip()
+                            break
+                    if last_non_ws == ":" and tok.lexeme.lower() in ("true", "false", "null"):
+                        parts.append(tok.lexeme.lower())
+                    else:
+                        # Identifiers in JSON context are typically keys — quote them
+                        parts.append(f'"{tok.lexeme}"')
                 else:
                     parts.append(tok.lexeme)
             json_str = "".join(parts)
