@@ -11,6 +11,12 @@ use crate::engine::{
     Catalog, ShardManager, InvertedIndex, Document, Database,
 };
 
+const RESERVED_BUCKET_NAMES: &[&str] = &[
+    "buckets", "bucket", "bonds", "bond", "links", "link",
+    "indexes", "index", "stats", "webhooks", "views", "nodes",
+    "coordinator", "raft", "meaning"
+];
+
 /// Python-facing CleaveDB handle that owns the full storage engine.
 #[pyclass]
 pub struct CleaveDB {
@@ -115,6 +121,14 @@ impl CleaveDB {
 
     /// Insert a document: pour(bucket, doc_id, json_string)
     pub fn pour(&self, bucket: &str, doc_id: Option<&str>, json_body: &str) -> PyResult<String> {
+        let b_lower = bucket.to_lowercase();
+        if RESERVED_BUCKET_NAMES.contains(&b_lower.as_str()) {
+            return Err(PyRuntimeError::new_err(format!(
+                "Cannot use reserved keyword '{}' as a bucket name. This name is reserved for CleaveQL catalog commands.",
+                bucket
+            )));
+        }
+
         let body: serde_json::Value = serde_json::from_str(json_body)
             .map_err(|e| PyValueError::new_err(format!("Invalid JSON: {}", e)))?;
 

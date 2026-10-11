@@ -1,6 +1,7 @@
 from typing import List, Any, Optional
 from .tokens import Token, TokenType
 from .ast import *
+from .security import RESERVED_BUCKET_NAMES
 import json
 
 class ParseError(Exception):
@@ -9,10 +10,26 @@ class ParseError(Exception):
         super().__init__(self.message)
 
 class Parser:
-    def __init__(self, tokens: List[Token]):
+    def __init__(self, tokens: List[Token], auth_level: str = "standard"):
         self.tokens = tokens
         self.current = 0
         self.errors = []
+        self.auth_level = auth_level
+
+    def _validate_bucket_mutation(self, bucket: str):
+        if not bucket:
+            return
+        b_lower = bucket.strip().lower()
+        if b_lower in RESERVED_BUCKET_NAMES:
+            raise self.error(
+                self.previous(),
+                f"Cannot use reserved keyword '{bucket}' as a bucket name. This name is reserved for CleaveQL catalog commands."
+            )
+        if b_lower.startswith("_") and self.auth_level != "dev":
+            raise self.error(
+                self.previous(),
+                f"Cannot write directly to system bucket '{bucket}'."
+            )
 
     def parse(self) -> List[Any]:
         statements = []
@@ -626,6 +643,7 @@ class Parser:
             if self.match(TokenType.IDENTIFIER) and self.previous().lexeme.lower() == "inside":
                 if self.match(TokenType.STRING): bucket = self.previous().value
                 else: bucket = self.consume_identifier("Expected bucket name.")
+                self._validate_bucket_mutation(bucket)
                 doc_id = self.consume_doc_id("Expected document ID.")
                 if self.match(TokenType.IDENTIFIER) and self.previous().lexeme.lower() == "at":
                     field = self.consume_identifier("Expected field path.")
@@ -635,6 +653,7 @@ class Parser:
         if self.match(TokenType.INTO):
             if self.match(TokenType.STRING): bucket = self.previous().value
             else: bucket = self.consume_identifier("Expected bucket name.")
+            self._validate_bucket_mutation(bucket)
             
             # Support auto-generated RANDOM IDs natively
             if self.match(TokenType.RANDOM):
@@ -666,6 +685,7 @@ class Parser:
             self.consume(TokenType.INTO, "Expected 'into' after 'pour many'.")
             if self.match(TokenType.STRING): bucket = self.previous().value
             else: bucket = self.consume_identifier("Expected bucket name.")
+            self._validate_bucket_mutation(bucket)
             data = self.consume_json("Expected JSON array.")
             return PourManyStmt(bucket=bucket, json_array=data)
         else:
@@ -679,11 +699,13 @@ class Parser:
             else: self.consume(TokenType.INTO, "Expected 'in' or 'into'.")
             if self.match(TokenType.STRING): bucket = self.previous().value
             else: bucket = self.consume_identifier("Expected bucket name.")
+            self._validate_bucket_mutation(bucket)
             if self.match(TokenType.TO, TokenType.SET): pass
         else:
             # Format: CHANGE bucket "id" SET field TO value
             if self.match(TokenType.STRING): bucket = self.previous().value
             else: bucket = self.consume_identifier("Expected bucket name.")
+            self._validate_bucket_mutation(bucket)
             doc_id = self.consume_doc_id("Expected document ID.")
             self.consume(TokenType.SET, "Expected 'set' after document ID.")
         
@@ -704,6 +726,7 @@ class Parser:
 
     def drain_stmt(self) -> Any:
         bucket = self.consume_identifier("Expected bucket name.")
+        self._validate_bucket_mutation(bucket)
         
         if self.match(TokenType.WHERE):
             where = self._parse_where()

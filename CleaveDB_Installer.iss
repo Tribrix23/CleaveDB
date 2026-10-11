@@ -1,10 +1,10 @@
 [Setup]
 AppName=CleaveDB
-AppVersion=4.0.1
+AppVersion=4.0.2
 DefaultDirName={autopf}\CleaveDB
 DefaultGroupName=CleaveDB
 OutputDir=dist
-OutputBaseFilename=CleaveDB-v4.0.1-Setup
+OutputBaseFilename=CleaveDB-v4.0.2-Setup
 SetupIconFile=cleavedb.ico
 Compression=lzma
 SolidCompression=yes

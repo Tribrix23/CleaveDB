@@ -1,6 +1,24 @@
 class SecurityError(Exception):
     pass
 
+RESERVED_BUCKET_NAMES = {
+    "buckets", "bucket", "bonds", "bond", "links", "link",
+    "indexes", "index", "stats", "webhooks", "views", "nodes",
+    "coordinator", "raft", "meaning"
+}
+
+def validate_bucket_mutation(bucket_name: str, auth_level: str = "standard") -> None:
+    if not bucket_name:
+        raise SecurityError("Bucket name cannot be empty.")
+    b_lower = bucket_name.strip().lower()
+    if b_lower in RESERVED_BUCKET_NAMES:
+        raise SecurityError(
+            f"Cannot use reserved keyword '{bucket_name}' as a bucket name. This name is reserved for CleaveQL catalog commands."
+        )
+    if b_lower.startswith("_") and auth_level != "dev":
+        raise SecurityError(f"Cannot write directly to system bucket '{bucket_name}'.")
+
+
 class PolicyEngine:
     def __init__(self):
         self.policies = {}

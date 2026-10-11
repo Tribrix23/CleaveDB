@@ -12,7 +12,7 @@ import os
 When engine is a CleaveDB instance (from PyO3), calls the real Rust methods.
 When engine is None, returns mock results for testing.
 """
-from .security import PolicyEngine, SecurityError, validate_webhook_url, MAX_FORECAST_HORIZON
+from .security import PolicyEngine, SecurityError, validate_webhook_url, MAX_FORECAST_HORIZON, RESERVED_BUCKET_NAMES
 
 
 class TenantEngineProxy:
@@ -95,6 +95,23 @@ class TenantEngineProxy:
 class Interpreter:
     def _scan_bucket_rls(self, bucket):
         return self.engine.scan_bucket(bucket)
+
+    def _validate_bucket_mutation(self, bucket: str):
+        if not bucket:
+            return None
+        b_lower = bucket.strip().lower()
+        if b_lower in RESERVED_BUCKET_NAMES:
+            return {
+                "status": "error",
+                "message": f"Cannot use reserved keyword '{bucket}' as a bucket name. This name is reserved for CleaveQL catalog commands."
+            }
+        auth_level = self.context.get("auth_level", "standard")
+        if b_lower.startswith("_") and auth_level != "dev":
+            return {
+                "status": "error",
+                "message": f"Cannot write directly to system bucket '{bucket}'."
+            }
+        return None
 
     def _validate_doc_and_bucket(self, gid, role_desc="Document"):
         if not gid or not isinstance(gid, str):
@@ -717,6 +734,9 @@ class Interpreter:
 
         elif stmt_type == "PourStmt":
             bucket = getattr(stmt, "bucket", "")
+            val_err = self._validate_bucket_mutation(bucket)
+            if val_err:
+                return val_err
             doc_id = getattr(stmt, "doc_id", None)
             body = getattr(stmt, "json_body", None)
 
@@ -856,6 +876,9 @@ class Interpreter:
 
         elif stmt_type == "PourManyStmt":
             bucket = getattr(stmt, "bucket", "")
+            val_err = self._validate_bucket_mutation(bucket)
+            if val_err:
+                return val_err
             documents = getattr(stmt, "json_array", [])
             if isinstance(documents, str):
                 documents = json.loads(documents)
@@ -1404,6 +1427,9 @@ class Interpreter:
         elif stmt_type == "ChangeStmt":
             doc_id = getattr(stmt, "doc_id", None)
             bucket = getattr(stmt, "bucket", "")
+            val_err = self._validate_bucket_mutation(bucket)
+            if val_err:
+                return val_err
             if bucket and not self._bucket_exists(bucket):
                 return {
                     "status": "error",
@@ -3063,6 +3089,9 @@ class Interpreter:
         elif stmt_type == "DrainStmt":
 
             bucket = getattr(stmt, "bucket", "")
+            val_err = self._validate_bucket_mutation(bucket)
+            if val_err:
+                return val_err
             if bucket and not self._bucket_exists(bucket):
                 return {
                     "status": "error",

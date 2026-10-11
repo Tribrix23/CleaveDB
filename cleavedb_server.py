@@ -14,6 +14,7 @@ from cleaveql.lexer import Lexer
 from cleaveql.parser import Parser
 import socket
 from cleaveql.interpreter import Interpreter
+from cleaveql.security import RESERVED_BUCKET_NAMES
 from pysyncobj import SyncObj, replicated_sync, SyncObjConf
 
 
@@ -220,6 +221,12 @@ class RestApiHandler(BaseHTTPRequestHandler):
             
         if len(parts) == 3 and parts[0] == 'api':
             bucket = parts[2]
+            if bucket.lower() in RESERVED_BUCKET_NAMES:
+                self.send_error(400, f"Cannot use reserved keyword '{bucket}' as a bucket name.")
+                return
+            if bucket.startswith("_") and auth_ctx.get("auth_level") != "dev":
+                self.send_error(403, f"Cannot write directly to system bucket '{bucket}'.")
+                return
             query = f"POUR INTO {bucket} RANDOM {body}"
             self.execute_and_respond(query, auth_ctx)
         else:
@@ -233,6 +240,12 @@ class RestApiHandler(BaseHTTPRequestHandler):
         if len(parts) == 4 and parts[0] == 'api':
             bucket = parts[2]
             doc_id = parts[3]
+            if bucket.lower() in RESERVED_BUCKET_NAMES:
+                self.send_error(400, f"Cannot use reserved keyword '{bucket}' as a bucket name.")
+                return
+            if bucket.startswith("_") and auth_ctx.get("auth_level") != "dev":
+                self.send_error(403, f"Cannot write directly to system bucket '{bucket}'.")
+                return
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length).decode('utf-8')
             query = f'POUR INTO {bucket} "{doc_id}" {body}'
@@ -248,6 +261,12 @@ class RestApiHandler(BaseHTTPRequestHandler):
         if len(parts) == 4 and parts[0] == 'api':
             bucket = parts[2]
             doc_id = parts[3]
+            if bucket.lower() in RESERVED_BUCKET_NAMES:
+                self.send_error(400, f"Cannot use reserved keyword '{bucket}' as a bucket name.")
+                return
+            if bucket.startswith("_") and auth_ctx.get("auth_level") != "dev":
+                self.send_error(403, f"Cannot write directly to system bucket '{bucket}'.")
+                return
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length).decode('utf-8')
             try:
@@ -272,6 +291,12 @@ class RestApiHandler(BaseHTTPRequestHandler):
         if len(parts) == 4 and parts[0] == 'api':
             bucket = parts[2]
             doc_id = parts[3]
+            if bucket.lower() in RESERVED_BUCKET_NAMES:
+                self.send_error(400, f"Cannot use reserved keyword '{bucket}' as a bucket name.")
+                return
+            if bucket.startswith("_") and auth_ctx.get("auth_level") != "dev":
+                self.send_error(403, f"Cannot write directly to system bucket '{bucket}'.")
+                return
             query = f'DRAIN {bucket} "{doc_id}"'
             self.execute_and_respond(query, auth_ctx)
         else:

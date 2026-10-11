@@ -861,7 +861,7 @@ Example:
 
 HELP_TEXT = """
 ================================================================================
-  CleaveDB 4.0.1 Manual (CleaveQL) - Complete Reference
+  CleaveDB 4.0.2 Manual (CleaveQL) - Complete Reference
 ================================================================================
 
 1. WRITE & UPDATE (Mutations)
