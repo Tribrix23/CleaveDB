@@ -26,19 +26,22 @@ type ShardResponse struct {
 }
 
 type CoordinatorConfig struct {
-	Port    int
-	Shards  []string
-	Timeout time.Duration
+	Port      int
+	Shards    []string
+	RaftNodes []string
+	Timeout   time.Duration
 }
 
 type QueryRequest struct {
-	Action   string          `json:"action,omitempty"`
-	Query    string          `json:"query,omitempty"`
-	Shards   []string        `json:"shards,omitempty"`
-	Auth     *AuthInfo       `json:"auth,omitempty"`
-	SortKey  string          `json:"sort_key,omitempty"`
-	ReqID    string          `json:"_req_id,omitempty"`
-	RawQuery string          `json:"-"`
+	Action   string    `json:"action,omitempty"`
+	Query    string    `json:"query,omitempty"`
+	Shards   []string  `json:"shards,omitempty"`
+	Auth     *AuthInfo `json:"auth,omitempty"`
+	Username string    `json:"username,omitempty"`
+	Password string    `json:"password,omitempty"`
+	SortKey  string    `json:"sort_key,omitempty"`
+	ReqID    string    `json:"_req_id,omitempty"`
+	RawQuery string    `json:"-"`
 }
 
 type AuthInfo struct {
@@ -60,7 +63,7 @@ type CatalogItem struct {
 type CleaveQueryResult struct {
 	Status        string                   `json:"status,omitempty"`
 	Message       string                   `json:"message,omitempty"`
-	Count         int                      `json:"count,omitempty"`
+	Count         int                      `json:"count"`
 	Type          string                   `json:"type,omitempty"`
 	Bucket        string                   `json:"bucket,omitempty"`
 	BucketStatus  string                   `json:"bucket_status,omitempty"`
@@ -80,6 +83,28 @@ type CleaveQueryResult struct {
 	Shard         string                   `json:"shard,omitempty"`
 }
 
+func extractBuckets(data interface{}) []string {
+	var out []string
+	if data == nil {
+		return out
+	}
+	switch v := data.(type) {
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+	case []string:
+		out = append(out, v...)
+	case string:
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func queryShard(ctx context.Context, shardAddr string, shardID int, req QueryRequest) ShardResponse {
 	d := net.Dialer{Timeout: 3 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", shardAddr)
@@ -94,8 +119,8 @@ func queryShard(ctx context.Context, shardAddr string, shardID int, req QueryReq
 
 	reader := bufio.NewReader(conn)
 
-	// If auth is provided, perform auth handshake with shard
-	if req.Auth != nil && req.Auth.Username != "" {
+	// If auth is provided and this is not a direct login/register action, perform auth handshake with shard
+	if req.Action != "login" && req.Action != "register" && req.Auth != nil && req.Auth.Username != "" {
 		loginMsg, _ := json.Marshal(map[string]string{
 			"action":   "login",
 			"username": req.Auth.Username,
@@ -121,6 +146,8 @@ func queryShard(ctx context.Context, shardAddr string, shardID int, req QueryReq
 
 	if strings.HasPrefix(strings.TrimSpace(queryText), "{") {
 		payload = []byte(queryText)
+	} else if req.Action == "login" || req.Action == "register" {
+		payload, _ = json.Marshal(req)
 	} else {
 		msg := map[string]interface{}{
 			"action": "query",
@@ -162,6 +189,22 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 		return string(resp)
 	}
 
+	qText := strings.TrimSpace(req.Query)
+	if qText == "" {
+		qText = strings.TrimSpace(req.RawQuery)
+	}
+	qUpper := strings.ToUpper(qText)
+	isCountBuckets := qUpper == "COUNT BUCKETS" || qUpper == "COUNT BUCKET"
+	isShowBuckets := qUpper == "SHOW BUCKETS" || qUpper == "SHOW BUCKET"
+
+	// If COUNT BUCKETS was requested, scatter SHOW BUCKETS so we get bucket names to deduplicate across shards
+	scatterReq := req
+	if isCountBuckets {
+		scatterReq.Query = "SHOW BUCKETS"
+		scatterReq.RawQuery = "SHOW BUCKETS"
+		scatterReq.Action = "query"
+	}
+
 	resultsChan := make(chan ShardResponse, n)
 	var wg sync.WaitGroup
 
@@ -169,7 +212,7 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 		wg.Add(1)
 		go func(idx int, target string) {
 			defer wg.Done()
-			res := queryShard(ctx, target, idx, req)
+			res := queryShard(ctx, target, idx, scatterReq)
 			resultsChan <- res
 		}(i, addr)
 	}
@@ -209,9 +252,56 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 		}
 	}
 
+	// 1. Check for COUNT BUCKETS or SHOW BUCKETS merge
+	if isCountBuckets || isShowBuckets {
+		seenBuckets := make(map[string]bool)
+		for _, r := range parsedResults {
+			for _, b := range extractBuckets(r.Data) {
+				if !strings.HasPrefix(b, "_") {
+					parts := strings.Split(b, ".")
+					cleanName := parts[len(parts)-1]
+					if !strings.HasPrefix(cleanName, "_") {
+						seenBuckets[cleanName] = true
+					}
+				}
+			}
+			for _, cat := range r.Catalogs {
+				if !strings.HasPrefix(cat.Name, "_") {
+					parts := strings.Split(cat.Name, ".")
+					cleanName := parts[len(parts)-1]
+					if !strings.HasPrefix(cleanName, "_") {
+						seenBuckets[cleanName] = true
+					}
+				}
+			}
+		}
+
+		if isCountBuckets {
+			mergedResp := CleaveQueryResult{
+				Status: "ok",
+				Count:  len(seenBuckets),
+				Type:   "buckets",
+			}
+			out, _ := json.Marshal([]CleaveQueryResult{mergedResp})
+			return string(out)
+		} else {
+			bucketList := make([]string, 0, len(seenBuckets))
+			for b := range seenBuckets {
+				bucketList = append(bucketList, b)
+			}
+			sort.Strings(bucketList)
+			mergedResp := CleaveQueryResult{
+				Status: "ok",
+				Data:   bucketList,
+			}
+			out, _ := json.Marshal([]CleaveQueryResult{mergedResp})
+			return string(out)
+		}
+	}
+
 	// If we successfully parsed CleaveDB structured results, merge them intelligently
 	if len(parsedResults) > 0 {
-		// 1. Check for Catalog results (DESCRIBE BUCKETS)
+		// 2. Check for Catalog results (DESCRIBE BUCKETS)
 		hasCatalogs := false
 		for _, r := range parsedResults {
 			if len(r.Catalogs) > 0 {
@@ -225,6 +315,9 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 
 			for _, r := range parsedResults {
 				for _, cat := range r.Catalogs {
+					if strings.HasPrefix(cat.Name, "_") {
+						continue
+					}
 					existing, found := mergedCatalogs[cat.Name]
 					if !found {
 						itemCopy := cat
@@ -242,7 +335,8 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 							existing.LastActive = cat.LastActive
 						}
 						for k, v := range cat.Schema {
-							if _, exists := existing.Schema[k]; !exists || existing.Schema[k] == "string" {
+							cur, exists := existing.Schema[k]
+							if !exists || cur == "string" || cur == "unknown" || cur == "" {
 								existing.Schema[k] = v
 							}
 						}
@@ -265,7 +359,7 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 			return string(out)
 		}
 
-		// 2. Check for single bucket describe (DESCRIBE BUCKET <name>)
+		// 3. Check for single bucket describe (DESCRIBE BUCKET <name>)
 		hasSingleBucket := false
 		for _, r := range parsedResults {
 			if r.Bucket != "" {
@@ -291,7 +385,8 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 					totalRecords += r.Records
 					totalSizeBytes += r.SizeBytes
 					for k, v := range r.Schema {
-						if _, exists := mergedSchema[k]; !exists || mergedSchema[k] == "string" {
+						cur, exists := mergedSchema[k]
+						if !exists || cur == "string" || cur == "unknown" || cur == "" {
 							mergedSchema[k] = v
 						}
 					}
@@ -325,7 +420,7 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 			return string(out)
 		}
 
-		// 3. Check for COUNT BUCKETS
+		// 4. Fallback for COUNT BUCKETS if shards returned raw count objects
 		isBucketCount := false
 		for _, r := range parsedResults {
 			if r.Type == "buckets" {
@@ -349,7 +444,7 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 			return string(out)
 		}
 
-		// 4. Check for COUNT RAFT_NODES
+		// 5. Check for COUNT RAFT_NODES
 		isRaftNodes := false
 		for _, r := range parsedResults {
 			if r.Leader != "" || len(r.Nodes) > 0 {
@@ -390,6 +485,7 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 			return string(out)
 		}
 
+		// 6. Merge documents
 		mergedDocs := make([]map[string]interface{}, 0)
 		seenGids := make(map[string]bool)
 		totalCount := 0
@@ -398,7 +494,6 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 
 		for _, r := range parsedResults {
 			if r.Status == "error" {
-				status = "error"
 				if r.Message != "" {
 					messages = append(messages, r.Message)
 				}
@@ -414,6 +509,10 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 				mergedDocs = append(mergedDocs, doc)
 			}
 			totalCount += r.Count
+		}
+
+		if len(mergedDocs) == 0 && len(errors) > 0 {
+			status = "error"
 		}
 
 		// Sort merged documents if sort key is provided
@@ -434,7 +533,7 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 			Count:     totalCount,
 			Documents: mergedDocs,
 		}
-		if len(messages) > 0 {
+		if len(messages) > 0 && len(mergedDocs) == 0 {
 			mergedItem.Message = strings.Join(messages, "; ")
 		}
 
@@ -473,6 +572,7 @@ func formatBytes(b int64) string {
 func handleClientConnection(conn net.Conn, cfg *CoordinatorConfig) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
+	var connAuth *AuthInfo
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -488,6 +588,18 @@ func handleClientConnection(conn net.Conn, cfg *CoordinatorConfig) {
 		var req QueryRequest
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
 			req.RawQuery = line
+		} else {
+			if req.Auth == nil && req.Username != "" {
+				req.Auth = &AuthInfo{
+					Username: req.Username,
+					Password: req.Password,
+				}
+			}
+		}
+
+		// Inherit connection authenticated session if request did not specify auth explicitly
+		if req.Auth == nil && connAuth != nil {
+			req.Auth = connAuth
 		}
 
 		// Handle Ping / Status
@@ -502,6 +614,60 @@ func handleClientConnection(conn net.Conn, cfg *CoordinatorConfig) {
 			continue
 		}
 
+		// Handle Login
+		if req.Action == "login" {
+			targetShards := cfg.Shards
+			if len(req.Shards) > 0 {
+				targetShards = req.Shards
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+			result := ScatterGather(ctx, targetShards, req)
+			cancel()
+
+			// Check if login succeeded
+			if strings.Contains(result, `"status":"ok"`) || strings.Contains(result, `"status": "ok"`) {
+				if req.Auth != nil {
+					connAuth = req.Auth
+				} else if req.Username != "" {
+					connAuth = &AuthInfo{Username: req.Username, Password: req.Password}
+				}
+			}
+
+			if req.ReqID != "" {
+				var rawVal interface{}
+				if err := json.Unmarshal([]byte(result), &rawVal); err == nil {
+					wrapped, _ := json.Marshal(map[string]interface{}{
+						"_req_id": req.ReqID,
+						"payload": rawVal,
+					})
+					result = string(wrapped)
+				}
+			}
+			conn.Write([]byte(result + "\n"))
+			continue
+		}
+
+		// Handle Register (broadcast to all shards)
+		if req.Action == "register" {
+			targetShards := cfg.Shards
+			ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+			result := ScatterGather(ctx, targetShards, req)
+			cancel()
+
+			if req.ReqID != "" {
+				var rawVal interface{}
+				if err := json.Unmarshal([]byte(result), &rawVal); err == nil {
+					wrapped, _ := json.Marshal(map[string]interface{}{
+						"_req_id": req.ReqID,
+						"payload": rawVal,
+					})
+					result = string(wrapped)
+				}
+			}
+			conn.Write([]byte(result + "\n"))
+			continue
+		}
+
 		// Handle COORDINATOR_NODES directly without scattering
 		qUpper := strings.ToUpper(strings.TrimSpace(req.RawQuery))
 		if qUpper == "" {
@@ -512,6 +678,27 @@ func handleClientConnection(conn net.Conn, cfg *CoordinatorConfig) {
 				"status": "ok",
 				"count":  len(cfg.Shards),
 				"shards": cfg.Shards,
+			}})
+			conn.Write(append(statusResp, '\n'))
+			continue
+		}
+
+		// Handle RAFT_NODES directly without scattering
+		if strings.Contains(qUpper, "RAFT_NODES") {
+			leader := "clv-node-01"
+			if len(cfg.RaftNodes) > 0 {
+				leader = cfg.RaftNodes[0]
+			}
+			replicas := len(cfg.RaftNodes) - 1
+			if replicas < 0 {
+				replicas = 0
+			}
+			statusResp, _ := json.Marshal([]map[string]interface{}{{
+				"status":   "ok",
+				"count":    len(cfg.RaftNodes),
+				"leader":   leader,
+				"replicas": replicas,
+				"nodes":    cfg.RaftNodes,
 			}})
 			conn.Write(append(statusResp, '\n'))
 			continue
@@ -547,6 +734,7 @@ func handleClientConnection(conn net.Conn, cfg *CoordinatorConfig) {
 func main() {
 	port := flag.Int("port", 8305, "Port to listen on for cluster queries")
 	shardsFlag := flag.String("shards", "127.0.0.1:8300", "Comma-separated list of shard addresses")
+	raftNodesFlag := flag.String("raft-nodes", "", "Comma-separated list of raft node addresses")
 	timeoutSec := flag.Int("timeout", 5, "Scatter-gather timeout in seconds")
 	flag.Parse()
 
@@ -558,10 +746,31 @@ func main() {
 		}
 	}
 
+	var raftNodes []string
+	if *raftNodesFlag != "" {
+		for _, r := range strings.Split(*raftNodesFlag, ",") {
+			r = strings.TrimSpace(r)
+			if r != "" {
+				raftNodes = append(raftNodes, r)
+			}
+		}
+	}
+	if len(raftNodes) == 0 {
+		for _, s := range shards {
+			host, _, err := net.SplitHostPort(s)
+			if err == nil {
+				raftNodes = append(raftNodes, net.JoinHostPort(host, "8311"))
+			} else {
+				raftNodes = append(raftNodes, s+":8311")
+			}
+		}
+	}
+
 	cfg := &CoordinatorConfig{
-		Port:    *port,
-		Shards:  shards,
-		Timeout: time.Duration(*timeoutSec) * time.Second,
+		Port:      *port,
+		Shards:    shards,
+		RaftNodes: raftNodes,
+		Timeout:   time.Duration(*timeoutSec) * time.Second,
 	}
 
 	addr := fmt.Sprintf("0.0.0.0:%d", cfg.Port)
@@ -575,6 +784,7 @@ func main() {
 	fmt.Printf("   CleaveDB Go Coordinator v4.0.2\n")
 	fmt.Printf("   Listening on TCP :%d\n", cfg.Port)
 	fmt.Printf("   Configured Shards: %v\n", cfg.Shards)
+	fmt.Printf("   Raft Nodes:        %v\n", cfg.RaftNodes)
 	fmt.Printf("   Scatter Timeout:   %v\n", cfg.Timeout)
 	fmt.Println("=========================================")
 

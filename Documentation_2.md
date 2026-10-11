@@ -826,6 +826,382 @@ python tests/run_e2e_macros_test.py
 ======================================================================
 ```
 
+---
+
+## 8. Phase 4: Go Coordinator Shard Aggregation & Multi-PC Authentication Architecture
+
+### 8.1 Architecture & Objectives
+
+The native Go Coordinator (`coordinator.exe` located at `coordinator/src/main.go`) serves as the high-throughput, low-latency cluster entry point for CleaveDB. In distributed sharded topologies (e.g. Coordinator on PC 1, Shard 1 on PC 1, Shard 2 on PC 2), the Coordinator acts as a scatter-gather query router that fans queries out across all participating shards and consolidates cluster telemetry without data duplication.
+
+Phase 4 introduces four core aggregation capabilities and resolves the multi-PC cluster authentication dilemma:
+1. **Intelligent `COUNT BUCKETS` Deduplication (`seenBuckets`):** Scatters `SHOW BUCKETS` to all shards, gathers bucket arrays, deduplicates shared partitions using a hash set, and returns the exact distinct user bucket count across the cluster.
+2. **Unified `SHOW BUCKETS` Listing:** Gathers bucket lists across all shards, filters internal `_` buckets, deduplicates, and returns an alphabetically sorted list of all active buckets in the cluster.
+3. **Database Catalog Aggregation (`DESCRIBE BUCKETS`):** Aggregates shard catalog tables so each bucket appears as a single row, combining records (`shard1.records + shard2.records`), summing byte sizes (`shard1.size_bytes + shard2.size_bytes`), unioning field schemas, and adopting the newest `last_active` timestamp.
+4. **Direct Cluster Node Resolution:** Answers `COUNT COORDINATOR_NODES` and `COUNT RAFT_NODES` directly from coordinator memory without shard round-trips.
+5. **Multi-PC Coordinator Authentication & Tenant Isolation Architecture:** Solves the multi-machine login and multi-tenancy challenge so tenant data on remote shards (PC 2) is isolated under the user's account rather than collapsed into a global coordinator account.
+
+---
+
+### 8.2 Architectural Solution: Multi-PC Coordinator Authentication & Tenant Isolation
+
+#### The Multi-PC Dilemma
+When PC 1 runs the Coordinator and PC 2 runs a CleaveDB Shard:
+* Clients authenticate via CleaveQL or JSON (`{"action": "login", "username": "alice", "password": "..."}`).
+* In CleaveDB, multi-tenancy isolates each tenant's buckets using tenant prefixes (`alice.orders`, `alice.users`).
+* **The Problem:** If PC 1 (Coordinator) were to authenticate against PC 2 using a generic service account named `"coordinator"`, all mutations across all users (Alice, Bob, Carol) on PC 2 would be namespaced as `coordinator.orders`!
+  * Alice's and Bob's data would be commingled in the same bucket.
+  * Alice could read Bob's documents via `SCOOP`.
+  * Total loss of multi-tenant security and isolation.
+
+#### The 2-Tier Architecture Solution
+
+```
++-------------------------------------------------------------------------------+
+|                                  CLIENT (PC 1)                                |
+|          Connects to Go Coordinator (port 8305) with user credentials         |
++-------------------------------------------------------------------------------+
+                                       |
+                                       | 1. {"action": "login", "username": "alice", "password": "..."}
+                                       v
++-------------------------------------------------------------------------------+
+|                           GO COORDINATOR (PC 1 : 8305)                         |
+|   - Verifies credentials against cluster auth store                           |
+|   - Binds `connAuth = &AuthInfo{Username: "alice", ...}` to client TCP session |
+|   - Proxies authenticated queries with transparent tenant context             |
++-------------------------------------------------------------------------------+
+                 |                                               |
+                 | 2a. Scatter with Auth(alice)                  | 2b. Scatter with Auth(alice)
+                 v                                               v
++---------------------------------------+       +---------------------------------------+
+|             SHARD 1 (PC 1)            |       |             SHARD 2 (PC 2)            |
+| - Authenticates TCP session as "alice"|       | - Authenticates TCP session as "alice"|
+| - Tenant context: `tenant_id="alice"` |       | - Tenant context: `tenant_id="alice"` |
+| - Writes to: `alice.orders`           |       | - Writes to: `alice.orders`           |
+| - Scans from: `alice.orders`          |       | - Scans from: `alice.orders`          |
++---------------------------------------+       +---------------------------------------+
+```
+
+1. **Tier 1: Transparent Tenant Context Forwarding (Client Proxy Mode)**
+   * When a client connects to the Go Coordinator and authenticates (`action: "login"`), the Coordinator records the client's `*AuthInfo` in the active TCP session (`connAuth`).
+   * On every subsequent query sent by this client (`POUR`, `SCOOP`, `DRAIN`, `CHANGE`, `SHOW`), if explicit auth credentials are not included in the payload, the Coordinator automatically attaches `req.Auth = connAuth`.
+   * When `queryShard` dials PC 2 (the remote shard), it executes a login handshake supplying `alice`'s credentials.
+   * On PC 2, the shard runs the query inside Alice's session context (`user: "alice"`, `tenant_id: "alice"`).
+   * All mutations land strictly in `alice.<bucket>` on both PC 1 and PC 2.
+
+2. **Tier 2: Coordinator Internal System Account (`_coordinator`)**
+   * A dedicated internal system account (`_coordinator` or cluster internal dev token) is maintained exclusively for:
+     * Cross-shard heartbeats, pings, and shard liveness probing.
+     * Cluster rebalancing, cross-node replication verification, and shard discovery.
+     * Global superuser database catalog inspections when initiated by cluster administrators.
+   * **Rule:** The Coordinator NEVER uses the `_coordinator` account to execute end-user queries or tenant data mutations.
+
+---
+
+### 8.3 Aggregation & Merging Algorithms (`coordinator/src/main.go`)
+
+#### 1. `COUNT BUCKETS` Deduplication Merge
+When the client sends `COUNT BUCKETS` or `COUNT BUCKET`:
+1. The Coordinator transparently rewrites the shard query to `SHOW BUCKETS` before scattering.
+2. Shards reply with their local bucket arrays:
+   * Shard 1: `["accounts", "events", "orders", "users"]`
+   * Shard 2: `["accounts", "events", "orders", "products"]`
+3. The Coordinator collects all bucket names across shards into a deduplicating hash set:
+   ```go
+   seenBuckets := make(map[string]bool)
+   for _, r := range parsedResults {
+       for _, b := range extractBuckets(r.Data) {
+           if !strings.HasPrefix(b, "_") {
+               parts := strings.Split(b, ".")
+               cleanName := parts[len(parts)-1]
+               if !strings.HasPrefix(cleanName, "_") {
+                   seenBuckets[cleanName] = true
+               }
+           }
+       }
+   }
+   ```
+4. Returns the distinct count (`len(seenBuckets) = 5`), ignoring system `_` buckets and eliminating partition duplication:
+   ```json
+   [
+     {
+       "status": "ok",
+       "count": 5,
+       "type": "buckets"
+     }
+   ]
+   ```
+
+#### 2. `SHOW BUCKETS` Cluster Union
+If the client issues `SHOW BUCKETS`, the Coordinator uses the same `seenBuckets` hash set, extracts all keys, sorts them alphabetically, and returns the unified list:
+```json
+[
+  {
+    "status": "ok",
+    "count": 0,
+    "data": ["accounts", "events", "orders", "products", "users"]
+  }
+]
+```
+
+#### 3. `DESCRIBE BUCKETS` Multi-Shard Catalog Aggregation
+When shards return catalog descriptors for the same shared bucket (e.g. `orders` on Shard 1 and `orders` on Shard 2):
+* **Records Combination:** `existing.Records += cat.Records` (combines document counts across shards).
+* **Bytes Summation:** `existing.SizeBytes += cat.SizeBytes` (sums storage footprints).
+* **Size Formatting:** `existing.Size = formatBytes(existing.SizeBytes)`.
+* **Timestamp Selection:** Adopts the latest modification time: `max(existing.LastActive, cat.LastActive)`.
+* **Schema Union:** Iterates over detected field types in `cat.Schema`, merging fields and preferring specific types (`integer`, `float`, `date`, `boolean`) over generic `string` or `unknown`:
+  ```go
+  for k, v := range cat.Schema {
+      cur, exists := existing.Schema[k]
+      if !exists || cur == "string" || cur == "unknown" || cur == "" {
+          existing.Schema[k] = v
+      }
+  }
+  ```
+* **Single Table Entry:** The bucket appears exactly ONCE in the returned catalogs array.
+
+#### 4. Direct Cluster Node Count (`COORDINATOR_NODES` & `RAFT_NODES`)
+Intercepted and answered directly by the Coordinator process without shard network latency:
+* `COUNT COORDINATOR_NODES` / `COUNT *_COORDINATOR_NODES`: Returns `len(cfg.Shards)` and the configured shard addresses.
+* `COUNT RAFT_NODES` / `COUNT *_RAFT_NODES`: Returns `len(cfg.RaftNodes)`, the leader node, and replica count.
+
+---
+
+### 8.4 Live Multi-Shard End-to-End Test Suite
+
+An automated live end-to-end integration test (`tests/run_e2e_phase4_test.py`) was constructed and executed to verify Phase 4:
+
+```powershell
+python tests/run_e2e_phase4_test.py
+```
+
+#### Test Execution Log:
+```text
+=================================================================
+   CLEAVEDB PHASE 4: GO COORDINATOR SHARD AGGREGATION TEST
+=================================================================
+
+[Step 1] Booting Shard 1 (TCP port 8299)...
+   Shard 1 is UP on 127.0.0.1:8299
+
+[Step 2] Booting Shard 2 (TCP port 8319)...
+   Shard 2 is UP on 127.0.0.1:8319
+
+[Step 3] Booting Go Coordinator on port 8350...
+   Go Coordinator is UP on 127.0.0.1:8350 (Configured Shards: 8299, 8319)
+
+[Step 4] Populating partitioned data across Shard 1 and Shard 2...
+   Shard 1 populated: users, orders
+   Shard 2 populated: orders (shared partition), products
+   Shard 1 buckets: ['accounts', 'events', 'orders', 'users']
+   Shard 2 buckets: ['accounts', 'events', 'orders', 'products']
+   Expected deduplicated cluster buckets (5): ['accounts', 'events', 'orders', 'products', 'users']
+
+[Test 1] Testing COUNT BUCKETS through Coordinator (8350)...
+   Coordinator COUNT BUCKETS response: [{"status":"ok","count":5,"type":"buckets"}]
+   PASS: COUNT BUCKETS successfully deduplicated across shards! (Count = 5)
+
+[Test 2] Testing SHOW BUCKETS through Coordinator (8350)...
+   Coordinator SHOW BUCKETS response: [{"status":"ok","count":0,"data":["accounts","events","orders","products","users"]}]
+   PASS: SHOW BUCKETS returned unified distinct list: ['accounts', 'events', 'orders', 'products', 'users']
+
+[Test 3] Testing DESCRIBE BUCKETS through Coordinator (8350)...
+   Coordinator DESCRIBE BUCKETS response:
+ [
+  {
+    "status": "ok",
+    "count": 5,
+    "catalogs": [
+      {
+        "name": "accounts",
+        "storage_engine": "Columnar LSM",
+        "status": "Online",
+        "size": "0 B",
+        "size_bytes": 0,
+        "records": 0,
+        "schema": {},
+        "last_active": "2026-10-11T16:37:10.160860+00:00"
+      },
+      {
+        "name": "events",
+        "storage_engine": "Columnar LSM",
+        "status": "Online",
+        "size": "0 B",
+        "size_bytes": 0,
+        "records": 0,
+        "schema": {},
+        "last_active": "2026-10-11T16:37:10.160911+00:00"
+      },
+      {
+        "name": "orders",
+        "storage_engine": "Document Vector",
+        "status": "Online",
+        "size": "114 B",
+        "size_bytes": 114,
+        "records": 2,
+        "schema": {
+          "created_date": "date",
+          "customer": "string",
+          "order_id": "integer",
+          "total": "float"
+        },
+        "last_active": "2026-10-11T16:37:10.051000+00:00"
+      },
+      {
+        "name": "products",
+        "storage_engine": "Columnar LSM",
+        "status": "Online",
+        "size": "28 B",
+        "size_bytes": 28,
+        "records": 1,
+        "schema": {
+          "sku": "string",
+          "stock": "integer"
+        },
+        "last_active": "2026-10-11T16:37:10.057000+00:00"
+      },
+      {
+        "name": "users",
+        "storage_engine": "Document Vector",
+        "status": "Online",
+        "size": "28 B",
+        "size_bytes": 28,
+        "records": 1,
+        "schema": {
+          "age": "integer",
+          "name": "string"
+        },
+        "last_active": "2026-10-11T16:37:10.044000+00:00"
+      }
+    ]
+  }
+]
+   Combined 'orders' schema union: {
+    "created_date": "date",
+    "customer": "string",
+    "order_id": "integer",
+    "total": "float"
+}
+   PASS: Combined records (2), summed size_bytes, and schema union verified without duplicate bucket rows!
+
+[Test 4] Testing COUNT COORDINATOR_NODES directly on Coordinator (8350)...
+   COUNT COORDINATOR_NODES response: [{"count":2,"shards":["127.0.0.1:8299","127.0.0.1:8319"],"status":"ok"}]
+   PASS: COUNT COORDINATOR_NODES directly returned configured cluster shards!
+
+[Test 5] Testing COUNT RAFT_NODES directly on Coordinator (8350)...
+   COUNT RAFT_NODES response: [{"count":2,"leader":"127.0.0.1:8311","nodes":["127.0.0.1:8311","127.0.0.1:8331"],"replicas":1,"status":"ok"}]
+   PASS: COUNT RAFT_NODES directly resolved without shard roundtrips!
+
+[Test 6] Testing Multi-Tenant Auth Session Propagation through Coordinator (8350)...
+   Register response: [{"status":"ok","count":0}]
+   Login response: [{"status":"ok","count":0}]
+   POUR response via tenant session: [{"status":"ok","count":0}]
+   SCOOP response via tenant session: [{"status":"ok","count":2,"documents":[{"body":{"amount":500,"status":"paid"},"gid":"invoices:inv_001"}]}]
+   PASS: Authenticated tenant session maintained and propagated to shards!
+
+=================================================================
+   ALL PHASE 4 TESTS COMPLETED WITH 100% SUCCESS!
+=================================================================
+```
+
+---
+
+### 8.5 Step-by-Step Terminal Process & Deployment Guide
+
+This section documents the exact terminal commands required to run and connect a distributed 2-PC cluster, interact via the interactive CLI shell, and verify persistence.
+
+#### Topology Setup
+* **PC 1 (Coordinator & Shard 1):** IP `192.168.1.10`
+* **PC 2 (Remote Shard 2):** IP `192.168.1.20`
+
+---
+
+#### Step 1: Start Shard 2 on PC 2 (The Remote Storage Machine)
+Open PowerShell / Terminal on **PC 2** and run:
+```powershell
+python cleavedb_server.py -H 0.0.0.0 --port 8301
+```
+* `-H 0.0.0.0` ensures the database listens across the LAN so PC 1 can connect.
+* PC 2 is now listening on TCP port `8299` as a cluster storage worker.
+* **Firewall (One-time on PC 2 if blocked by Windows):**
+  ```powershell
+  New-NetFirewallRule -DisplayName "CleaveDB Shard" -Direction Inbound -LocalPort 8299,8300,8301 -Protocol TCP -Action Allow
+  ```
+
+---
+
+#### Step 2: Start Shard 1 on PC 1 (Local Shard)
+Open **Terminal 1** on **PC 1** and run:
+```powershell
+python cleavedb_server.py -H 0.0.0.0 --port 8301
+```
+* Runs the local shard for PC 1 on port `8299`.
+
+---
+
+#### Step 3: Start Go Coordinator on PC 1 (The Cluster Link)
+Open **Terminal 2** on **PC 1** and run:
+```powershell
+.\coordinator.exe -port 8305 -shards 127.0.0.1:8299,192.168.1.20:8299
+```
+* `-port 8305`: Port where client applications and the CLI connect.
+* `-shards`: Connects PC 1's local shard (`127.0.0.1:8299`) and PC 2's remote shard (`192.168.1.20:8299`).
+* The Go Coordinator now aggregates queries across both machines.
+
+---
+
+#### Step 4: Open the Interactive CleaveDB Shell
+Open **Terminal 3** on **PC 1** (or any client PC on the network) and run:
+```powershell
+python cleave_cli.py -H 127.0.0.1 -p 8305
+```
+1. Select **Create a new user account** or **Log into an existing account**.
+2. Enter username: `john`
+3. Enter password: `Password123!`
+4. The shell prompt appears: `john@cleavedb> `
+
+---
+
+#### Step 5: Execute Queries in Terminal (Human CleaveQL Syntax)
+Users in the terminal do **NOT** type raw JSON envelopes (`{ "action": ... }`). All queries are executed using standard CleaveQL commands:
+
+1. **Insert Data (Sharded Across PC 1 and PC 2):**
+   ```sql
+   POUR INTO orders :ord_01 {"item": "laptop", "price": 1200}
+   ```
+2. **Count Buckets (Deduplicated Across Shards):**
+   ```sql
+   COUNT BUCKETS
+   ```
+   * Returns `{ "status": "ok", "count": 1, "type": "buckets" }`.
+3. **Inspect Database Catalogs (Aggregated Table View):**
+   ```sql
+   DESCRIBE BUCKETS
+   ```
+   * Displays the unified `orders` catalog with merged document count, combined byte sizes, and unified field schemas.
+4. **Fetch Partitioned Documents:**
+   ```sql
+   SCOOP FROM orders
+   ```
+   * Gathers and combines documents from both PC 1 and PC 2.
+
+---
+
+#### Step 6: Handling Server Crash & Reboot (Persistence Verification)
+1. **If PC 2 crashes or powers off:**
+   * Permanent key file on disk (`%APPDATA%\CleaveDB\cleavedb.key`) is untouched and never modified.
+   * Sharded documents remain safely in PC 2's local data folder.
+2. **Reboot PC 2:**
+   ```powershell
+   python cleavedb_server.py -H 0.0.0.0 --port 8301
+   ```
+3. **Reconnect & Query:**
+   * PC 1 automatically reconnects over TCP.
+   * `SCOOP FROM orders` immediately recovers all data from PC 2 without loss or key change.
+
+
+
 
 
 

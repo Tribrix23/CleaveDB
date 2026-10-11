@@ -1795,8 +1795,13 @@ class Interpreter:
                         if is_dev:
                             vis.append(b)
                         continue
-                    if t != "cron" and b.startswith(f"{t}."):
-                        vis.append(b[len(t) + 1 :])
+                    if "." in b:
+                        if t != "cron" and b.startswith(f"{t}."):
+                            vis.append(b[len(t) + 1 :])
+                        elif is_dev:
+                            vis.append(b)
+                    else:
+                        vis.append(b)
                 if not vis:
                     return {"status": "error", "message": "No buckets found. Use a POUR INTO query to create one."}
                 return {"status": "ok", "data": vis}
