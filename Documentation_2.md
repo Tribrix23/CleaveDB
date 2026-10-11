@@ -707,5 +707,125 @@ POUR INTO users "david"{"name":"david", "age":20, "isActive": true , "date_enter
    * Tests mutations and schema descriptions through the REST API `/api/v1/query`.
    * **Result:** `ALL PHASE 3 LIVE E2E CHECKS PASSED (100% SUCCESS)`.
 
+---
+
+## 7. Dynamic Date, Time, and Timezone Macros (`_date_`, `_time_`, `_dtz_`)
+
+### 7.1 Overview
+When documents are poured into CleaveDB via `POUR INTO`, `POUR MANY`, or modified via `CHANGE`, users can insert dynamic macro tokens in place of manual timestamps. 
+
+Rather than storing the literal string tokens (`"_date_"`, `"_time_"`, `"_dtz_"`), CleaveDB automatically resolves these placeholders into real, instantaneous timestamps when the pour happens.
+
+---
+
+### 7.2 Macro Token Reference Table
+
+| Macro Token | Replacement Description | Output Format | Live Example Value | Inferred Type |
+|---|---|---|---|:---:|
+| **`_date_`** | Current calendar date | `YYYY-MM-DD` | `"2026-10-12"` | **`date`** |
+| **`_time_`** | Current local time of pour | `HH:MM:SS` | `"00:15:29"` | **`time`** |
+| **`_dtz_`** | Current Date, Time, and Timezone | ISO 8601 with Offset | `"2026-10-12T00:15:29.750859+08:00"` | **`date`** |
+
+> [!NOTE]
+> Macro tokens are evaluated case-insensitively (`_DATE_`, `_TIME_`, `_DTZ_`) and work across top-level fields, nested objects (`{"meta": {"at": "_dtz_"}}`), array elements, and string templates (`"Snapshot on _date_ at _time_"`).
+
+---
+
+### 7.3 Pour Execution & Replacement Workflow
+
+When a query such as:
+```sql
+POUR INTO users "david"{"name":"david", "age":20, "isActive": true, "date_entered":"_date_", "current":"_time_", "poured_dtz":"_dtz_"}
+```
+is executed:
+1. **Dynamic Resolution:** `resolve_dynamic_macros` detects the tokens in the payload and replaces them with instantaneous system clock readings.
+2. **Persistent Storage:** The underlying storage engine receives and writes the fully substituted JSON document.
+3. **Event Emitted:** WebSocket mutation events and replication logs receive the concrete date/time strings.
+4. **Schema Engine:** The schema inference engine detects:
+   * `date_entered`: Calendar date pattern $\rightarrow$ `"date"`
+   * `current`: Time pattern `HH:MM:SS` $\rightarrow$ `"time"`
+   * `poured_dtz`: ISO 8601 timestamp $\rightarrow$ `"date"`
+
+---
+
+### 7.4 Live Verification Outputs
+
+#### 1. Single Bucket Schema & Live Sample (`DESCRIBE BUCKET "users"`)
+```json
+{
+  "status": "ok",
+  "bucket": "users",
+  "storage_engine": "Document Vector",
+  "bucket_status": "Online",
+  "records": 1,
+  "size": "149 B",
+  "size_bytes": 149,
+  "schema": {
+    "name": "string",
+    "age": "integer",
+    "isActive": "boolean",
+    "date_entered": "date",
+    "current": "time",
+    "poured_dtz": "date"
+  },
+  "sample": [
+    {
+      "name": "david",
+      "age": 20,
+      "isActive": true,
+      "date_entered": "2026-10-12",
+      "current": "00:15:29",
+      "poured_dtz": "2026-10-12T00:15:29.750859+08:00"
+    }
+  ]
+}
+```
+
+#### 2. Database Catalogs Grid (`DESCRIBE BUCKETS`)
+```json
+{
+  "status": "ok",
+  "count": 1,
+  "catalogs": [
+    {
+      "name": "users",
+      "storage_engine": "Document Vector",
+      "status": "Online",
+      "size": "149 B",
+      "size_bytes": 149,
+      "records": 1,
+      "schema": {
+        "name": "string",
+        "age": "integer",
+        "isActive": "boolean",
+        "date_entered": "date",
+        "current": "time",
+        "poured_dtz": "date"
+      },
+      "last_active": "2026-10-11T16:15:29.750859+00:00"
+    }
+  ]
+}
+```
+
+---
+
+### 7.5 Automated Test Verification
+
+Two dedicated test suites verify this behavior across unit tests and real network sockets:
+
+```powershell
+# 1. Run Unit Tests (7/7 tests pass)
+python -m unittest tests/test_dynamic_macros.py
+Ran 7 tests in 0.057s - OK
+
+# 2. Run Full Live Stack E2E Test (Edge Gateway + Server + REST API)
+python tests/run_e2e_macros_test.py
+======================================================================
+   >>> ALL DYNAMIC MACRO TESTS PASSED WITH 100% SUCCESS <<<
+======================================================================
+```
+
+
 
 

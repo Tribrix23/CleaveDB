@@ -13,7 +13,46 @@ from datetime import datetime, timezone
 DATE_REGEX = re.compile(
     r"^\d{4}[-/]\d{2}[-/]\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$"
 )
+TIME_REGEX = re.compile(r"^\d{2}:\d{2}:\d{2}(?:\.\d+)?$")
 FLOAT_REGEX = re.compile(r"^[+-]?(?:\d+\.\d+|\d+\.|\.\d+)$")
+
+def resolve_dynamic_macros(data, now=None):
+    """Dynamically resolves date and time macros during data pouring:
+    - _date_: Current calendar date (YYYY-MM-DD)
+    - _time_: Current local time (HH:MM:SS)
+    - _dtz_: Current ISO 8601 date, time, and timezone offset
+    """
+    if now is None:
+        now = datetime.now().astimezone()
+
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M:%S")
+    dtz_str = now.isoformat()
+
+    if isinstance(data, dict):
+        return {k: resolve_dynamic_macros(v, now) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [resolve_dynamic_macros(v, now) for v in data]
+    elif isinstance(data, str):
+        v_strip = data.strip()
+        v_lower = v_strip.lower()
+        if v_lower in ("_date_", "current_date_", "_current_date_"):
+            return date_str
+        elif v_lower in ("_time_", "current_time_", "_current_time_"):
+            return time_str
+        elif v_lower in ("_dtz_", "current_dtz_", "_current_dtz_", "_datetime_"):
+            return dtz_str
+
+        res = data
+        if "_date_" in res or "_DATE_" in res:
+            res = res.replace("_date_", date_str).replace("_DATE_", date_str)
+        if "_time_" in res or "_TIME_" in res:
+            res = res.replace("_time_", time_str).replace("_TIME_", time_str)
+        if "_dtz_" in res or "_DTZ_" in res:
+            res = res.replace("_dtz_", dtz_str).replace("_DTZ_", dtz_str)
+        return res
+    else:
+        return data
 
 def is_integer_string(s: str) -> bool:
     if s.isdigit():
@@ -101,12 +140,20 @@ def infer_field_type(key: str, val: Any) -> str:
             return "boolean"
 
         # Date: Keyword literal
-        if v_lower in ("current_date_", "current_date", "now()", "current_timestamp"):
+        if v_lower in ("current_date_", "current_date", "now()", "current_timestamp", "_date_", "_current_date_", "_dtz_"):
             return "date"
+
+        # Time: Keyword literal
+        if v_lower in ("_time_", "current_time_", "_current_time_"):
+            return "time"
 
         # Date: Rule B - ISO 8601 pattern
         if DATE_REGEX.match(v):
             return "date"
+
+        # Time: HH:MM:SS pattern
+        if TIME_REGEX.match(v):
+            return "time"
 
         # Integer string
         if is_integer_string(v):
@@ -211,6 +258,13 @@ class TenantEngineProxy:
         return gid
 
     def pour(self, bucket, doc_id, json_str):
+        if isinstance(json_str, str) and any(m in json_str.lower() for m in ("_date_", "_time_", "_dtz_")):
+            try:
+                parsed = json.loads(json_str)
+                resolved = resolve_dynamic_macros(parsed)
+                json_str = json.dumps(resolved)
+            except Exception:
+                pass
         return self.engine.pour(self._ns(bucket), doc_id, json_str)
 
     def get(self, gid):
@@ -906,6 +960,8 @@ class Interpreter:
                 return val_err
             doc_id = getattr(stmt, "doc_id", None)
             body = getattr(stmt, "json_body", None)
+            if body is not None:
+                body = resolve_dynamic_macros(body)
 
             # --- TTL Injection ---
             ttl = getattr(stmt, "ttl", None)
@@ -1049,6 +1105,8 @@ class Interpreter:
             documents = getattr(stmt, "json_array", [])
             if isinstance(documents, str):
                 documents = json.loads(documents)
+            if isinstance(documents, list):
+                documents = [resolve_dynamic_macros(doc) for doc in documents]
             for doc in documents:
                 if not isinstance(doc, dict):
                     continue
@@ -1646,7 +1704,7 @@ class Interpreter:
                                 auth_doc["password_salt"] = salt
                                 self.engine.pour("_auth", doc_id, json.dumps(auth_doc))
                             else:
-                                body[field] = value
+                                body[field] = resolve_dynamic_macros(value)
                     
                     err = self._validate_guards(bucket, body)
                     if err:
