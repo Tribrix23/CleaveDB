@@ -82,6 +82,7 @@ class DistributedEngine(SyncObj):
             return {"results": [{"status": "error", "message": str(e)}], "events": []}
 
 dist_engine = None
+configured_shards = ["127.0.0.1:8300"]
 
 def hash_password(password: str, salt: bytes = None) -> tuple[str, str]:
     if salt is None:
@@ -866,10 +867,10 @@ async def handle_client(reader, writer):
         req_action = None
         try:
             req = json.loads(query)
-            if "_req_id" in req:
-                req_id = req["_req_id"]
+            if isinstance(req, dict):
+                req_id = req.get("_req_id")
                 req_action = req.get("action")
-                if req_action == "query":
+                if req_action == "query" and "query" in req:
                     query = req["query"]
         except Exception:
             pass
@@ -1068,6 +1069,7 @@ def replica_worker():
 
 async def main():
     global dist_engine
+    global configured_shards
     global engine
     global HOST
     
@@ -1147,6 +1149,9 @@ async def main():
         if args.peers:
             all_shards = [shards_arg] + [p.strip() for p in args.peers.split(',') if p.strip()]
             shards_arg = ",".join(all_shards)
+            configured_shards = all_shards
+        else:
+            configured_shards = [shards_arg]
         print(f"   CleaveDB Go Coordinator starting natively on {coord_port}")
         subprocess.Popen([go_coord_path, f"-port={coord_port}", f"-shards={shards_arg}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:

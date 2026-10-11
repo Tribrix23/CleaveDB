@@ -46,13 +46,38 @@ type AuthInfo struct {
 	Password string `json:"password"`
 }
 
+type CatalogItem struct {
+	Name          string            `json:"name"`
+	StorageEngine string            `json:"storage_engine"`
+	Status        string            `json:"status"`
+	Size          string            `json:"size"`
+	SizeBytes     int64             `json:"size_bytes"`
+	Records       int64             `json:"records"`
+	Schema        map[string]string `json:"schema"`
+	LastActive    string            `json:"last_active"`
+}
+
 type CleaveQueryResult struct {
-	Status    string                   `json:"status,omitempty"`
-	Message   string                   `json:"message,omitempty"`
-	Count     int                      `json:"count,omitempty"`
-	Documents []map[string]interface{} `json:"documents,omitempty"`
-	Data      interface{}              `json:"data,omitempty"`
-	Shard     string                   `json:"shard,omitempty"`
+	Status        string                   `json:"status,omitempty"`
+	Message       string                   `json:"message,omitempty"`
+	Count         int                      `json:"count,omitempty"`
+	Type          string                   `json:"type,omitempty"`
+	Bucket        string                   `json:"bucket,omitempty"`
+	BucketStatus  string                   `json:"bucket_status,omitempty"`
+	StorageEngine string                   `json:"storage_engine,omitempty"`
+	Size          string                   `json:"size,omitempty"`
+	SizeBytes     int64                    `json:"size_bytes,omitempty"`
+	Records       int64                    `json:"records,omitempty"`
+	Schema        map[string]string        `json:"schema,omitempty"`
+	Sample        []map[string]interface{} `json:"sample,omitempty"`
+	Catalogs      []CatalogItem            `json:"catalogs,omitempty"`
+	Documents     []map[string]interface{} `json:"documents,omitempty"`
+	Data          interface{}              `json:"data,omitempty"`
+	Leader        string                   `json:"leader,omitempty"`
+	Replicas      int                      `json:"replicas,omitempty"`
+	Nodes         []string                 `json:"nodes,omitempty"`
+	Shards        []string                 `json:"shards,omitempty"`
+	Shard         string                   `json:"shard,omitempty"`
 }
 
 func queryShard(ctx context.Context, shardAddr string, shardID int, req QueryRequest) ShardResponse {
@@ -186,6 +211,185 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 
 	// If we successfully parsed CleaveDB structured results, merge them intelligently
 	if len(parsedResults) > 0 {
+		// 1. Check for Catalog results (DESCRIBE BUCKETS)
+		hasCatalogs := false
+		for _, r := range parsedResults {
+			if len(r.Catalogs) > 0 {
+				hasCatalogs = true
+				break
+			}
+		}
+		if hasCatalogs {
+			mergedCatalogs := make(map[string]*CatalogItem)
+			var catalogOrder []string
+
+			for _, r := range parsedResults {
+				for _, cat := range r.Catalogs {
+					existing, found := mergedCatalogs[cat.Name]
+					if !found {
+						itemCopy := cat
+						if itemCopy.Schema == nil {
+							itemCopy.Schema = make(map[string]string)
+						}
+						mergedCatalogs[cat.Name] = &itemCopy
+						catalogOrder = append(catalogOrder, cat.Name)
+					} else {
+						// Combine record counts and sizes across shards without duplicating bucket rows
+						existing.Records += cat.Records
+						existing.SizeBytes += cat.SizeBytes
+						existing.Size = formatBytes(existing.SizeBytes)
+						if cat.LastActive > existing.LastActive {
+							existing.LastActive = cat.LastActive
+						}
+						for k, v := range cat.Schema {
+							if _, exists := existing.Schema[k]; !exists || existing.Schema[k] == "string" {
+								existing.Schema[k] = v
+							}
+						}
+					}
+				}
+			}
+
+			sort.Strings(catalogOrder)
+			catalogsList := make([]CatalogItem, 0, len(catalogOrder))
+			for _, name := range catalogOrder {
+				catalogsList = append(catalogsList, *mergedCatalogs[name])
+			}
+
+			mergedResp := CleaveQueryResult{
+				Status:   "ok",
+				Count:    len(catalogsList),
+				Catalogs: catalogsList,
+			}
+			out, _ := json.Marshal([]CleaveQueryResult{mergedResp})
+			return string(out)
+		}
+
+		// 2. Check for single bucket describe (DESCRIBE BUCKET <name>)
+		hasSingleBucket := false
+		for _, r := range parsedResults {
+			if r.Bucket != "" {
+				hasSingleBucket = true
+				break
+			}
+		}
+		if hasSingleBucket {
+			bucketName := ""
+			storageEngine := "Document Vector"
+			var totalRecords int64 = 0
+			var totalSizeBytes int64 = 0
+			mergedSchema := make(map[string]string)
+			mergedSample := make([]map[string]interface{}, 0)
+			seenSampleGids := make(map[string]bool)
+
+			for _, r := range parsedResults {
+				if r.Bucket != "" {
+					bucketName = r.Bucket
+					if r.StorageEngine != "" {
+						storageEngine = r.StorageEngine
+					}
+					totalRecords += r.Records
+					totalSizeBytes += r.SizeBytes
+					for k, v := range r.Schema {
+						if _, exists := mergedSchema[k]; !exists || mergedSchema[k] == "string" {
+							mergedSchema[k] = v
+						}
+					}
+					for _, s := range r.Sample {
+						gid, _ := s["gid"].(string)
+						if gid != "" {
+							if seenSampleGids[gid] {
+								continue
+							}
+							seenSampleGids[gid] = true
+						}
+						if len(mergedSample) < 10 {
+							mergedSample = append(mergedSample, s)
+						}
+					}
+				}
+			}
+
+			mergedResp := CleaveQueryResult{
+				Status:        "ok",
+				Bucket:        bucketName,
+				StorageEngine: storageEngine,
+				BucketStatus:  "Online",
+				Records:       totalRecords,
+				Size:          formatBytes(totalSizeBytes),
+				SizeBytes:     totalSizeBytes,
+				Schema:        mergedSchema,
+				Sample:        mergedSample,
+			}
+			out, _ := json.Marshal([]CleaveQueryResult{mergedResp})
+			return string(out)
+		}
+
+		// 3. Check for COUNT BUCKETS
+		isBucketCount := false
+		for _, r := range parsedResults {
+			if r.Type == "buckets" {
+				isBucketCount = true
+				break
+			}
+		}
+		if isBucketCount {
+			maxCount := 0
+			for _, r := range parsedResults {
+				if r.Count > maxCount {
+					maxCount = r.Count
+				}
+			}
+			mergedResp := CleaveQueryResult{
+				Status: "ok",
+				Count:  maxCount,
+				Type:   "buckets",
+			}
+			out, _ := json.Marshal([]CleaveQueryResult{mergedResp})
+			return string(out)
+		}
+
+		// 4. Check for COUNT RAFT_NODES
+		isRaftNodes := false
+		for _, r := range parsedResults {
+			if r.Leader != "" || len(r.Nodes) > 0 {
+				isRaftNodes = true
+				break
+			}
+		}
+		if isRaftNodes {
+			seenNodes := make(map[string]bool)
+			nodesList := make([]string, 0)
+			leader := ""
+			for _, r := range parsedResults {
+				if leader == "" && r.Leader != "" {
+					leader = r.Leader
+				}
+				for _, n := range r.Nodes {
+					if !seenNodes[n] {
+						seenNodes[n] = true
+						nodesList = append(nodesList, n)
+					}
+				}
+			}
+			if leader == "" && len(nodesList) > 0 {
+				leader = nodesList[0]
+			}
+			replicas := len(nodesList) - 1
+			if replicas < 0 {
+				replicas = 0
+			}
+			mergedResp := CleaveQueryResult{
+				Status:   "ok",
+				Count:    len(nodesList),
+				Leader:   leader,
+				Replicas: replicas,
+				Nodes:    nodesList,
+			}
+			out, _ := json.Marshal([]CleaveQueryResult{mergedResp})
+			return string(out)
+		}
+
 		mergedDocs := make([]map[string]interface{}, 0)
 		seenGids := make(map[string]bool)
 		totalCount := 0
@@ -253,6 +457,19 @@ func ScatterGather(ctx context.Context, shards []string, req QueryRequest) strin
 	return string(errResp)
 }
 
+func formatBytes(b int64) string {
+	if b < 1024 {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(1024), 0
+	for n := b / 1024; n >= 1024; n /= 1024 {
+		div *= 1024
+		exp++
+	}
+	units := []string{"KB", "MB", "GB", "TB"}
+	return fmt.Sprintf("%.1f %s", float64(b)/float64(div), units[exp])
+}
+
 func handleClientConnection(conn net.Conn, cfg *CoordinatorConfig) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
@@ -281,6 +498,21 @@ func handleClientConnection(conn net.Conn, cfg *CoordinatorConfig) {
 				"shards":  cfg.Shards,
 				"version": "4.0.2",
 			})
+			conn.Write(append(statusResp, '\n'))
+			continue
+		}
+
+		// Handle COORDINATOR_NODES directly without scattering
+		qUpper := strings.ToUpper(strings.TrimSpace(req.RawQuery))
+		if qUpper == "" {
+			qUpper = strings.ToUpper(strings.TrimSpace(req.Query))
+		}
+		if strings.Contains(qUpper, "COORDINATOR_NODES") {
+			statusResp, _ := json.Marshal([]map[string]interface{}{{
+				"status": "ok",
+				"count":  len(cfg.Shards),
+				"shards": cfg.Shards,
+			}})
 			conn.Write(append(statusResp, '\n'))
 			continue
 		}

@@ -6,6 +6,73 @@ import uuid
 import json
 import hashlib
 import os
+import re
+from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+
+DATE_REGEX = re.compile(
+    r"^\d{4}[-/]\d{2}[-/]\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$"
+)
+
+def format_size_bytes(bytes_count: int) -> str:
+    if bytes_count < 1024:
+        return f"{bytes_count} B"
+    elif bytes_count < 1024 * 1024:
+        return f"{bytes_count / 1024:.1f} KB"
+    elif bytes_count < 1024 * 1024 * 1024:
+        return f"{bytes_count / (1024 * 1024):.1f} MB"
+    else:
+        return f"{bytes_count / (1024 * 1024 * 1024):.1f} GB"
+
+def format_timestamp_iso(ts_ms: Optional[float] = None) -> str:
+    if ts_ms and ts_ms > 0:
+        return datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).isoformat()
+    return datetime.now(timezone.utc).isoformat()
+
+def infer_field_type(key: str, val: Any) -> str:
+    key_lower = key.lower()
+    if (
+        "_date_" in key_lower
+        or key_lower.startswith("date_")
+        or key_lower.endswith("_date")
+        or key_lower.endswith("_date_")
+        or key_lower in ("date", "datetime", "timestamp", "created_at", "updated_at")
+    ):
+        return "date"
+    if val is None:
+        return "string"
+    if isinstance(val, bool):
+        return "boolean"
+    if isinstance(val, int):
+        return "integer"
+    if isinstance(val, float):
+        return "float"
+    if isinstance(val, list):
+        return "array"
+    if isinstance(val, dict):
+        return "object"
+    if isinstance(val, str):
+        v = val.strip()
+        if v.lower() in ("true", "false"):
+            return "boolean"
+        if DATE_REGEX.match(v):
+            return "date"
+        return "string"
+    return "string"
+
+def infer_schema_from_docs(docs: list) -> dict:
+    schema = {}
+    for d in docs:
+        body = d.get("body", {}) if isinstance(d, dict) else {}
+        if not isinstance(body, dict):
+            continue
+        for k, v in body.items():
+            if k.startswith("_"):
+                continue
+            inferred = infer_field_type(k, v)
+            if k not in schema or (schema[k] == "string" and inferred != "string"):
+                schema[k] = inferred
+    return schema
 
 """CleaveQL Interpreter — bridges parsed AST nodes to the Rust storage engine.
 
@@ -1665,6 +1732,93 @@ class Interpreter:
                     "per_bucket": per_bucket,
                 }
 
+        elif stmt_type == "CountCatalogStmt":
+            target = getattr(stmt, "target", "buckets").lower()
+            if target in ("buckets", "bucket"):
+                buckets_data = self.engine.show("buckets") if hasattr(self.engine, "show") else "[]"
+                all_b = json.loads(buckets_data) if buckets_data else []
+                t = (
+                    self.context.get(
+                        "tenant_id", self.context.get("user", "").split(".")[0]
+                    )
+                    if "user" in self.context
+                    else "cron"
+                )
+                vis = []
+                for b in all_b:
+                    if b.startswith("_"):
+                        continue
+                    if "." in b and t != "cron" and not b.startswith(f"{t}."):
+                        continue
+                    name = b[len(t) + 1 :] if t != "cron" and b.startswith(f"{t}.") else b
+                    vis.append(name)
+                return {
+                    "status": "ok",
+                    "count": len(vis),
+                    "type": "buckets",
+                }
+
+            elif target in ("raft_nodes", "*_raft_nodes", "_raft_nodes"):
+                import sys
+                srv = sys.modules.get("cleavedb_server") or sys.modules.get("__main__")
+                dist = getattr(srv, "dist_engine", None)
+                if dist is None:
+                    return {
+                        "status": "ok",
+                        "count": 1,
+                        "leader": "clv-node-01",
+                        "replicas": 0,
+                        "nodes": ["127.0.0.1:8311"],
+                    }
+
+                self_node = str(getattr(dist, "selfNode", "127.0.0.1:8311"))
+                if "('" in self_node and "')" in self_node:
+                    self_node = self_node.split("('")[1].split("')")[0]
+
+                nodes = [self_node]
+                other_nodes = getattr(dist, "otherNodes", [])
+                for n in other_nodes:
+                    n_str = str(n)
+                    if "('" in n_str and "')" in n_str:
+                        n_str = n_str.split("('")[1].split("')")[0]
+                    if n_str not in nodes:
+                        nodes.append(n_str)
+
+                leader_obj = dist._getLeader() if hasattr(dist, "_getLeader") else None
+                if leader_obj is not None:
+                    leader_str = str(leader_obj)
+                    if "('" in leader_str and "')" in leader_str:
+                        leader_str = leader_str.split("('")[1].split("')")[0]
+                else:
+                    is_leader = dist._isLeader() if hasattr(dist, "_isLeader") else True
+                    leader_str = self_node if is_leader else (nodes[0] if nodes else "clv-node-01")
+
+                replicas = max(0, len(nodes) - 1)
+                return {
+                    "status": "ok",
+                    "count": len(nodes),
+                    "leader": leader_str,
+                    "replicas": replicas,
+                    "nodes": nodes,
+                }
+
+            elif target in ("coordinator_nodes", "*_coordinator_nodes", "_coordinator_nodes"):
+                import sys
+                srv = sys.modules.get("cleavedb_server") or sys.modules.get("__main__")
+                shards = getattr(srv, "configured_shards", None)
+                if not shards:
+                    shards = ["127.0.0.1:8300"]
+                return {
+                    "status": "ok",
+                    "count": len(shards),
+                    "shards": shards,
+                }
+
+            return {
+                "status": "error",
+                "message": f"Unknown COUNT target: '{target}'. Supported targets: BUCKETS, RAFT_NODES, COORDINATOR_NODES",
+            }
+
         elif stmt_type == "SeverStmt":
             tenant = (
                 self.context.get(
@@ -1964,18 +2118,99 @@ class Interpreter:
                     "status": "ok",
                     "description": "TUTORIAL: Semantic Search (MEANING)\nUse SCOOP EVERYTHING FROM bucket MEANING text",
                 }
+
+            # Full Database Catalog for all user buckets
+            if target.lower() in ("buckets", "bucket"):
+                buckets_data = self.engine.show("buckets") if hasattr(self.engine, "show") else "[]"
+                all_b = json.loads(buckets_data) if buckets_data else []
+                t = (
+                    self.context.get(
+                        "tenant_id", self.context.get("user", "").split(".")[0]
+                    )
+                    if "user" in self.context
+                    else "cron"
+                )
+                user_buckets = []
+                for b in all_b:
+                    if b.startswith("_"):
+                        continue
+                    if "." in b and t != "cron" and not b.startswith(f"{t}."):
+                        continue
+                    name = b[len(t) + 1 :] if t != "cron" and b.startswith(f"{t}.") else b
+                    user_buckets.append((b, name))
+
+                catalogs = []
+                for real_b, display_name in user_buckets:
+                    raw_docs = self.engine.scan_bucket(real_b) if hasattr(self.engine, "scan_bucket") else "[]"
+                    docs = json.loads(raw_docs) if raw_docs else []
+
+                    records = len(docs)
+                    size_bytes = 0
+                    max_ts = 0
+                    for d in docs:
+                        if isinstance(d, dict):
+                            body = d.get("body", {})
+                            size_bytes += len(json.dumps(body).encode("utf-8"))
+                            ts = d.get("updated_at") or d.get("created_at") or 0
+                            if ts and isinstance(ts, (int, float)) and ts > max_ts:
+                                max_ts = ts
+
+                    last_active = format_timestamp_iso(max_ts)
+
+                    schema = infer_schema_from_docs(docs)
+                    size_human = format_size_bytes(size_bytes)
+                    storage_engine = "Columnar LSM" if any(k in display_name.lower() for k in ("event", "log", "metric", "timeseries", "ts")) else "Document Vector"
+
+                    catalogs.append({
+                        "name": display_name,
+                        "storage_engine": storage_engine,
+                        "status": "Online",
+                        "size": size_human,
+                        "size_bytes": size_bytes,
+                        "records": records,
+                        "schema": schema,
+                        "last_active": last_active,
+                    })
+
+                return {
+                    "status": "ok",
+                    "count": len(catalogs),
+                    "catalogs": catalogs,
+                }
+
+            # Single Bucket Schema & Sample Inspection
             if target and not self._bucket_exists(target):
                 return {
                     "status": "error",
                     "message": f"Bucket '{target}' does not exist. Use 'SHOW BUCKETS' to see available buckets.",
                 }
+
             docs_json = self._scan_bucket_rls(target)
             docs = json.loads(docs_json) if docs_json else []
-            if not docs:
-                return {"status": "ok", "description": f"Bucket '{target}' is empty."}
+            records = len(docs)
+            size_bytes = 0
+            sample = []
+            for d in docs:
+                if isinstance(d, dict):
+                    body = d.get("body", {})
+                    size_bytes += len(json.dumps(body).encode("utf-8"))
+                    if len(sample) < 5:
+                        sample.append(body if body else d)
+
+            schema = infer_schema_from_docs(docs)
+            size_human = format_size_bytes(size_bytes)
+            storage_engine = "Columnar LSM" if any(k in target.lower() for k in ("event", "log", "metric", "timeseries", "ts")) else "Document Vector"
+
             return {
                 "status": "ok",
-                "description": f"Bucket '{target}' ({len(docs)} docs). Stats computed successfully.",
+                "bucket": target,
+                "storage_engine": storage_engine,
+                "bucket_status": "Online",
+                "records": records,
+                "size": size_human,
+                "size_bytes": size_bytes,
+                "schema": schema,
+                "sample": sample,
             }
 
         elif stmt_type == "DistillStmt":

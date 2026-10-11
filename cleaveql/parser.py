@@ -205,7 +205,7 @@ class Parser:
         if self.match(TokenType.TRACE):
             return self.trace_stmt()
         if self.match(TokenType.COUNT):
-            return self.scoop_stmt() # Fallback for legacy count
+            return self.count_stmt()
         if self.match(TokenType.DISTILL):
             return self.distill_stmt()
         if self.match(TokenType.FOLLOW):
@@ -1137,6 +1137,42 @@ class Parser:
             return HealStmt(target=self.previous().lexeme)
         raise self.error(self.peek(), "Expected 'bonds', 'links', 'indexes', or 'all' after 'heal'.")
 
+    def count_stmt(self) -> Any:
+        # Check for catalog count statements:
+        # A. COUNT BUCKETS / COUNT BUCKET
+        if self.match(TokenType.BUCKETS, TokenType.BUCKET):
+            return CountCatalogStmt(target="buckets")
+
+        # B. COUNT RAFT_NODES / COUNT *_RAFT_NODES
+        if self.check(TokenType.STAR):
+            if self.current + 1 < len(self.tokens):
+                next_tok = self.tokens[self.current + 1]
+                if next_tok.type == TokenType.IDENTIFIER:
+                    lex = next_tok.lexeme.upper()
+                    if lex in ("_RAFT_NODES", "RAFT_NODES"):
+                        self.advance() # consume *
+                        self.advance() # consume identifier
+                        return CountCatalogStmt(target="raft_nodes")
+                    if lex in ("_COORDINATOR_NODES", "COORDINATOR_NODES"):
+                        self.advance() # consume *
+                        self.advance() # consume identifier
+                        return CountCatalogStmt(target="coordinator_nodes")
+
+        if self.check(TokenType.IDENTIFIER):
+            lex = self.peek().lexeme.upper()
+            if lex in ("RAFT_NODES", "*_RAFT_NODES", "_RAFT_NODES"):
+                self.advance()
+                return CountCatalogStmt(target="raft_nodes")
+            if lex in ("COORDINATOR_NODES", "*_COORDINATOR_NODES", "_COORDINATOR_NODES"):
+                self.advance()
+                return CountCatalogStmt(target="coordinator_nodes")
+            if lex in ("BUCKETS", "BUCKET"):
+                self.advance()
+                return CountCatalogStmt(target="buckets")
+
+        # Fallback for legacy document count queries (e.g. COUNT users, COUNT FROM users)
+        return self.scoop_stmt()
+
     def show_stmt(self) -> ShowStmt:
         if self.match(TokenType.BUCKETS, TokenType.BONDS, TokenType.LINKS, TokenType.INDEXES, TokenType.STATS, TokenType.WEBHOOKS):
             return ShowStmt(target=self.previous().lexeme)
@@ -1146,8 +1182,33 @@ class Parser:
         raise self.error(self.peek(), "Expected 'buckets', 'bonds', 'links', 'indexes', 'stats', or 'webhooks' after 'show'. Did you mean 'show buckets'?")
 
     def describe_stmt(self) -> DescribeStmt:
-        bucket = self.consume_identifier("Expected bucket name.")
-        return DescribeStmt(bucket=bucket)
+        # 1. Check for DESCRIBE BUCKETS
+        if self.match(TokenType.BUCKETS):
+            return DescribeStmt(bucket="buckets")
+
+        # 2. Check for DESCRIBE BUCKET (could be followed by bucket name or standalone)
+        if self.match(TokenType.BUCKET):
+            if self.check(TokenType.STRING):
+                bucket_name = str(self.advance().value)
+                return DescribeStmt(bucket=bucket_name)
+            elif self.check(TokenType.IDENTIFIER):
+                bucket_name = self.advance().lexeme
+                return DescribeStmt(bucket=bucket_name)
+            else:
+                # Standalone "DESCRIBE BUCKET" -> full catalog
+                return DescribeStmt(bucket="buckets")
+
+        # 3. Check for string or identifier (e.g. DESCRIBE "users" or DESCRIBE users)
+        if self.check(TokenType.STRING):
+            bucket_name = str(self.advance().value)
+            return DescribeStmt(bucket=bucket_name)
+        elif self.check(TokenType.IDENTIFIER):
+            bucket_name = self.advance().lexeme
+            if bucket_name.lower() in ("buckets", "bucket"):
+                return DescribeStmt(bucket="buckets")
+            return DescribeStmt(bucket=bucket_name)
+
+        raise self.error(self.peek(), "Expected bucket name or 'buckets' after 'describe'.")
 
     def peer_stmt(self) -> PeerStmt:
         self.consume(TokenType.INTO, "Expected 'into' after 'peer'.")

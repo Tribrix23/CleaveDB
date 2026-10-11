@@ -189,6 +189,10 @@ class ShowStmt(ASTNode):
     target: str = "" # buckets, bonds, indexes, stats
 
 @dataclass
+class CountCatalogStmt(ASTNode):
+    target: str = "buckets" # buckets, raft_nodes, coordinator_nodes
+
+@dataclass
 class DescribeStmt(ASTNode):
     bucket: str = ""
 
@@ -198,7 +202,6 @@ class PeerStmt(ASTNode):
     attention: bool = False
     cost: bool = False
 
-@dataclass
 @dataclass
 class FindHowStmt(ASTNode):
     bond_name: str = ""
