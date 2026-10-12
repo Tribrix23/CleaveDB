@@ -1045,53 +1045,75 @@ def do_register(f):
     from rich.console import Console
     console = Console()
     console.print("\n[bold cyan]◈ REGISTER ◈[/]")
-    username = questionary.text("Username:", qmark="➔", style=custom_style).ask()
-    if not username: return
-    password = questionary.password("Password:", qmark="➔", style=custom_style).ask()
-    if not password: return
-    confirm = questionary.password("Confirm password:", qmark="➔", style=custom_style).ask()
-    if password != confirm:
-        print("Passwords do not match.")
-        return
+    while True:
+        username = questionary.text("Username:", qmark="➔", style=custom_style).ask()
+        if not username: return
+        username = username.strip()
+        if not username: return
+
+        # Pre-check if username is already taken
+        try:
+            f.write(json.dumps({"action": "check_username", "username": username}) + "\n")
+            f.flush()
+            check_resp_str = f.readline().strip()
+            if check_resp_str:
+                check_resp = json.loads(check_resp_str)
+                if isinstance(check_resp, list): check_resp = check_resp[0] if check_resp else {}
+                if check_resp.get("status") == "error":
+                    console.print(f"\n[bold red][-] Error:[/] {check_resp.get('message')}\n")
+                    continue
+        except Exception:
+            pass
+
+        password = questionary.password("Password:", qmark="➔", style=custom_style).ask()
+        if not password: return
+        confirm = questionary.password("Confirm password:", qmark="➔", style=custom_style).ask()
+        if password != confirm:
+            console.print("\n[bold red][-] Error:[/] Passwords do not match.\n")
+            continue
+            
+        dev_password = questionary.password("Dev Password (superuser override):", qmark="➔").ask()
         
-    dev_password = questionary.password("Dev Password (superuser override):", qmark="➔").ask()
-    
-    question = questionary.select(
-        "Select a security question for account recovery:",
-        qmark="◈",
-        pointer="➔",
-        choices=SECURITY_QUESTIONS, style=custom_style
-    ).ask()
-    
-    if not question: return
+        question = questionary.select(
+            "Select a security question for account recovery:",
+            qmark="◈",
+            pointer="➔",
+            choices=SECURITY_QUESTIONS, style=custom_style
+        ).ask()
         
-    print(f"\nQuestion: {question}")
-    answer = questionary.text("Answer:", qmark="➔", style=custom_style).ask()
-    if not answer: return
-    
-    req = {
-        "action": "register",
-        "username": username,
-        "password": password,
-        "dev_password": dev_password,
-        "question": question,
-        "answer": answer
-    }
-    
-    f.write(json.dumps(req) + "\n")
-    f.flush()
-    
-    resp_str = f.readline().strip()
-    if not resp_str:
-        print("Server disconnected.")
-        sys.exit(1)
+        if not question: return
+            
+        print(f"\nQuestion: {question}")
+        answer = questionary.text("Answer:", qmark="➔", style=custom_style).ask()
+        if not answer: return
         
-    resp = json.loads(resp_str)
-    if isinstance(resp, list): resp = resp[0] if resp else {}
-    if resp.get("status") == "ok":
-        print(f"\n[+] {resp.get('message')}\n")
-    else:
-        print(f"\n[-] Error: {resp.get('message')}\n")
+        req = {
+            "action": "register",
+            "username": username,
+            "password": password,
+            "dev_password": dev_password,
+            "question": question,
+            "answer": answer
+        }
+        
+        f.write(json.dumps(req) + "\n")
+        f.flush()
+        
+        resp_str = f.readline().strip()
+        if not resp_str:
+            print("Server disconnected.")
+            sys.exit(1)
+            
+        resp = json.loads(resp_str)
+        if isinstance(resp, list): resp = resp[0] if resp else {}
+        if resp.get("status") == "ok":
+            console.print(f"\n[bold green][+] {resp.get('message')}[/]\n")
+            break
+        else:
+            console.print(f"\n[bold red][-] Error:[/] {resp.get('message')}\n")
+            if "already taken" in resp.get("message", "").lower():
+                continue
+            break
 
 def do_login(f):
     from rich.console import Console

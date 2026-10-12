@@ -989,21 +989,71 @@ async def handle_client(reader, writer):
             print(f"LOGIN REQ: {req}", flush=True)
             action = req.get("action")
             
-            if action == "register":
-                # Only allow ONE registration total
-                users_json = engine.scan_bucket("_auth")
-                user_count = len(json.loads(users_json)) if users_json else 0
-                
-                # Registration limit removed for multi-tenancy!
+            if action == "check_username":
+                u = (req.get("username") or "").strip()
+                is_taken = False
+                if not u:
+                    resp = {"status": "error", "message": "Username cannot be empty."}
+                else:
+                    if engine.get(f"_auth:{u}"):
+                        is_taken = True
+                    else:
+                        users_json = engine.scan_bucket("_auth")
+                        if users_json:
+                            try:
+                                for d in json.loads(users_json):
+                                    body = d.get("body", {})
+                                    if body.get("username", "").lower() == u.lower() or d.get("gid") == f"_auth:{u}":
+                                        is_taken = True
+                                        break
+                            except Exception:
+                                pass
+                    if is_taken:
+                        resp = {"status": "error", "message": f"Username '{u}' is already taken. Please choose another username."}
+                    else:
+                        resp = {"status": "ok", "message": "Username is available."}
+                if req.get("_req_id"):
+                    resp = {"_req_id": req["_req_id"], "payload": resp}
+                writer.write((json.dumps(resp) + "\n").encode())
+                await writer.drain()
 
-                u = req.get("username")
-                is_first = True
-                
+            elif action == "register":
+                u = (req.get("username") or "").strip()
+                if not u:
+                    resp = {"status": "error", "message": "Username cannot be empty."}
+                    if req.get("_req_id"):
+                        resp = {"_req_id": req["_req_id"], "payload": resp}
+                    writer.write((json.dumps(resp) + "\n").encode())
+                    await writer.drain()
+                    continue
+
+                # Verify if username already registered
+                is_taken = bool(engine.get(f"_auth:{u}"))
+                if not is_taken:
+                    users_json = engine.scan_bucket("_auth")
+                    if users_json:
+                        try:
+                            for d in json.loads(users_json):
+                                body = d.get("body", {})
+                                if body.get("username", "").lower() == u.lower() or d.get("gid") == f"_auth:{u}":
+                                    is_taken = True
+                                    break
+                        except Exception:
+                            pass
+
+                if is_taken:
+                    resp = {"status": "error", "message": f"Username '{u}' is already taken. Please choose another username."}
+                    if req.get("_req_id"):
+                        resp = {"_req_id": req["_req_id"], "payload": resp}
+                    writer.write((json.dumps(resp) + "\n").encode())
+                    await writer.drain()
+                    continue
+
                 pw_hash, pw_salt = hash_password(req["password"])
                 dev_hash, dev_salt = hash_password(req.get("dev_password", ""))
                 
-                enc_q = cipher.encrypt(req["question"].encode()).decode()
-                enc_a = cipher.encrypt(req["answer"].lower().encode()).decode()
+                enc_q = cipher.encrypt(req["question"].encode()).decode() if req.get("question") else ""
+                enc_a = cipher.encrypt(req["answer"].lower().encode()).decode() if req.get("answer") else ""
                 
                 doc = {
                     "username": u,
@@ -1011,7 +1061,8 @@ async def handle_client(reader, writer):
                     "password_salt": pw_salt,
                     "dev_hash": dev_hash,
                     "dev_salt": dev_salt,
-                    "role": "admin" if is_first else "dev",
+                    "role": "admin",
+                    "tenant_id": u,
                     "security_question": enc_q,
                     "security_answer": enc_a
                 }
@@ -1019,7 +1070,7 @@ async def handle_client(reader, writer):
                 engine.pour("_auth", u, json.dumps(doc))
                 resp = {"status": "ok", "message": "Registration successful! You can now login."}
                 if req.get("_req_id"):
-                                resp = {"_req_id": req["_req_id"], "payload": resp}
+                    resp = {"_req_id": req["_req_id"], "payload": resp}
                 writer.write((json.dumps(resp) + "\n").encode())
                 await writer.drain()
 
@@ -1185,8 +1236,64 @@ async def handle_client(reader, writer):
             await writer.drain()
             continue
             
+        if req_action == "check_username":
+            u = (req.get("username") or "").strip()
+            is_taken = False
+            if not u:
+                resp = {"status": "error", "message": "Username cannot be empty."}
+            else:
+                if engine.get(f"_auth:{u}"):
+                    is_taken = True
+                else:
+                    users_json = engine.scan_bucket("_auth")
+                    if users_json:
+                        try:
+                            for d in json.loads(users_json):
+                                body = d.get("body", {})
+                                if body.get("username", "").lower() == u.lower() or d.get("gid") == f"_auth:{u}":
+                                    is_taken = True
+                                    break
+                        except Exception:
+                            pass
+                if is_taken:
+                    resp = {"status": "error", "message": f"Username '{u}' is already taken. Please choose another username."}
+                else:
+                    resp = {"status": "ok", "message": "Username is available."}
+            response = json.dumps({"_req_id": req_id, "payload": resp}) if req_id else json.dumps(resp)
+            writer.write((response + "\n").encode())
+            await writer.drain()
+            continue
+
         if req_action == "register":
-            u = req.get("username")
+            u = (req.get("username") or "").strip()
+            if not u:
+                resp = {"status": "error", "message": "Username cannot be empty."}
+                response = json.dumps({"_req_id": req_id, "payload": resp}) if req_id else json.dumps(resp)
+                writer.write((response + "\n").encode())
+                await writer.drain()
+                continue
+
+            # Verify if username already registered
+            is_taken = bool(engine.get(f"_auth:{u}"))
+            if not is_taken:
+                users_json = engine.scan_bucket("_auth")
+                if users_json:
+                    try:
+                        for d in json.loads(users_json):
+                            body = d.get("body", {})
+                            if body.get("username", "").lower() == u.lower() or d.get("gid") == f"_auth:{u}":
+                                is_taken = True
+                                break
+                    except Exception:
+                        pass
+
+            if is_taken:
+                resp = {"status": "error", "message": f"Username '{u}' is already taken. Please choose another username."}
+                response = json.dumps({"_req_id": req_id, "payload": resp}) if req_id else json.dumps(resp)
+                writer.write((response + "\n").encode())
+                await writer.drain()
+                continue
+
             pw_hash, pw_salt = hash_password(req["password"])
             dev_hash, dev_salt = hash_password(req.get("dev_password", ""))
             enc_q = cipher.encrypt(req["question"].encode()).decode() if req.get("question") else ""
