@@ -1204,6 +1204,8 @@ class Parser:
             return DescribeStmt(bucket=bucket_name)
         elif self.check(TokenType.IDENTIFIER):
             bucket_name = self.advance().lexeme
+            while self.match(TokenType.DOT) and self.check(TokenType.IDENTIFIER):
+                bucket_name = f"{bucket_name}.{self.advance().lexeme}"
             if bucket_name.lower() in ("buckets", "bucket"):
                 return DescribeStmt(bucket="buckets")
             return DescribeStmt(bucket=bucket_name)

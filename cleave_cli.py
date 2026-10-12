@@ -1326,10 +1326,13 @@ def main():
         console.print("Type 'logout' to switch users, or 'exit' to close.")
         console.print("========================================\n")
         
-        prompt_style = Style.from_dict({
-            'prompt': 'ansired bold' if auth_data.get("auth_level") == "dev" else 'ansicyan bold',
-        })
-        prompt_text = "root@cleavedb> " if auth_data.get("auth_level") == "dev" else f"{auth_data.get('username', 'user')}@cleavedb> "
+        uname = auth_data.get('username', 'user')
+        if auth_data.get("auth_level") == "dev" or uname in ('root', 'admin'):
+            prompt_text = "root@cleavedb> "
+            prompt_style = Style.from_dict({'prompt': 'ansired bold'})
+        else:
+            prompt_text = f"{uname}@cleavedb> "
+            prompt_style = Style.from_dict({'prompt': 'ansicyan bold'})
         
         logout_requested = False
         

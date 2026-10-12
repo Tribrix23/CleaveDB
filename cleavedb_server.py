@@ -1049,7 +1049,7 @@ async def handle_client(reader, writer):
                         username = u
                         auth_level = "dev"
                         SESSION_STORE[client_id] = {"username": u, "auth_level": "dev", "tenant_id": user_data.get("tenant_id", u)}
-                        resp = {"status": "ok", "message": "Login successful! (Dev Superuser Override)", "auth_level": "dev", "username": u}
+                        resp = {"status": "ok", "message": "Login successful! (Level: dev)", "auth_level": "dev", "username": u}
                         if req.get("_req_id"):
                                 resp = {"_req_id": req["_req_id"], "payload": resp}
                         writer.write((json.dumps(resp) + "\n").encode())
@@ -1123,13 +1123,16 @@ async def handle_client(reader, writer):
 
     # 2. Database Query Loop
     user_doc_str = engine.get(f"_auth:{username}")
-    user_role = json.loads(user_doc_str).get("role", "dev") if user_doc_str else "dev"
+    user_data = json.loads(user_doc_str) if user_doc_str else {}
+    user_role = user_data.get("role", "dev")
+    tenant_id = user_data.get("tenant_id", username)
     
     interp = Interpreter(engine, indexing_queue=indexing_queue)
     
     interp.set_context({
         "user_id": f"users:{username}",
         "user": username,
+        "tenant_id": tenant_id,
         "role": user_role,
         "auth_level": auth_level
     })

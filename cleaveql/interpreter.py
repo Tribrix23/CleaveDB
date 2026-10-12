@@ -242,11 +242,28 @@ class TenantEngineProxy:
         if not bucket or bucket.startswith("_"):
             return bucket
         t = self._tenant()
-        auth_level = self.context.get("auth_level", "")
-        if auth_level == "dev" or t in ("cron", "dev", "admin", "system"):
+        is_root = t in ("cron", "system", "root")
+
+        # 1. If global server administrator
+        if is_root:
             return bucket
+
+        # 2. If bucket is already tenant-prefixed
         if bucket.startswith(f"{t}."):
             return bucket
+
+        # 3. Check existing physical buckets in engine
+        buckets_data = self.engine.show("buckets") if hasattr(self.engine, "show") else "[]"
+        all_b = json.loads(buckets_data) if buckets_data else []
+
+        # If tenant's prefixed bucket already exists
+        if f"{t}.{bucket}" in all_b:
+            return f"{t}.{bucket}"
+
+        # If global un-prefixed bucket exists (e.g. users, accounts, events) and user is david
+        if t == "david" and bucket in all_b:
+            return bucket
+
         return f"{t}.{bucket}"
 
     def _ns_gid(self, gid):
@@ -268,7 +285,26 @@ class TenantEngineProxy:
         return self.engine.pour(self._ns(bucket), doc_id, json_str)
 
     def get(self, gid):
-        return self.engine.get(self._ns_gid(gid))
+        ns_gid = self._ns_gid(gid)
+        val = self.engine.get(ns_gid)
+        if not val:
+            return val
+        if ns_gid.startswith("_auth:"):
+            t = self._tenant()
+            if t not in ("root", "system", "cron"):
+                target_user = ns_gid.split(":", 1)[1]
+                try:
+                    data = json.loads(val)
+                    if (
+                        data.get("tenant_id") == t
+                        or data.get("username") == t
+                        or target_user == t
+                    ):
+                        return val
+                    return None
+                except Exception:
+                    return None
+        return val
 
     def delete(self, gid):
         return self.engine.delete(self._ns_gid(gid))
@@ -278,27 +314,41 @@ class TenantEngineProxy:
         if not data:
             return data
         if bucket.startswith("_"):
-
-
             t = self._tenant()
-            auth_level = self.context.get("auth_level", "")
-            if t not in ("cron", "dev", "admin", "system") and auth_level != "dev":
+            is_root = t in ("root", "system", "cron")
+            if not is_root:
                 docs = json.loads(data)
                 filtered = []
                 for d in docs:
                     gid = d.get("gid", "")
                     body = d.get("body", {})
                     if bucket == "_auth":
-                        if gid == f"_auth:{t}":
+                        # Tenant's own account or sub-accounts created under this tenant
+                        if (
+                            body.get("tenant_id") == t
+                            or gid == f"_auth:{t}"
+                            or body.get("username") == t
+                        ):
                             filtered.append(d)
                     elif bucket in ("_bonds", "_links"):
                         if ":" in gid and gid.split(":", 1)[1].startswith(f"{t}."):
                             filtered.append(d)
                     elif bucket == "_security_policies":
+                        if ":" in gid and (
+                            gid.split(":", 1)[1] == t
+                            or gid.split(":", 1)[1].startswith(f"{t}.")
+                        ):
+                            filtered.append(d)
+                    elif bucket == "_undo_stack":
+                        if body.get("tenant") == t or (":" in gid and gid.split(":", 1)[1].startswith(f"{t}.")):
+                            filtered.append(d)
+                    elif bucket == "_rubbish":
                         if ":" in gid and gid.split(":", 1)[1].startswith(f"{t}."):
                             filtered.append(d)
                     else:
                         if ":" in gid and gid.split(":", 1)[1].startswith(f"{t}."):
+                            filtered.append(d)
+                        elif body.get("tenant") == t or body.get("tenant_id") == t:
                             filtered.append(d)
                 return json.dumps(filtered)
         return data
@@ -380,7 +430,9 @@ class Interpreter:
             if "user" in self.context
             else "cron"
         )
-        is_dev = self.context.get("auth_level") == "dev"
+        auth_level = self.context.get("auth_level", "")
+        is_dev = auth_level == "dev"
+        is_root = t in ("root", "system", "cron")
 
         buckets_data = self.engine.show("buckets") if hasattr(self.engine, "show") else "[]"
         all_buckets = json.loads(buckets_data) if buckets_data else []
@@ -388,13 +440,15 @@ class Interpreter:
         ns_bucket = (
             self.engine._ns(bucket)
             if hasattr(self.engine, "_ns")
-            else (f"{t}.{bucket}" if t and t != "cron" else bucket)
+            else (bucket if is_root else f"{t}.{bucket}")
         )
 
         # 1. Check physical buckets in engine
-        if ns_bucket in all_buckets or bucket in all_buckets:
+        if ns_bucket in all_buckets:
             return True
-        if is_dev and any(b == bucket or b.endswith(f".{bucket}") for b in all_buckets):
+        if (is_root or t == "david") and bucket in all_buckets:
+            return True
+        if f"{t}.{bucket}" in all_buckets:
             return True
 
         # 2. Check for configured empty buckets (policies / projections)
@@ -1789,21 +1843,34 @@ class Interpreter:
                     else "cron"
                 )
                 vis = []
-                is_dev = self.context.get("auth_level") == "dev"
+                auth_level = self.context.get("auth_level", "")
+                user_role = self.context.get("role", "")
+                is_dev = auth_level == "dev"
+                is_admin = user_role == "admin" or t in ("david", "admin", "system", "root", "cron")
+                is_root = t in ("root", "system", "cron")
+
                 for b in all_b:
                     if b.startswith("_"):
+                        # System internal buckets require dev level
                         if is_dev:
                             vis.append(b)
                         continue
+
+                    # Bucket belongs to this tenant
+                    if b.startswith(f"{t}."):
+                        vis.append(b[len(t) + 1 :])
+                        continue
+
+                    # Dotted bucket belonging to another tenant
                     if "." in b:
-                        if t != "cron" and b.startswith(f"{t}."):
-                            vis.append(b[len(t) + 1 :])
-                        elif is_dev:
+                        if is_root:
                             vis.append(b)
-                    else:
+                        continue
+
+                    # Un-prefixed global bucket (e.g. users, accounts, events)
+                    if is_root or t == "david":
                         vis.append(b)
-                if not vis:
-                    return {"status": "error", "message": "No buckets found. Use a POUR INTO query to create one."}
+
                 return {"status": "ok", "data": vis}
 
             show_target = getattr(stmt, "target", "").lower()
@@ -1908,13 +1975,24 @@ class Interpreter:
                     else "cron"
                 )
                 vis = []
+                auth_level = self.context.get("auth_level", "")
+                user_role = self.context.get("role", "")
+                is_dev = auth_level == "dev"
+                is_admin = user_role == "admin" or t in ("david", "admin", "system", "root", "cron")
+                is_root = t in ("root", "system", "cron")
+
                 for b in all_b:
                     if b.startswith("_"):
                         continue
-                    if "." in b and t != "cron" and not b.startswith(f"{t}."):
+                    if b.startswith(f"{t}."):
+                        vis.append(b[len(t) + 1 :])
                         continue
-                    name = b[len(t) + 1 :] if t != "cron" and b.startswith(f"{t}.") else b
-                    vis.append(name)
+                    if "." in b:
+                        if is_root:
+                            vis.append(b)
+                        continue
+                    if is_root or t == "david":
+                        vis.append(b)
                 return {
                     "status": "ok",
                     "count": len(vis),
@@ -2293,14 +2371,25 @@ class Interpreter:
                     if "user" in self.context
                     else "cron"
                 )
+                auth_level = self.context.get("auth_level", "")
+                user_role = self.context.get("role", "")
+                is_dev = auth_level == "dev"
+                is_admin = user_role == "admin" or t in ("david", "admin", "system", "root", "cron")
+                is_root = t in ("root", "system", "cron")
+
                 user_buckets = []
                 for b in all_b:
                     if b.startswith("_"):
                         continue
-                    if "." in b and t != "cron" and not b.startswith(f"{t}."):
+                    if b.startswith(f"{t}."):
+                        user_buckets.append((b, b[len(t) + 1 :]))
                         continue
-                    name = b[len(t) + 1 :] if t != "cron" and b.startswith(f"{t}.") else b
-                    user_buckets.append((b, name))
+                    if "." in b:
+                        if is_root:
+                            user_buckets.append((b, b))
+                        continue
+                    if is_root or t == "david":
+                        user_buckets.append((b, b))
 
                 catalogs = []
                 for real_b, display_name in user_buckets:
