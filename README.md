@@ -4,7 +4,7 @@
   <p><strong>A database for documents, connected data, and semantic search.</strong></p>
 
 
-  [![Python](https://img.shields.io/badge/Python-3.13+-blue.svg)](https://www.python.org/downloads/?Python)
+  [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/downloads/)
   [![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)](https://doc.rust-lang.org/edition-guide/rust-2021/index.html)
   [![License](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](https://github.com/Tribrix23/CleaveDB/blob/main/LICENSE)
   [![NPM Version](https://img.shields.io/npm/v/cleavedb.svg)](https://www.npmjs.com/package/cleavedb)
@@ -29,44 +29,82 @@ Visit the [CleaveDB website](https://cleavedb.devctr.com/) for documentation and
 
 ## 💾 Installation
 
-### Option A: Download Pre-Compiled Binary (Recommended)
-You do **not** need to install Python, Rust, or C++ build tools. We provide a single, self-contained executable that has the hardware-accelerated C++ AVX-512 extensions and Rust engine fully baked in.
+### Option A: Windows Installer (Recommended)
 
-1. Go to the [Releases](https://github.com/Tribrix23/CleaveDB/releases) page.
-2. Download `CleaveShell.exe` (or the equivalent for your OS).
-3. Double-click the executable to start the database server and interactive shell.
+Choose the release stream appropriate for your environment:
+
+| Release Stream | Status | Installer Package | SHA-256 Checksum | Recommended For |
+| :--- | :--- | :--- | :--- | :--- |
+| **Stable Release** | `v4.0.1` | `CleaveDB-v4.0.1-Setup.exe` | `e3af1b76679c34eaf20aaf0be1824bc6ca576949b7add7f2d14c830a946f4489` | Production environments & mission-critical deployments |
+| **Preview Release** | `v4.0.2-beta` | `CleaveDB-v4.0.2-Setup.exe` | `08a26888be703383ef493e43be5eec0ee6d720b45b1538afb123d7b3509c8c56` | Testing distributed sharding, real-time telemetry, & catalog updates |
+
+The Windows installer bundles the interactive **CleaveShell CLI**, the TCP engine server, the Go distributed coordinator, and native hardware-accelerated SIMD / Rust storage modules — no manual Python, Rust, or C++ toolchain setup is required.
+
+#### 1. Download & Verify Checksum
+1. Download the installer for your desired release stream from the [Releases](https://github.com/Tribrix23/CleaveDB/releases) page.
+2. In PowerShell, verify the cryptographic integrity of the downloaded installer:
+   ```powershell
+   Get-FileHash .\CleaveDB-v4.0.1-Setup.exe -Algorithm SHA256   # For Stable (v4.0.1)
+   Get-FileHash .\CleaveDB-v4.0.2-Setup.exe -Algorithm SHA256   # For Preview (v4.0.2-beta)
+   ```
+   **Official Release Checksums:**  
+   - **`v4.0.1` (Stable):** `e3af1b76679c34eaf20aaf0be1824bc6ca576949b7add7f2d14c830a946f4489`  
+   - **`v4.0.2-beta` (Preview):** `08a26888be703383ef493e43be5eec0ee6d720b45b1538afb123d7b3509c8c56`
+
+#### 2. Install
+- **Interactive Setup:** Double-click the installer executable and follow the guided setup wizard.
+- **Silent / Automated Deployment:**
+  ```powershell
+  .\CleaveDB-v4.0.1-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+  ```
 
 > [!NOTE]
-> **Windows SmartScreen Notice**
-> Because CleaveDB is an independent, open-source project, the Windows installer does not use an expensive corporate EV certificate. When downloading or running the `.exe`, Windows or Edge might flag it as "unrecognized".
-> To bypass this, click **Keep -> Keep anyway** in Edge, and **More info -> Run anyway** on the blue Windows screen.
+> **Windows SmartScreen & Unsigned Binary Notice**  
+> CleaveDB is an independent open-source project. Newly published releases do not carry an enterprise EV (Extended Validation) code-signing certificate and may trigger a Windows SmartScreen warning (*"Windows protected your PC"*) until community download volume builds reputation.  
+> **Always verify that the SHA-256 checksum matches the published hash above** before selecting *More info* → *Run anyway*.
 
-*(You can now execute all CleaveQL queries directly in your terminal, or connect via the NPM Client!)*
+*(Once installed, launch `CleaveShell` directly from your Start Menu / Terminal, or connect via the NPM Client!)*
 
 ---
 
 ### Option B: Compile from Source (Advanced / Contributors)
-If you want to modify the source code, you can compile the engine from scratch.
+If you want to contribute or modify the core engine, you can compile CleaveDB from source.
 
 **Prerequisites:**
-- **Python 3.10+**
-- **Rust Toolchain** (Install via `rustup` from [rustup.rs](https://rustup.rs/))
-- **C++ Build Tools** (For compiling the AVX-512 SIMD extensions)
-- *(Optional)* **Go** (For distributed cluster coordinator logic)
+- **Python 3.10+** (tested on 3.10 through 3.13)
+- **Rust Toolchain** (2021 edition via [rustup.rs](https://rustup.rs/))
+- **C++ Build Tools** (MSVC or GCC with AVX-512 support)
+- **Go 1.20+** (for distributed coordinator logic)
 
-**1. Install Python Dependencies**
+**1. Clone & Install Python Dependencies**
 ```bash
+git clone https://github.com/Tribrix23/CleaveDB.git
+cd CleaveDB
 pip install -r requirements.txt
 ```
 
 **2. Run the Master Build Script**
-Simply run the orchestrator script, which compiles the C++ SIMD layers, the Go Coordinator, and the Rust storage engine via PyO3/maturin:
+The orchestrator script compiles the C++ SIMD layers, the Go Coordinator, and the Rust storage engine via PyO3/maturin:
 ```bash
 python build.py
 ```
 
-**3. Start the Server**
-Once compiled, start the TCP server:
+**3. Launch the Server & Shell**
 ```bash
+# Start the TCP database server (ports 8301, 8302, 8303)
 python cleavedb_server.py
+
+# In a separate terminal, launch the interactive shell
+python cleave_cli.py
 ```
+
+---
+
+## 📄 License & Commercial Usage
+
+CleaveDB is licensed under the [Apache License, Version 2.0](LICENSE).
+
+- **Commercial Use:** You are free to run, modify, embed, and deploy CleaveDB within commercial software and proprietary products without royalty or license fees.
+- **Attribution & Notice:** Any redistribution of the source code or binary derivatives must preserve the original copyright notice and a copy of the Apache 2.0 License.
+- **Patents:** Includes an explicit contributor grant of patent rights from contributors.
+
