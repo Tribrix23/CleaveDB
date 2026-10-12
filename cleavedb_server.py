@@ -6,6 +6,11 @@ import os
 import sys
 import subprocess
 import argparse
+import collections
+import math
+import shutil
+import time
+import threading
 rate_limit_counters = {}
 import hashlib
 from cryptography.fernet import Fernet
@@ -97,7 +102,187 @@ def verify_password(stored_hash: str, stored_salt_hex: str, provided_password: s
 
 engine = None
 
+ACTIVE_PORTS = {
+    "gateway": 8300,
+    "tcp": 8299,
+    "websocket": 8302,
+    "http_rest": 8303,
+    "coordinator": 8305,
+    "raft": 8311
+}
 
+class TelemetryEngine:
+    def __init__(self, data_dir=None):
+        self.data_dir = data_dir
+        self.total_requests = 0
+        self.req_timestamps = collections.deque()
+        self.recent_latencies = collections.deque(maxlen=1000)
+        self.chart_history = collections.deque(maxlen=60)
+        self._lock = threading.Lock()
+        self._last_tick_sec = None
+        self._cached_databases = None
+        self._last_db_scan = 0.0
+
+        # Pre-seed 60 rolling seconds for chart_history [timestamp, rps, avg_lat]
+        now_sec = int(time.time())
+        for i in range(59, -1, -1):
+            self.chart_history.append([now_sec - i, 0, 0.0])
+
+    def record_request(self, latency_ms: float):
+        with self._lock:
+            now = time.time()
+            self.total_requests += 1
+            self.req_timestamps.append(now)
+            self.recent_latencies.append(latency_ms)
+            # Sliding 1-second request window
+            while self.req_timestamps and self.req_timestamps[0] < now - 1.0:
+                self.req_timestamps.popleft()
+
+    def get_requests_per_second_locked(self, now_time=None) -> int:
+        if now_time is None:
+            now_time = time.time()
+        while self.req_timestamps and self.req_timestamps[0] < now_time - 1.0:
+            self.req_timestamps.popleft()
+        return len(self.req_timestamps)
+
+    def get_avg_latency_locked(self) -> float:
+        if not self.recent_latencies:
+            return 0.0
+        return round(sum(self.recent_latencies) / len(self.recent_latencies), 2)
+
+    def get_percentiles_locked(self) -> tuple[float, float]:
+        if not self.recent_latencies:
+            return 0.0, 0.0
+        sorted_lats = sorted(self.recent_latencies)
+        n = len(sorted_lats)
+        idx95 = min(n - 1, max(0, int(math.ceil(0.95 * n)) - 1))
+        idx99 = min(n - 1, max(0, int(math.ceil(0.99 * n)) - 1))
+        return round(sorted_lats[idx95], 2), round(sorted_lats[idx99], 2)
+
+    def tick_second(self):
+        with self._lock:
+            now_sec = int(time.time())
+            if self._last_tick_sec is not None and now_sec > self._last_tick_sec + 1:
+                # Catch up any missed seconds with zero points
+                for s in range(self._last_tick_sec + 1, min(now_sec, self._last_tick_sec + 60)):
+                    self.chart_history.append([s, 0, 0.0])
+
+            rps = self.get_requests_per_second_locked(now_sec)
+            avg_lat = self.get_avg_latency_locked()
+            self.chart_history.append([now_sec, rps, avg_lat])
+            self._last_tick_sec = now_sec
+
+    def get_storage(self) -> dict:
+        path = self.data_dir if (self.data_dir and os.path.exists(self.data_dir)) else "."
+        try:
+            total, used, free = shutil.disk_usage(path)
+            used_pct = round((used / total) * 100, 2) if total > 0 else 0.0
+            return {
+                "total_gb": round(total / (1024 ** 3), 2),
+                "used_gb": round(used / (1024 ** 3), 2),
+                "free_gb": round(free / (1024 ** 3), 2),
+                "used_percent": used_pct
+            }
+        except Exception:
+            return {
+                "total_gb": 0.0,
+                "used_gb": 0.0,
+                "free_gb": 0.0,
+                "used_percent": 0.0
+            }
+
+    def get_databases(self) -> list:
+        now = time.time()
+        if self._cached_databases is not None and (now - self._last_db_scan < 1.0):
+            return self._cached_databases
+
+        catalogs = []
+        try:
+            global GLOBAL_DB
+            db = GLOBAL_DB
+            if db and hasattr(db, "show"):
+                raw_buckets = db.show("buckets")
+                buckets = json.loads(raw_buckets) if raw_buckets else []
+                from cleaveql.interpreter import infer_schema_from_docs, format_size_bytes
+                for b in buckets:
+                    if b.startswith("_"):
+                        continue
+                    raw_docs = db.scan_bucket(b) if hasattr(db, "scan_bucket") else "[]"
+                    docs = json.loads(raw_docs) if raw_docs else []
+                    records = len(docs)
+                    size_bytes = 0
+                    for d in docs:
+                        if isinstance(d, dict):
+                            body = d.get("body", {})
+                            size_bytes += len(json.dumps(body).encode("utf-8"))
+                    schema = infer_schema_from_docs(docs)
+                    storage_engine = "Columnar LSM" if any(k in b.lower() for k in ("event", "log", "metric", "timeseries", "ts")) else "Document Vector"
+                    display_name = b.split(".", 1)[1] if ("." in b and not b.startswith("_")) else b
+                    tenant_name = b.split(".", 1)[0] if ("." in b and not b.startswith("_")) else "default"
+                    catalogs.append({
+                        "name": display_name,
+                        "full_name": b,
+                        "tenant": tenant_name,
+                        "records": records,
+                        "size": format_size_bytes(size_bytes),
+                        "size_bytes": size_bytes,
+                        "storage_engine": storage_engine,
+                        "schema": schema,
+                        "status": "Online"
+                    })
+        except Exception as e:
+            print(f"[Telemetry] Database scan error: {e}")
+
+        self._cached_databases = catalogs
+        self._last_db_scan = now
+        return catalogs
+
+    def get_cluster(self) -> dict:
+        global dist_engine
+        global ACTIVE_PORTS
+        node_id = str(getattr(dist_engine, "selfNode", "127.0.0.1:8311")) if dist_engine else "local"
+        is_leader = dist_engine._isLeader() if dist_engine else True
+        leader = str(dist_engine._getLeader()) if (dist_engine and dist_engine._getLeader()) else node_id
+        status = "leader" if is_leader else "replica"
+        hq = getattr(dist_engine, "hasQuorum", True) if dist_engine else True
+        has_quorum = hq() if callable(hq) else bool(hq)
+        peer_nodes = [str(n) for n in getattr(dist_engine, "otherNodes", [])] if dist_engine else []
+
+        return {
+            "node_id": node_id,
+            "is_leader": is_leader,
+            "leader": leader,
+            "status": status,
+            "has_quorum": has_quorum,
+            "peer_nodes": peer_nodes,
+            "active_ports": dict(ACTIVE_PORTS)
+        }
+
+    def get_snapshot(self) -> dict:
+        with self._lock:
+            now_time = time.time()
+            rps = self.get_requests_per_second_locked(now_time)
+            avg_lat = self.get_avg_latency_locked()
+            p95, p99 = self.get_percentiles_locked()
+            chart = list(self.chart_history)
+            total_reqs = self.total_requests
+
+        return {
+            "status": "ok",
+            "timestamp": int(time.time()),
+            "requests_per_second": rps,
+            "total_requests": total_reqs,
+            "latency_ms": avg_lat,
+            "p95_latency_ms": p95,
+            "p99_latency_ms": p99,
+            "chart_history": chart,
+            "storage": self.get_storage(),
+            "databases": self.get_databases(),
+            "cluster": self.get_cluster()
+        }
+
+TELEMETRY = TelemetryEngine()
+METRICS_SUBSCRIBERS = set()
 
 import base64
 import urllib.parse
@@ -142,12 +327,22 @@ class RestApiHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'{"error": "Invalid credentials"}')
         return None
 
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        self.end_headers()
+
     def execute_and_respond(self, query, auth_ctx):
+        t_start = time.perf_counter()
         q_upper = query.upper()
         if any(k in q_upper for k in ['POUR', 'CHANGE', 'DRAIN', 'MIGRATE', 'BEGIN']):
             response = dist_engine.execute_write(query, auth_ctx)
         else:
             response = dist_engine.execute_read(query, auth_ctx)
+        elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+        TELEMETRY.record_request(elapsed_ms)
             
         results = response.get("results", [])
         events = response.get("events", [])
@@ -173,14 +368,31 @@ class RestApiHandler(BaseHTTPRequestHandler):
                 
         self.send_response(200)
         self.send_header('Content-type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         self.wfile.write(json.dumps(results).encode('utf-8'))
 
     def do_GET(self):
+        path = urllib.parse.unquote(self.path)
+        clean_path = path.split('?')[0]
+        parts = [p for p in clean_path.split('/') if p]
+        
+        # Phase 5: Telemetry Engine Endpoint (Public with CORS for GUI Dashboards)
+        if len(parts) == 2 and parts[0] == 'api' and parts[1] == 'metrics':
+            snapshot = TELEMETRY.get_snapshot()
+            data_bytes = json.dumps(snapshot).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+            self.send_header('Content-Length', str(len(data_bytes)))
+            self.end_headers()
+            self.wfile.write(data_bytes)
+            return
+
         auth_ctx = self.do_AUTH()
         if not auth_ctx: return
-        path = urllib.parse.unquote(self.path)
-        parts = [p for p in path.split('/') if p]
         
         if len(parts) >= 3 and parts[0] == 'api':
             bucket = parts[2]
@@ -189,7 +401,10 @@ class RestApiHandler(BaseHTTPRequestHandler):
                 self.execute_and_respond(query, auth_ctx)
             else:
                 doc_id = parts[3]
+                t_start = time.perf_counter()
                 response = dist_engine.execute_read(query, auth_ctx)
+                elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                TELEMETRY.record_request(elapsed_ms)
                 results = response.get("results", [])
                 
                 if len(results) > 0 and 'documents' in results[0]:
@@ -203,6 +418,7 @@ class RestApiHandler(BaseHTTPRequestHandler):
                 
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
                 self.wfile.write(json.dumps(results).encode('utf-8'))
         else:
@@ -469,9 +685,48 @@ async def ws_handler(websocket):
     context = None
     transaction_buffer = []
 
+    # Auto-subscribe if connecting directly to metrics stream
+    req_path = getattr(websocket, 'path', getattr(getattr(websocket, 'request', None), 'path', ''))
+    if any(p in req_path for p in ('/metrics', '/api/metrics', '/telemetry')):
+        METRICS_SUBSCRIBERS.add(websocket)
+        try:
+            await websocket.send(json.dumps({
+                "status": "ok",
+                "event": "metrics_subscribed",
+                "message": "Subscribed to CleaveDB Telemetry stream (1s interval)",
+                "telemetry": TELEMETRY.get_snapshot()
+            }))
+        except Exception:
+            pass
+
     try:
         async for message in websocket:
             try:
+                # Telemetry Stream Subscription Hook (Works both pre-auth and post-auth)
+                try:
+                    probe = json.loads(message.strip())
+                    if isinstance(probe, dict):
+                        act = probe.get("action") or probe.get("type")
+                        if act in ("subscribe_metrics", "metrics_subscribe", "subscribe_telemetry"):
+                            METRICS_SUBSCRIBERS.add(websocket)
+                            await websocket.send(json.dumps({
+                                "status": "ok",
+                                "event": "metrics_subscribed",
+                                "message": "Subscribed to CleaveDB Telemetry stream (1s interval)",
+                                "telemetry": TELEMETRY.get_snapshot()
+                            }))
+                            continue
+                        elif act in ("unsubscribe_metrics", "metrics_unsubscribe"):
+                            METRICS_SUBSCRIBERS.discard(websocket)
+                            await websocket.send(json.dumps({
+                                "status": "ok",
+                                "event": "metrics_unsubscribed",
+                                "message": "Unsubscribed from telemetry stream"
+                            }))
+                            continue
+                except Exception:
+                    pass
+
                 # 1. Require strict JSON authentication first
                 if context is None:
                     try:
@@ -492,7 +747,7 @@ async def ws_handler(websocket):
                                     continue
                                 elif user_record.get("dev_hash") and verify_password(user_record["dev_hash"], user_record.get("dev_salt", ""), password):
                                     context = {"user": username, "role": user_record.get("role", "user"), "auth_level": "dev"}
-                                    await websocket.send(json.dumps([{"status": "ok", "message": f"Authenticated as {username} (DEV MODE)"}]))
+                                    await websocket.send(json.dumps([{"status": "ok", "message": f"Authenticated as {username}"}]))
                                     continue
                             
                             await websocket.send(json.dumps([{"status": "error", "message": "Invalid username or password"}]))
@@ -546,11 +801,13 @@ async def ws_handler(websocket):
                     await websocket.send(json.dumps([{"status": "ok", "message": "Statement queued"}]))
                     continue
                     
+                t_start = time.perf_counter()
                 if 'POUR' in msg_upper or 'CHANGE' in msg_upper or 'DRAIN' in msg_upper or 'MIGRATE' in msg_upper or 'BEGIN' in msg_upper:
-
                     response = dist_engine.execute_write(message, context)
                 else:
                     response = dist_engine.execute_read(message, context)
+                elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                TELEMETRY.record_request(elapsed_ms)
                 
                 results = response.get("results", [])
                 events = response.get("events", [])
@@ -581,8 +838,29 @@ async def ws_handler(websocket):
         pass
 
     finally:
+        METRICS_SUBSCRIBERS.discard(websocket)
         for t in list(dispatcher.subscribers.keys()):
             dispatcher.unsubscribe(t, websocket)
+
+
+async def telemetry_broadcaster():
+    print("[Server] Telemetry Broadcaster started (1s interval).")
+    while True:
+        try:
+            await asyncio.sleep(1.0)
+            TELEMETRY.tick_second()
+            if METRICS_SUBSCRIBERS:
+                packet = json.dumps(TELEMETRY.get_snapshot())
+                dead = set()
+                for ws in list(METRICS_SUBSCRIBERS):
+                    try:
+                        await ws.send(packet)
+                    except Exception:
+                        dead.add(ws)
+                if dead:
+                    METRICS_SUBSCRIBERS.difference_update(dead)
+        except Exception as e:
+            print(f"[Telemetry] Broadcaster loop error: {e}")
 
 
 async def cron_worker():
@@ -971,8 +1249,11 @@ async def handle_client(reader, writer):
             interp.context["auth_level"] = session["auth_level"]
             interp.context["tenant_id"] = session.get("tenant_id", session["username"])
             
+            t_start = time.perf_counter()
             stmts = Parser(Lexer(query).tokenize()).parse()
             results = interp.execute(stmts)
+            elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+            TELEMETRY.record_request(elapsed_ms)
             
             for event in interp.emitted_events:
                 if event.get('event') in ['POUR', 'CHANGE']:
@@ -988,6 +1269,8 @@ async def handle_client(reader, writer):
             else:
                 response = json.dumps(results)
         except Exception as e:
+            elapsed_ms = (time.perf_counter() - t_start) * 1000.0 if 't_start' in locals() else 0.0
+            TELEMETRY.record_request(elapsed_ms)
             err = {"status": "error", "message": str(e)}
             if req_id is not None:
                 response = json.dumps({"_req_id": req_id, "payload": [err]})
@@ -1112,7 +1395,15 @@ async def main():
     
     dist_engine = DistributedEngine(f"{node_ip}:{args.raft_port}", peers, args.data)
     engine = GLOBAL_DB
-
+    TELEMETRY.data_dir = args.data
+    ACTIVE_PORTS.update({
+        "gateway": args.port - 1,
+        "tcp": args.port - 2,
+        "websocket": args.port + 1,
+        "http_rest": args.port + 2,
+        "coordinator": args.port + 4,
+        "raft": args.raft_port
+    })
 
     threading.Thread(target=view_worker, daemon=True).start()
 
@@ -1170,6 +1461,7 @@ async def main():
     print(f"=========================================")
     async with server, ws_server:
         asyncio.create_task(cron_worker())
+        asyncio.create_task(telemetry_broadcaster())
         await asyncio.gather(server.serve_forever(), ws_server.serve_forever())
 
 

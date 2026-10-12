@@ -1200,6 +1200,134 @@ Users in the terminal do **NOT** type raw JSON envelopes (`{ "action": ... }`). 
    * PC 1 automatically reconnects over TCP.
    * `SCOOP FROM orders` immediately recovers all data from PC 2 without loss or key change.
 
+---
+
+## 9. Phase 5: Telemetry Engine & HTTP/WS Metrics API
+
+### 9.1 Objective
+The CleaveDB Telemetry Engine feeds GUI dashboards, Prometheus exporters, and real-time monitoring tools directly without forcing clients to route complex queries through the GUI. Telemetry metrics are exposed via:
+1. **Public HTTP REST Endpoint:** `GET http://localhost:8303/api/metrics` (with full CORS support for browser frontends).
+2. **Real-Time WebSocket Stream:** `ws://localhost:8302` (pushes an updated telemetry snapshot every 1.0 second to subscribed clients).
+
+---
+
+### 9.2 Metrics Collected in `cleavedb_server.py`
+
+| Field | Type | Description |
+|---|---|---|
+| `requests_per_second` | `integer` | Sliding 1-second request window calculated via high-precision monotonic timestamps. Decays automatically to 0 when idle. |
+| `total_requests` | `integer` | Monotonic request counter tracking all executed database queries since process startup. |
+| `latency_ms` | `float` | Rolling average query execution time (ms) measured using `time.perf_counter()`. |
+| `p95_latency_ms` | `float` | 95th percentile query latency (ms) across the sliding window of recent queries. |
+| `p99_latency_ms` | `float` | 99th percentile query latency (ms) across the sliding window of recent queries. |
+| `chart_history` | `array` | Rolling 60-second array of `[timestamp, req_per_sec, latency_ms]` points for the Live Stream chart. |
+| `storage` | `object` | Disk usage for local database directory (`total_gb`, `used_gb`, `free_gb`, `used_percent`) via `shutil.disk_usage()`. |
+| `databases` | `array` | List of all user buckets with document counts (`records`), human/byte sizes (`size`, `size_bytes`), storage engine type, inferred schemas, and online status. |
+| `cluster` | `object` | Raft consensus status (`is_leader`, `leader`, `node_id`, `status`, `has_quorum`, `peer_nodes`) and active port map. |
+
+---
+
+### 9.3 Telemetry Snapshot JSON Schema Reference
+
+```json
+{
+  "status": "ok",
+  "timestamp": 1791763376,
+  "requests_per_second": 24,
+  "total_requests": 1420,
+  "latency_ms": 1.45,
+  "p95_latency_ms": 3.20,
+  "p99_latency_ms": 5.10,
+  "chart_history": [
+    [1791763317, 0, 0.0],
+    [1791763376, 24, 1.45]
+  ],
+  "storage": {
+    "total_gb": 237.33,
+    "used_gb": 232.13,
+    "free_gb": 5.20,
+    "used_percent": 97.81
+  },
+  "databases": [
+    {
+      "name": "orders",
+      "full_name": "orders",
+      "tenant": "default",
+      "records": 500,
+      "size": "12.4 KB",
+      "size_bytes": 12700,
+      "storage_engine": "Document Vector",
+      "schema": {
+        "item": "string",
+        "price": "integer",
+        "order_date": "date"
+      },
+      "status": "Online"
+    }
+  ],
+  "cluster": {
+    "node_id": "127.0.0.1:8311",
+    "is_leader": true,
+    "leader": "127.0.0.1:8311",
+    "status": "leader",
+    "has_quorum": true,
+    "peer_nodes": [],
+    "active_ports": {
+      "gateway": 8300,
+      "tcp": 8299,
+      "websocket": 8302,
+      "http_rest": 8303,
+      "coordinator": 8305,
+      "raft": 8311
+    }
+  }
+}
+```
+
+---
+
+### 9.4 Terminal Testing & Dashboard Integration
+
+#### 1. Fetching Telemetry via HTTP (cURL / PowerShell)
+* **cURL:**
+  ```bash
+  curl http://localhost:8303/api/metrics
+  ```
+* **PowerShell:**
+  ```powershell
+  Invoke-RestMethod -Uri http://localhost:8303/api/metrics | ConvertTo-Json -Depth 5
+  ```
+
+#### 2. Streaming Telemetry via WebSocket (`ws://localhost:8302`)
+Clients subscribe to real-time 1-second telemetry ticks using two options:
+
+* **Option A: Direct Path Connection**
+  Connect your WebSocket client directly to `ws://localhost:8302/api/metrics`. The server immediately transmits an acknowledgment and initiates the 1-second telemetry broadcast stream.
+
+* **Option B: Subscription Action**
+  Connect to `ws://localhost:8302` and send:
+  ```json
+  {"action": "subscribe_metrics"}
+  ```
+  The server responds with `event: "metrics_subscribed"` and broadcasts full telemetry packets every 1.0 second.
+
+---
+
+### 9.5 Automated Test Verification
+Run the Phase 5 test suite to verify HTTP CORS endpoints, sliding window decays, percentiles, and live WebSocket streaming:
+```powershell
+python tests/test_phase5_telemetry.py
+```
+**Test Results:**
+```text
+..........
+----------------------------------------------------------------------
+Ran 10 tests in 7.881s
+
+OK
+```
+
+
 
 
 
