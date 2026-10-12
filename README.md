@@ -36,7 +36,7 @@ Choose the release stream appropriate for your environment:
 | Release Stream | Status | Installer Package | SHA-256 Checksum | Recommended For |
 | :--- | :--- | :--- | :--- | :--- |
 | **Stable Release** | `v4.0.1` | `CleaveDB-v4.0.1-Setup.exe` | `e3af1b76679c34eaf20aaf0be1824bc6ca576949b7add7f2d14c830a946f4489` | Production environments & mission-critical deployments |
-| **Preview Release** | `v4.0.2-beta` | `CleaveDB-v4.0.2-Setup.exe` | `08a26888be703383ef493e43be5eec0ee6d720b45b1538afb123d7b3509c8c56` | Testing distributed sharding, real-time telemetry, & catalog updates |
+| **Preview Release** | `v4.0.2-beta` | `CleaveDB-v4.0.2-Setup.exe` | `a08a552f8ab59f3f770e0dbc18c0996760d73a75c458145d0619dccdc498275b` | Testing distributed sharding, real-time telemetry, & catalog updates |
 
 The Windows installer bundles the interactive **CleaveShell CLI**, the TCP engine server, the Go distributed coordinator, and native hardware-accelerated SIMD / Rust storage modules — no manual Python, Rust, or C++ toolchain setup is required.
 
@@ -49,7 +49,7 @@ The Windows installer bundles the interactive **CleaveShell CLI**, the TCP engin
    ```
    **Official Release Checksums:**  
    - **`v4.0.1` (Stable):** `e3af1b76679c34eaf20aaf0be1824bc6ca576949b7add7f2d14c830a946f4489`  
-   - **`v4.0.2-beta` (Preview):** `08a26888be703383ef493e43be5eec0ee6d720b45b1538afb123d7b3509c8c56`
+   - **`v4.0.2-beta` (Preview):** `a08a552f8ab59f3f770e0dbc18c0996760d73a75c458145d0619dccdc498275b`
 
 #### 2. Install
 - **Interactive Setup:** Double-click the installer executable and follow the guided setup wizard.

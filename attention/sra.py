@@ -6,22 +6,41 @@ import numpy as np
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 try:
+    import sys
     from tokenizers import Tokenizer
     import onnxruntime as ort
     
     print("SRA Module: Initializing Hardware-Efficient AI Semantic Search (ONNX Q8_0)...")
     
-    # Model is fully bundled inside the attention/model directory
-    _model_path = os.path.join(os.path.dirname(__file__), 'model', 'model_quantized.onnx')
-    _vocab_path = os.path.join(os.path.dirname(__file__), 'model', 'tokenizer.json')
+    # Locate model and tokenizer across known potential locations
+    _candidates = [
+        os.path.join(os.path.dirname(__file__), 'model'),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'model'),
+        os.path.join(os.path.dirname(sys.executable), 'attention', 'model'),
+        os.path.join(os.path.dirname(sys.executable), '_internal', 'attention', 'model'),
+        os.path.join(os.getcwd(), 'attention', 'model')
+    ]
+    
+    _model_path = None
+    _vocab_path = None
+    for c in _candidates:
+        m = os.path.join(c, 'model_quantized.onnx')
+        v = os.path.join(c, 'tokenizer.json')
+        if os.path.exists(m) and os.path.exists(v):
+            _model_path = m
+            _vocab_path = v
+            break
+
+    if not _model_path or not _vocab_path:
+        raise FileNotFoundError(f"Model files not found in any candidate path: {_candidates}")
 
     _tokenizer = Tokenizer.from_file(_vocab_path)
     # CPU Execution Provider leverages AVX instructions under the hood
     _session = ort.InferenceSession(_model_path, providers=['CPUExecutionProvider'])
     
     _AI_ENABLED = True
-except ImportError:
-    print("SRA Module: ML dependencies not found. Falling back to exact matching.")
+except Exception as e:
+    print(f"SRA Module: ML model not loaded ({e}). Falling back to exact matching.")
     _AI_ENABLED = False
 
 def get_embedding(text: str) -> np.ndarray:

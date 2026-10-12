@@ -1205,9 +1205,17 @@ def main():
                         root_dir = str(d)
                         break
                         
+                log_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'CleaveDB')
+                os.makedirs(log_dir, exist_ok=True)
+                log_file = os.path.join(log_dir, "server_autostart.log")
+
                 if getattr(sys, 'frozen', False):
                     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                    subprocess.Popen([sys.executable, "--run-server"], cwd=str(exe_dir), creationflags=flags)
+                    try:
+                        log_out = open(log_file, "a", encoding="utf-8")
+                    except Exception:
+                        log_out = subprocess.DEVNULL
+                    subprocess.Popen([sys.executable, "--run-server"], cwd=str(exe_dir), stdout=log_out, stderr=log_out, creationflags=flags)
                 elif server_path:
                     flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
                     # Run the server in the correct root directory
@@ -1233,6 +1241,8 @@ def main():
                 
                 if not connected:
                     print("Auto-start failed: Timed out waiting for database engine after 30 seconds.")
+                    if os.path.exists(log_file):
+                        print(f"Diagnostic log written to: {log_file}")
                     time.sleep(5)
                     sys.exit(1)
             except Exception as e:

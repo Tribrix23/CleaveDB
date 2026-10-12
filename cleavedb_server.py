@@ -1396,9 +1396,30 @@ async def main():
     dist_engine = DistributedEngine(f"{node_ip}:{args.raft_port}", peers, args.data)
     engine = GLOBAL_DB
     TELEMETRY.data_dir = args.data
+    # Automatically locate the Rust Gateway!
+    exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
+    file_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else exe_dir
+    gw_paths = [
+        "edge_gateway.exe",
+        os.path.join(exe_dir, "edge_gateway.exe"),
+        os.path.join(exe_dir, "..", "edge_gateway.exe"),
+        os.path.join(exe_dir, "..", "..", "edge_gateway.exe"),
+        os.path.join(file_dir, "edge_gateway.exe"),
+        os.path.join(file_dir, "edge_gateway", "target", "release", "edge_gateway.exe"),
+        os.path.join("edge_gateway", "target", "release", "edge_gateway.exe")
+    ]
+    rust_gateway_path = next((os.path.abspath(p) for p in gw_paths if os.path.exists(p)), None)
+    
+    # If edge gateway is found, Python binds on internal IPC port (args.port - 2 = 8299).
+    # If gateway is missing, Python binds directly to public port (args.port - 1 = 8300) so clients never hang!
+    if rust_gateway_path:
+        server_tcp_port = args.port - 2
+    else:
+        server_tcp_port = args.port - 1
+
     ACTIVE_PORTS.update({
         "gateway": args.port - 1,
-        "tcp": args.port - 2,
+        "tcp": server_tcp_port,
         "websocket": args.port + 1,
         "http_rest": args.port + 2,
         "coordinator": args.port + 4,
@@ -1406,41 +1427,33 @@ async def main():
     })
 
     threading.Thread(target=view_worker, daemon=True).start()
-
-
     threading.Thread(target=webhook_worker, daemon=True).start()
     threading.Thread(target=replica_worker, daemon=True).start()
     threading.Thread(target=vector_worker, daemon=True).start()
     threading.Thread(target=run_http_server, args=(args.port + 2,), daemon=True).start()
 
-    
-    server = await asyncio.start_server(handle_client, HOST, args.port - 2)
+    server = await asyncio.start_server(handle_client, HOST, server_tcp_port)
     ws_server = await websockets.serve(ws_handler, HOST, args.port + 1)
     print(f"=========================================")
-    print(f"   CleaveDB TCP Server on {HOST}:{args.port - 2}")
-    
-    # Automatically boot the Rust Gateway!
-    exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
-    gw_paths = [
-        "edge_gateway.exe",
-        os.path.join(exe_dir, "edge_gateway.exe"),
-        os.path.join("edge_gateway", "target", "release", "edge_gateway.exe")
-    ]
-    rust_gateway_path = next((p for p in gw_paths if os.path.exists(p)), None)
+    print(f"   CleaveDB TCP Server on {HOST}:{server_tcp_port}")
     
     if rust_gateway_path:
         print(f"   CleaveDB Edge Gateway starting natively on 0.0.0.0:{args.port - 1}")
         subprocess.Popen([rust_gateway_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
-        print(f"   WARNING: Rust Edge Gateway not found. (Did you compile it?)")
+        print(f"   NOTICE: Rust Edge Gateway not found. Bound directly to client port 0.0.0.0:{server_tcp_port}")
         
-    # Automatically boot the Go Coordinator!
+    # Automatically locate the Go Coordinator!
     coord_paths = [
         "coordinator.exe",
         os.path.join(exe_dir, "coordinator.exe"),
+        os.path.join(exe_dir, "..", "coordinator.exe"),
+        os.path.join(exe_dir, "..", "..", "coordinator.exe"),
+        os.path.join(file_dir, "coordinator.exe"),
+        os.path.join(file_dir, "coordinator", "coordinator.exe"),
         os.path.join("coordinator", "coordinator.exe")
     ]
-    go_coord_path = next((p for p in coord_paths if os.path.exists(p)), None)
+    go_coord_path = next((os.path.abspath(p) for p in coord_paths if os.path.exists(p)), None)
     if go_coord_path:
         coord_port = args.port + 4
         shards_arg = f"{node_ip}:{args.port - 1}"

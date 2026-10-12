@@ -5,7 +5,7 @@ a = Analysis(
     ['cleave_cli.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('attention/model', 'attention/model')],
     hiddenimports=['encodings', 'cleavedb_server'],
     hookspath=[],
     hooksconfig={},
