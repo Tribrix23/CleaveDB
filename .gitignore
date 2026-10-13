@@ -5,17 +5,32 @@ __pycache__/
 storage/target/
 target/
 
-
-
 cleavedb.key
 cleavedb_server_data/
+cleavedb_data/
 
 build/
-
 release/
 dist/
 *.exe
 *.spec
+
+# Test artifacts and test database directories
 test_*_db/
+test_*/
 *_webhook*.py
 ping_server.py
+
+# Documentation & Research Dossiers
+Documentation*.md
+Document*.md
+reference.md
+research_breakthrough.md
+research.txt
+feat*.txt
+
+# Testing & Scratch Folders
+tests/
+testing/
+benchmarks/
+scratch/
