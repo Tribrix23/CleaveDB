@@ -1,44 +1,79 @@
 use crate::error::{StorageError, StorageResult};
 use super::{Catalog, ShardManager, InvertedIndex, Document, derive::derive};
 use super::bucket_bond::Enforcement;
+use super::phantom_lattice::{PhantomLattice, ShadowRecord};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-/// High-level Database coordinating shards, catalogs, and indexes.
+/// High-level Database coordinating shards, catalogs, indexes, and the Phantom Lattice.
 pub struct Database {
     pub catalog: Catalog,
     pub shards: ShardManager,
     pub inverted: InvertedIndex,
-    // pool and wal are kept alive by Arcs in ShardManager and BTree
+    pub phantom_lattice: Arc<PhantomLattice>,
 }
 
 impl Database {
     pub fn put(&self, doc: Document) -> StorageResult<()> {
+        let current_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
         // 1. Derive indexable fields
         let derivation = derive(&doc.body);
         
-        // 2. Validate bonds — check that bond targets exist for Strict/Firm bonds
+        // 2. Validate bonds — check targets and latch unmaterialized targets into Phantom Lattice
         let trie = self.catalog.to_trie();
         for bond_gid in &derivation.bond_edges {
             let bonds = trie.get_bonds_for_bucket(&doc.bucket);
             for bond in &bonds {
+                let target_shard = self.shards.get_shard(bond_gid);
+                let target_exists = target_shard.get(bond_gid.as_bytes())?.is_some();
+
                 match bond.enforcement {
                     Enforcement::Strict => {
                         // Strict bond: target MUST exist — reject write if missing
-                        let target_shard = self.shards.get_shard(bond_gid);
-                        if target_shard.get(bond_gid.as_bytes())?.is_none() {
+                        if !target_exists {
                             return Err(StorageError::Corruption(
                                 format!("Strict bond '{}' violated: target '{}' does not exist", bond.name, bond_gid)
                             ));
                         }
                     }
                     Enforcement::Firm => {
-                        // Firm bond: target doesn't need to exist, but log a warning
-                        let target_shard = self.shards.get_shard(bond_gid);
-                        if target_shard.get(bond_gid.as_bytes())?.is_none() {
-                            log::warn!("Firm bond '{}': target '{}' not found (bond_status: pending)", bond.name, bond_gid);
+                        if !target_exists {
+                            // Firm bond: target has not arrived yet — latch into Phantom Lattice with 24-hr default lease
+                            let lease_secs = bond.to_bucket.parse::<u64>().ok().unwrap_or(86400);
+                            let shadow = ShadowRecord {
+                                src_gid: doc.gid.clone(),
+                                target_gid: bond_gid.clone(),
+                                rel_name: bond.name.clone(),
+                                enforcement: Enforcement::Firm,
+                                created_at_ts: current_ts,
+                                lease_expiry_ts: Some(current_ts + lease_secs),
+                                cascade_delete: bond.cascade_delete,
+                                status: "latched".to_string(),
+                            };
+                            self.phantom_lattice.register_shadow_bond(shadow)?;
+                            log::info!("Late-binding Firm bond '{}': latched target '{}' into Phantom Lattice (pending arrival)", bond.name, bond_gid);
                         }
                     }
                     Enforcement::Soft => {
-                        // Soft bond: no validation needed
+                        if !target_exists {
+                            // Soft bond: latch into Phantom Lattice without mandatory lease expiration
+                            let shadow = ShadowRecord {
+                                src_gid: doc.gid.clone(),
+                                target_gid: bond_gid.clone(),
+                                rel_name: bond.name.clone(),
+                                enforcement: Enforcement::Soft,
+                                created_at_ts: current_ts,
+                                lease_expiry_ts: None,
+                                cascade_delete: bond.cascade_delete,
+                                status: "latched".to_string(),
+                            };
+                            self.phantom_lattice.register_shadow_bond(shadow)?;
+                            log::info!("Late-binding Soft bond '{}': latched target '{}' into Phantom Lattice", bond.name, bond_gid);
+                        }
                     }
                 }
             }
@@ -52,7 +87,19 @@ impl Database {
         let key = doc.gid.as_bytes();
         shard.insert(key, &msgpack)?;
         
-        // 5. Update inverted index
+        // 5. Cleave-Snap Reactive Latching:
+        // Check if other documents were waiting for this document to land!
+        if self.phantom_lattice.has_pending_latches(&doc.gid) {
+            let snapped = self.phantom_lattice.resolve_latches_for_target(&doc.gid);
+            for rec in &snapped {
+                log::info!(
+                    "Cleave-Snap: Bond '{}' between source '{}' and target '{}' atomically snapped & fused",
+                    rec.rel_name, rec.src_gid, rec.target_gid
+                );
+            }
+        }
+
+        // 6. Update inverted index
         for (term, freq) in derivation.text_terms {
             self.inverted.insert(&term, &doc.gid, freq)?;
         }

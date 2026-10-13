@@ -384,7 +384,7 @@ class Interpreter:
             }
         return None
 
-    def _validate_doc_and_bucket(self, gid, role_desc="Document"):
+    def _validate_doc_and_bucket(self, gid, role_desc="Document", allow_unmaterialized=False):
         if not gid or not isinstance(gid, str):
             return {"status": "error", "message": f"{role_desc} ID cannot be empty."}
         if ":" not in gid:
@@ -400,6 +400,9 @@ class Interpreter:
             }
 
         if not self.engine:
+            return None
+
+        if allow_unmaterialized:
             return None
 
         if not self._bucket_exists(bucket):
@@ -1079,6 +1082,23 @@ class Interpreter:
             old_doc = json.loads(old_raw) if old_raw else None
             gid = self.engine.pour(bucket, doc_id, json_str)
             self._push_undo("POUR", gid, old_doc, body)
+
+            # Cleave-Snap Reactive Latching:
+            # Check if any latched bonds were waiting for this target document
+            try:
+                b_data = self._scan_bucket_rls("_bonds")
+                if b_data:
+                    bonds = json.loads(b_data)
+                    for b_doc in bonds:
+                        b = b_doc.get("body", {})
+                        target_key = b.get("target", "")
+                        if (target_key == gid or target_key == f"{bucket}:{doc_id}") and b.get("status") == "latched":
+                            b["status"] = "active"
+                            b["fused_at"] = int(time.time())
+                            b_id = b_doc.get("gid", "").split(":")[-1] if ":" in b_doc.get("gid", "") else b_doc.get("gid", "")
+                            self.engine.pour("_bonds", b_id, json.dumps(b))
+            except Exception:
+                pass
             
             if _evict_algo:
                 self.engine.pour("_lru_tracking", gid.split(":")[-1], str(time.time()))
@@ -1419,6 +1439,24 @@ class Interpreter:
                             if b.get("affinity"):
                                 wrapped_doc["_bond"]["affinity"] = b["affinity"]
                             related_docs.append(wrapped_doc)
+                        elif b.get("status") == "latched" or getattr(stmt, "allowing_unresolved", False) or getattr(stmt, "is_candidate", False):
+                            doc_gid = f"{t_bucket}:{t_id}"
+                            if doc_gid not in seen_targets:
+                                seen_targets.add(doc_gid)
+                                wrapped_doc = {
+                                    "gid": doc_gid,
+                                    "body": {
+                                        "_status": "pending_unmaterialized",
+                                        "target_gid": doc_gid,
+                                    },
+                                    "_bond": {
+                                        "label": label,
+                                        "source": source,
+                                        "status": "latched",
+                                        "enforcement": b.get("enforcement", "soft"),
+                                    },
+                                }
+                                related_docs.append(wrapped_doc)
                 return {
                     "status": "ok",
                     "mode": "RELATED",
@@ -1791,6 +1829,15 @@ class Interpreter:
         elif stmt_type == "HealStmt":
             target = getattr(stmt, "target", "all").lower()
             heal_msgs = []
+            if hasattr(self.engine, "sweep_expired_bonds"):
+                try:
+                    swept_json = self.engine.sweep_expired_bonds()
+                    swept = json.loads(swept_json)
+                    if swept:
+                        heal_msgs.append(f"Swept {len(swept)} expired late-binding bonds from Phantom Lattice.")
+                except Exception:
+                    pass
+
             if target in ("bonds", "all"):
                 b_data = self._scan_bucket_rls("_bonds")
                 healed_bonds = 0
@@ -1799,6 +1846,9 @@ class Interpreter:
                         b = b_doc.get("body", {})
                         src = b.get("source")
                         tgt = b.get("target")
+                        # Preserve latched late-binding bonds
+                        if b.get("status") == "latched":
+                            continue
                         if (src and not self.engine.get(src)) or (tgt and not self.engine.get(tgt)):
                             self.engine.delete(b_doc["gid"])
                             healed_bonds += 1
@@ -1874,6 +1924,92 @@ class Interpreter:
                 return {"status": "ok", "data": vis}
 
             show_target = getattr(stmt, "target", "").lower()
+            if show_target in ("pending", "phantom", "latches", "pending bonds"):
+                rows = []
+                if hasattr(self.engine, "get_pending_bonds"):
+                    try:
+                        p_str = self.engine.get_pending_bonds()
+                        rows = json.loads(p_str)
+                    except Exception:
+                        pass
+                if not rows:
+                    raw = self._scan_bucket_rls("_bonds")
+                    for d in (json.loads(raw) if raw else []):
+                        b = d.get("body", {})
+                        if b.get("status") == "latched":
+                            rows.append({
+                                "source": b.get("source"),
+                                "target": b.get("target"),
+                                "label": b.get("label"),
+                                "status": "latched",
+                                "enforcement": b.get("enforcement", "soft"),
+                                "created_at": b.get("created_at"),
+                                "expires_at": b.get("expires_at"),
+                            })
+                return {"status": "ok", "count": len(rows), "data": rows}
+
+            if show_target in ("cycles", "phantom cycles"):
+                raw = self._scan_bucket_rls("_bonds")
+                bonds = json.loads(raw) if raw else []
+                adj = collections.defaultdict(list)
+                for b_doc in bonds:
+                    b = b_doc.get("body", {})
+                    src = b.get("source")
+                    tgt = b.get("target")
+                    if src and tgt:
+                        adj[src].append((tgt, b.get("label"), b.get("status", "active")))
+
+                index = 0
+                indices = {}
+                lowlink = {}
+                on_stack = set()
+                stack = []
+                sccs = []
+
+                def strongconnect(v):
+                    nonlocal index
+                    indices[v] = index
+                    lowlink[v] = index
+                    index += 1
+                    stack.append(v)
+                    on_stack.add(v)
+
+                    for w, _, _ in adj.get(v, []):
+                        if w not in indices:
+                            strongconnect(w)
+                            lowlink[v] = min(lowlink[v], lowlink[w])
+                        elif w in on_stack:
+                            lowlink[v] = min(lowlink[v], indices[w])
+
+                    if lowlink[v] == indices[v]:
+                        scc = []
+                        while True:
+                            w = stack.pop()
+                            on_stack.remove(w)
+                            scc.append(w)
+                            if w == v:
+                                break
+                        if len(scc) > 1 or (len(scc) == 1 and any(tgt == scc[0] for tgt, _, _ in adj.get(scc[0], []))):
+                            sccs.append(scc)
+
+                for node in list(adj.keys()):
+                    if node not in indices:
+                        strongconnect(node)
+
+                cycle_results = []
+                for scc in sccs:
+                    cycle_results.append({
+                        "cycle_length": len(scc),
+                        "nodes": scc,
+                        "has_phantom_members": any(
+                            b_doc.get("body", {}).get("status") == "latched"
+                            for b_doc in bonds
+                            if b_doc.get("body", {}).get("source") in scc and b_doc.get("body", {}).get("target") in scc
+                        ),
+                    })
+
+                return {"status": "ok", "cycles_detected": len(cycle_results), "cycles": cycle_results}
+
             if show_target == "bonds":
                 raw = self._scan_bucket_rls("_bonds")
                 rows = []
@@ -2850,13 +2986,20 @@ class Interpreter:
             if not target_gids_raw:
                 return {"status": "error", "message": "Target document ID is required."}
 
+            enforcement = getattr(stmt, "enforcement", "soft")
+            if isinstance(enforcement, str):
+                enforcement = enforcement.lower()
+            else:
+                enforcement = "soft"
+            allow_unmaterialized = (enforcement in ("soft", "firm"))
+
             for tg in target_gids_raw:
                 if tg.startswith(("http://", "https://", "ftp://")):
                     return {
                         "status": "error",
                         "message": f"BOND does not support external URLs ('{tg}'). Use LINK to link to external URLs.",
                     }
-                err = self._validate_doc_and_bucket(tg, "Target")
+                err = self._validate_doc_and_bucket(tg, "Target", allow_unmaterialized=allow_unmaterialized)
                 if err:
                     return err
 
@@ -2904,11 +3047,15 @@ class Interpreter:
             for target_gid in target_gids:
                 if not target_gid:
                     continue
+                target_exists = bool(self.engine.get(target_gid)) if hasattr(self.engine, "get") else False
+                status = "active" if target_exists else "latched"
                 bond_doc = {
                     "created_at": current_time,
                     "source": source_gid,
                     "target": target_gid,
                     "label": label,
+                    "status": status,
+                    "enforcement": enforcement,
                     "condition_subject": getattr(stmt, "condition_subject", "target"),
                     "condition_field": getattr(stmt, "condition_field", None),
                     "condition_value": getattr(stmt, "condition_value", None),
@@ -2976,9 +3123,14 @@ class Interpreter:
                     count += 1
 
             count_label = "Graph Bond" if count == 1 else "Graph Bonds"
+            latched_count = sum(1 for tg in target_gids if hasattr(self.engine, "get") and not self.engine.get(tg))
+            if latched_count > 0:
+                msg = f"{count} {count_label} '{label}' created ({latched_count} latched pending target arrival)."
+            else:
+                msg = f"{count} {count_label} '{label}' created."
             return {
                 "status": "ok",
-                "message": f"{count} {count_label} '{label}' created.",
+                "message": msg,
             }
 
         elif stmt_type == "LinkStmt":

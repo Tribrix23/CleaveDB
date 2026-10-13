@@ -11,6 +11,7 @@ pub mod stats;
 pub mod volcano;
 pub mod flow;
 pub mod heal;
+pub mod phantom_lattice;
 
 pub use document::Document;
 pub use bucket_bond::{Bucket, Bond, BucketTrie, Enforcement, RetentionPolicy};
@@ -22,5 +23,6 @@ pub use operations::Database;
 pub use vector_index::VectorIndex;
 pub use sra::SemanticRelevanceAttention;
 pub use stats::{StatsManager, Histogram, HyperLogLog};
-pub use volcano::{ExecutorNode, FullScanNode, FilterNode, TextSearchScanNode, LimitNode, TopKNode, BondJoinNode};
+pub use volcano::{ExecutorNode, FullScanNode, FilterNode, TextSearchScanNode, LimitNode, TopKNode, BondJoinNode, LateBindingJoinNode, ShadowScanNode};
 pub use flow::{FlowManager, FlowRule, FlowAction};
+pub use phantom_lattice::{PhantomLattice, ShadowRecord};

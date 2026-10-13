@@ -75,11 +75,13 @@ impl CleaveDB {
         } else {
             Catalog::new()
         };
+        let phantom_lattice = Arc::new(crate::engine::PhantomLattice::new());
 
         let db = Database {
             catalog,
             shards,
             inverted,
+            phantom_lattice,
         };
 
         if let Ok(entries) = wal.recover() {
@@ -114,7 +116,45 @@ impl CleaveDB {
             }
         }
 
-        
+        // Cold-Start Latch Warmup: Recover persisted latched shadow bonds into in-memory Phantom Lattice
+        let prefix = "_bonds:".as_bytes();
+        for shard in db.shards.all_shards() {
+            if let Ok(mut cursor) = crate::btree::cursor::Cursor::new(shard) {
+                while let Ok(Some((key, value))) = cursor.next() {
+                    if key.starts_with(prefix) {
+                        if let Ok(doc) = Document::from_msgpack(&value) {
+                            if let Some(status) = doc.body.get("status").and_then(|s| s.as_str()) {
+                                if status == "latched" {
+                                    let src = doc.body.get("source").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                                    let tgt = doc.body.get("target").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                                    let rel = doc.body.get("label").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                                    let enf_str = doc.body.get("enforcement").and_then(|s| s.as_str()).unwrap_or("soft");
+                                    let enforcement = match enf_str.to_lowercase().as_str() {
+                                        "strict" => crate::engine::bucket_bond::Enforcement::Strict,
+                                        "firm" => crate::engine::bucket_bond::Enforcement::Firm,
+                                        _ => crate::engine::bucket_bond::Enforcement::Soft,
+                                    };
+                                    let created_at = doc.body.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let lease_expiry = doc.body.get("expires_at").and_then(|v| v.as_u64());
+                                    let cascade = doc.body.get("cascade").and_then(|v| v.as_bool()).unwrap_or(false);
+                                    let shadow = crate::engine::phantom_lattice::ShadowRecord {
+                                        src_gid: src,
+                                        target_gid: tgt,
+                                        rel_name: rel,
+                                        enforcement,
+                                        created_at_ts: created_at,
+                                        lease_expiry_ts: lease_expiry,
+                                        cascade_delete: cascade,
+                                        status: "latched".to_string(),
+                                    };
+                                    let _ = db.phantom_lattice.register_shadow_bond(shadow);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(Self { db, data_dir })
     }
@@ -227,8 +267,34 @@ impl CleaveDB {
             "indexes" => {
                 Ok(serde_json::to_string_pretty(&self.db.catalog.indexes).unwrap_or_default())
             }
+            "pending" | "phantom" | "latches" => {
+                self.phantom_stats()
+            }
             _ => Ok(format!("Unknown target: {}", target)),
         }
+    }
+
+    /// Get all pending shadow bonds from the Phantom Lattice.
+    #[pyo3(signature = (target_gid=None))]
+    pub fn get_pending_bonds(&self, target_gid: Option<&str>) -> PyResult<String> {
+        let pending = self.db.phantom_lattice.get_pending_bonds(target_gid);
+        serde_json::to_string_pretty(&pending)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {}", e)))
+    }
+
+    /// Sweep expired firm bonds whose lease duration has elapsed.
+    #[pyo3(signature = (current_ts=None))]
+    pub fn sweep_expired_bonds(&self, current_ts: Option<u64>) -> PyResult<String> {
+        let swept = self.db.sweep_expired_bonds(current_ts);
+        serde_json::to_string_pretty(&swept)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {}", e)))
+    }
+
+    /// Telemetry and statistics of the Phantom Lattice.
+    pub fn phantom_stats(&self) -> PyResult<String> {
+        let stats = self.db.phantom_lattice.stats();
+        serde_json::to_string_pretty(&stats)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {}", e)))
     }
 
     /// Search the inverted index for a term. Returns JSON array of (doc_id, freq) pairs.

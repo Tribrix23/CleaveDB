@@ -1179,7 +1179,15 @@ class Parser:
         # Accept "show bucket" (singular) as a friendly alias for "show buckets"
         if self.match(TokenType.BUCKET):
             return ShowStmt(target="buckets")
-        raise self.error(self.peek(), "Expected 'buckets', 'bonds', 'links', 'indexes', 'stats', or 'webhooks' after 'show'. Did you mean 'show buckets'?")
+        if self.check(TokenType.IDENTIFIER) and self.peek().lexeme.upper() in ("PENDING", "PHANTOM", "LATCHES", "CYCLES"):
+            target = self.advance().lexeme.lower()
+            if self.match(TokenType.BONDS):
+                target = "pending bonds"
+            elif target == "phantom" and self.check(TokenType.IDENTIFIER) and self.peek().lexeme.upper() == "CYCLES":
+                self.advance()
+                target = "phantom cycles"
+            return ShowStmt(target=target)
+        raise self.error(self.peek(), "Expected 'buckets', 'bonds', 'links', 'indexes', 'stats', 'pending', or 'cycles' after 'show'. Did you mean 'show buckets'?")
 
     def describe_stmt(self) -> DescribeStmt:
         # 1. Check for DESCRIBE BUCKETS

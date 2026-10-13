@@ -23,9 +23,13 @@ pub fn derive(body: &Value) -> Derivation {
                     *drv.text_terms.entry(token.to_string()).or_insert(0) += 1;
                 }
                 
-                // If it looks like a hex GID and the path contains 'bond' or similar, extract it
-                // (Very simplified prototype logic)
-                if s.len() == 16 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+                // If it looks like a hex GID or bucket:id target and the path indicates a relationship, extract it
+                let is_hex_gid = s.len() == 16 && s.chars().all(|c| c.is_ascii_hexdigit());
+                let is_bucket_gid = s.contains(':') && !s.contains(' ') && (
+                    path.contains("bond") || path.contains("target") || path.contains("ref") || 
+                    path.contains("edge") || path.contains("link") || path.ends_with("_id")
+                );
+                if is_hex_gid || is_bucket_gid {
                     drv.bond_edges.push(s.clone());
                 }
             }

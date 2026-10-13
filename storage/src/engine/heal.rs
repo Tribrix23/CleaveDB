@@ -46,4 +46,17 @@ impl Database {
         );
         Ok(())
     }
+
+    /// Sweep expired firm bonds from the Phantom Lattice whose lease duration has elapsed.
+    pub fn sweep_expired_bonds(&self, current_ts: Option<u64>) -> Vec<crate::engine::ShadowRecord> {
+        let ts = current_ts.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        });
+        let expired = self.phantom_lattice.sweep_expired(ts);
+        log::info!("sweep_expired_bonds: swept {} expired shadow bonds", expired.len());
+        expired
+    }
 }

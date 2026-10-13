@@ -209,7 +209,6 @@ pub struct BondJoinNode {
     left: Box<dyn ExecutorNode>,
     bond_field: String,
     right_entries: std::collections::HashMap<String, Document>,
-    pending: Option<(Document, Document)>,
 }
 
 impl BondJoinNode {
@@ -220,7 +219,7 @@ impl BondJoinNode {
                 right_entries.insert(doc.gid.clone(), doc);
             }
         }
-        Self { left, bond_field, right_entries, pending: None }
+        Self { left, bond_field, right_entries }
     }
 }
 
@@ -245,6 +244,122 @@ impl ExecutorNode for BondJoinNode {
                     return Ok(Some(merged));
                 }
             }
+        }
+        Ok(None)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LateBindingJoinNode — Asynchronous join yielding virtual pending tokens
+// ---------------------------------------------------------------------------
+pub struct LateBindingJoinNode {
+    left: Box<dyn ExecutorNode>,
+    bond_field: String,
+    right_entries: std::collections::HashMap<String, Document>,
+    allowing_unresolved: bool,
+}
+
+impl LateBindingJoinNode {
+    pub fn new(
+        left: Box<dyn ExecutorNode>,
+        bond_field: String,
+        right_kv: Vec<(Vec<u8>, Vec<u8>)>,
+        allowing_unresolved: bool,
+    ) -> Self {
+        let mut right_entries = std::collections::HashMap::new();
+        for (_k, v) in right_kv {
+            if let Ok(doc) = Document::from_msgpack(&v) {
+                right_entries.insert(doc.gid.clone(), doc);
+            }
+        }
+        Self {
+            left,
+            bond_field,
+            right_entries,
+            allowing_unresolved,
+        }
+    }
+}
+
+impl ExecutorNode for LateBindingJoinNode {
+    fn next(&mut self) -> StorageResult<Option<Document>> {
+        while let Some(left_doc) = self.left.next()? {
+            if let Some(ref_val) = left_doc.body.get(&self.bond_field) {
+                let ref_id = match ref_val.as_str() {
+                    Some(s) => s.to_string(),
+                    None => ref_val.to_string().trim_matches('"').to_string(),
+                };
+                if let Some(right_doc) = self.right_entries.get(&ref_id) {
+                    // Target has materialized: fuse joined attributes
+                    let mut merged = left_doc.clone();
+                    if let serde_json::Value::Object(ref right_map) = right_doc.body {
+                        if let serde_json::Value::Object(ref mut left_map) = merged.body {
+                            for (k, v) in right_map {
+                                left_map.entry(format!("_joined_{}", k)).or_insert(v.clone());
+                            }
+                            left_map.insert(
+                                "_bond_status".to_string(),
+                                serde_json::Value::String("fused".to_string()),
+                            );
+                        }
+                    }
+                    return Ok(Some(merged));
+                } else if self.allowing_unresolved {
+                    // Target has not arrived yet: yield virtualized shadow tuple
+                    let mut virtual_doc = left_doc.clone();
+                    if let serde_json::Value::Object(ref mut left_map) = virtual_doc.body {
+                        left_map.insert(
+                            "_bond_status".to_string(),
+                            serde_json::Value::String("pending".to_string()),
+                        );
+                        left_map.insert(
+                            "_virtual_bond".to_string(),
+                            serde_json::json!({
+                                "status": "latched",
+                                "target_gid": ref_id,
+                            }),
+                        );
+                    }
+                    return Ok(Some(virtual_doc));
+                }
+            } else if self.allowing_unresolved {
+                return Ok(Some(left_doc));
+            }
+        }
+        Ok(None)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShadowScanNode — Iterates pending shadow records from the Phantom Lattice
+// ---------------------------------------------------------------------------
+pub struct ShadowScanNode {
+    records: Vec<crate::engine::ShadowRecord>,
+    position: usize,
+}
+
+impl ShadowScanNode {
+    pub fn new(records: Vec<crate::engine::ShadowRecord>) -> Self {
+        Self { records, position: 0 }
+    }
+}
+
+impl ExecutorNode for ShadowScanNode {
+    fn next(&mut self) -> StorageResult<Option<Document>> {
+        if self.position < self.records.len() {
+            let rec = &self.records[self.position];
+            self.position += 1;
+            let body = serde_json::json!({
+                "src_gid": rec.src_gid,
+                "target_gid": rec.target_gid,
+                "rel_name": rec.rel_name,
+                "enforcement": format!("{:?}", rec.enforcement),
+                "created_at_ts": rec.created_at_ts,
+                "lease_expiry_ts": rec.lease_expiry_ts,
+                "status": rec.status,
+            });
+            let doc = Document::new("_phantom_lattice", body, Some(&format!("shadow:{}", rec.target_gid)));
+            return Ok(Some(doc));
         }
         Ok(None)
     }
