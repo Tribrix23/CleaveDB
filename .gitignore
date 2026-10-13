@@ -14,6 +14,7 @@ release/
 dist/
 *.exe
 *.spec
+*.docx
 
 # Test artifacts and test database directories
 test_*_db/
