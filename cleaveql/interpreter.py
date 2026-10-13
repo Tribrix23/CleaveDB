@@ -2,7 +2,7 @@ import time
 import uuid
 import threading
 import copy
-import uuid
+import collections
 import json
 import hashlib
 import os
