@@ -28,6 +28,10 @@ reference.md
 research_breakthrough.md
 research.txt
 feat*.txt
+DOCUMENTATION.TEXT
+
+# Reference Archive Folder
+reference/
 
 # Testing & Scratch Folders
 tests/
