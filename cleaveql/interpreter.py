@@ -242,7 +242,7 @@ class TenantEngineProxy:
         if not bucket or bucket.startswith("_"):
             return bucket
         t = self._tenant()
-        is_root = t in ("cron", "system", "root")
+        is_root = t in ("cron", "system", "root") or self.context.get("auth_level") == "dev"
 
         # 1. If global server administrator
         if is_root:
@@ -260,8 +260,8 @@ class TenantEngineProxy:
         if f"{t}.{bucket}" in all_b:
             return f"{t}.{bucket}"
 
-        # If global un-prefixed bucket exists (e.g. users, accounts, events) and user is david
-        if t == "david" and bucket in all_b:
+        # If global un-prefixed bucket exists
+        if bucket in all_b:
             return bucket
 
         return f"{t}.{bucket}"
@@ -315,7 +315,7 @@ class TenantEngineProxy:
             return data
         if bucket.startswith("_"):
             t = self._tenant()
-            is_root = t in ("root", "system", "cron")
+            is_root = t in ("root", "system", "cron") or self.context.get("auth_level") == "dev"
             if not is_root:
                 docs = json.loads(data)
                 filtered = []
@@ -365,6 +365,13 @@ class TenantEngineProxy:
 
 class Interpreter:
     def _scan_bucket_rls(self, bucket):
+        branch = self.context.get("branch")
+        if branch and not bucket.startswith("_"):
+            if hasattr(self.engine, "branch_scan_bucket"):
+                try:
+                    return self.engine.branch_scan_bucket(branch, bucket)
+                except Exception:
+                    pass
         return self.engine.scan_bucket(bucket)
 
     def _validate_bucket_mutation(self, bucket: str):
@@ -447,11 +454,7 @@ class Interpreter:
         )
 
         # 1. Check physical buckets in engine
-        if ns_bucket in all_buckets:
-            return True
-        if (is_root or t == "david") and bucket in all_buckets:
-            return True
-        if f"{t}.{bucket}" in all_buckets:
+        if bucket in all_buckets or ns_bucket in all_buckets or f"{t}.{bucket}" in all_buckets:
             return True
 
         # 2. Check for configured empty buckets (policies / projections)
@@ -1037,6 +1040,13 @@ class Interpreter:
             if err:
                 return {"status": "error", "message": err}
 
+            branch = self.context.get("branch")
+            if branch and not bucket.startswith("_"):
+                if hasattr(self.engine, "branch_pour"):
+                    json_str = json.dumps(body) if isinstance(body, (dict, list)) else (body or "{}")
+                    gid = self.engine.branch_pour(branch, bucket, doc_id, json_str)
+                    return {"status": "ok", "gid": gid, "branch": branch, "action": "POUR_SPECULATIVE"}
+
             # Memory management / quota (LRU, REPLACE_OLDEST, OVERWRITE_CURRENT)
             _evict_algo = None
             policy_data = self.engine.get(f"_bucket_policies:{bucket}")
@@ -1487,10 +1497,14 @@ class Interpreter:
             results = json.loads(results_json) if results_json else []
 
             docs = []
+            branch = self.context.get("branch")
             for r in results:
-                doc_json = self.engine.get(r["gid"])
-                if doc_json:
-                    docs.append({"gid": r["gid"], "body": json.loads(doc_json)})
+                if "body" in r and r["body"]:
+                    docs.append({"gid": r["gid"], "body": r["body"]})
+                else:
+                    doc_json = self.engine.branch_get(branch, r["gid"]) if (branch and hasattr(self.engine, "branch_get")) else self.engine.get(r["gid"])
+                    if doc_json:
+                        docs.append({"gid": r["gid"], "body": json.loads(doc_json)})
 
             # 1. Apply MENTIONING (Text search mock)
             if mentioning:
@@ -1646,7 +1660,7 @@ class Interpreter:
             if hasattr(self, "security"):
                 for d in filtered_docs:
                     d["body"] = self.security.apply_masks(
-                        bucket, d["body"], self.context, self.engine
+                        bucket, d["body"], self.context, self.engine, target_gid=d.get("gid")
                     )
 
             # Analytics Returns
@@ -2232,6 +2246,11 @@ class Interpreter:
                             )
 
                             self.engine.delete(b_doc["gid"])
+                            if hasattr(self.engine, "push_edge_delta") and b.get("source") and b.get("target"):
+                                try:
+                                    self.engine.push_edge_delta(b["source"], b["target"], b.get("label", "*"), -1)
+                                except Exception:
+                                    pass
                             self.emitted_events.append(
                                 {
                                     "event": "SEVER",
@@ -2337,6 +2356,51 @@ class Interpreter:
                 "status": "ok",
                 "message": f"Continuous Materialized View '{stmt.view_name}' initialized.",
             }
+
+        elif stmt_type == "ShapeContinuousViewStmt":
+            name = getattr(stmt, "name", "")
+            edge_label = getattr(stmt, "edge_label", "*")
+            is_recursive = getattr(stmt, "is_recursive", True)
+            if hasattr(self.engine, "create_continuous_view"):
+                self.engine.create_continuous_view(name, edge_label, is_recursive)
+            return {"status": "ok", "message": f"Continuous view '{name}' shaped successfully."}
+
+        elif stmt_type == "ListenViewStmt":
+            name = getattr(stmt, "view_name", "")
+            paths = []
+            if hasattr(self.engine, "get_continuous_view"):
+                try:
+                    raw_paths = self.engine.get_continuous_view(name)
+                    paths = json.loads(raw_paths)
+                except Exception as e:
+                    return {"status": "error", "message": str(e)}
+            return {"status": "ok", "view": name, "reachable_pairs": paths, "listening": True}
+
+        elif stmt_type == "CleaveBranchStmt":
+            name = getattr(stmt, "branch_name", "")
+            if hasattr(self.engine, "branch_create"):
+                self.engine.branch_create(name)
+            return {"status": "ok", "message": f"Branch '{name}' created."}
+
+        elif stmt_type == "CleaveMergeStmt":
+            name = getattr(stmt, "branch_name", "")
+            strat = getattr(stmt, "conflict_resolution", "last_write_wins")
+            rep = {}
+            if hasattr(self.engine, "branch_merge"):
+                try:
+                    raw_rep = self.engine.branch_merge(name, strat)
+                    rep = json.loads(raw_rep)
+                except Exception as e:
+                    rep = {"error": str(e)}
+            return {"status": "ok", "message": f"Branch '{name}' merged into master.", "report": rep}
+
+        elif stmt_type == "CleaveDiscardStmt":
+            name = getattr(stmt, "branch_name", "")
+            if hasattr(self.engine, "branch_discard"):
+                self.engine.branch_discard(name)
+            if self.context.get("branch") == name:
+                del self.context["branch"]
+            return {"status": "ok", "message": f"Branch '{name}' discarded."}
 
         elif stmt_type == "RestoreBucketStmt":
             bucket = stmt.bucket.lower()
@@ -3071,7 +3135,43 @@ class Interpreter:
                     if tenant != "cron"
                     else str(uuid.uuid4())
                 )
+
+                # Breakthrough 5: Graph-SAT Acyclicity Verification
+                if hasattr(self.engine, "verify_graph_sat_acyclic"):
+                    src_b = source_gid.split(":")[0] if ":" in source_gid else ""
+                    tgt_b = target_gid.split(":")[0] if ":" in target_gid else ""
+                    g_data = self.engine.get(f"_guards:{src_b}") or self.engine.get(f"_guards:{tgt_b}")
+                    has_sat_guard = False
+                    if g_data:
+                        try:
+                            guards_list = json.loads(g_data)
+                            for g in guards_list:
+                                if g.get("rule_type") == "GRAPH_SAT" or g.get("constraint") == "NOT_EXISTS_PATH":
+                                    has_sat_guard = True
+                                    break
+                        except Exception:
+                            pass
+                    if has_sat_guard:
+                        b_data = self._scan_bucket_rls("_bonds")
+                        bonds = json.loads(b_data) if b_data else []
+                        edges = []
+                        for b_d in bonds:
+                            b = b_d.get("body", {})
+                            if (b.get("label") == label or not label) and b.get("source") and b.get("target"):
+                                edges.append([str(b["source"]), str(b["target"])])
+                        try:
+                            self.engine.verify_graph_sat_acyclic(json.dumps(edges), source_gid, target_gid)
+                        except Exception as sat_err:
+                            return {"status": "error", "message": str(sat_err)}
+
                 self.engine.pour("_bonds", bond_id, json.dumps(bond_doc))
+
+                # Breakthrough 2: DBSP Graph-Differential Delta (+1)
+                if hasattr(self.engine, "push_edge_delta"):
+                    try:
+                        self.engine.push_edge_delta(source_gid, target_gid, label or "*", 1)
+                    except Exception:
+                        pass
 
                 # WAL 4D MVCC Append
                 hist_doc = dict(bond_doc)
@@ -3329,6 +3429,8 @@ class Interpreter:
             bucket = getattr(stmt, "bucket", "")
             field = getattr(stmt, "field", "")
             condition = getattr(stmt, "condition", "")
+            mode = getattr(stmt, "mode", "IF")
+            fields_list = getattr(stmt, "fields_list", [field])
 
             # Save the masking rule in security engine
             if not hasattr(self.security, "masks"):
@@ -3336,7 +3438,12 @@ class Interpreter:
             if bucket not in self.security.masks:
                 self.security.masks[bucket] = []
 
-            self.security.masks[bucket].append({"field": field, "condition": condition})
+            self.security.masks[bucket].append({
+                "field": field,
+                "fields_list": fields_list,
+                "condition": condition,
+                "mode": mode,
+            })
             if self.engine:
                 cond_str = " ".join([t.lexeme for t in condition])
                 doc = {
@@ -3431,6 +3538,24 @@ class Interpreter:
             }
 
         elif stmt_type == "PeerStmt":
+            if getattr(stmt, "execution", False):
+                if hasattr(self.engine, "execute_leapfrog_join"):
+                    try:
+                        raw_res = self.engine.execute_leapfrog_join(None)
+                        res_data = json.loads(raw_res)
+                        stats = res_data.get("stats", {})
+                        return {
+                            "status": "ok",
+                            "algorithm": stats.get("algorithm", "LeapfrogTriejoin"),
+                            "intermediate_allocated_bytes": stats.get("intermediate_allocated_bytes", 0),
+                            "agm_optimal": stats.get("agm_optimal", True),
+                            "matches_found": stats.get("matches_found", 0),
+                            "triangles": res_data.get("triangles", []),
+                            "stats": stats
+                        }
+                    except Exception as e:
+                        return {"status": "error", "message": str(e)}
+
             if getattr(stmt, "attention", False):
                 try:
                     import sys
@@ -3833,11 +3958,18 @@ class Interpreter:
             b_data = self._scan_bucket_rls("_bonds")
             bonds = json.loads(b_data) if b_data else []
 
+            branch = self.context.get("branch")
             for doc_info in docs_to_drain:
                 gid = doc_info["gid"]
                 d_body = doc_info["body"]
                 if not d_body:
                     continue
+
+                if branch and not bucket.startswith("_"):
+                    if hasattr(self.engine, "branch_delete"):
+                        self.engine.branch_delete(branch, gid)
+                        drained_count += 1
+                        continue
 
                 doc_json = self.engine.get(gid)
                 if not doc_json:

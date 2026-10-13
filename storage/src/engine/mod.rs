@@ -12,6 +12,10 @@ pub mod volcano;
 pub mod flow;
 pub mod heal;
 pub mod phantom_lattice;
+pub mod leapfrog;
+pub mod dbsp;
+pub mod branch;
+pub mod graph_sat;
 
 pub use document::Document;
 pub use bucket_bond::{Bucket, Bond, BucketTrie, Enforcement, RetentionPolicy};
@@ -26,3 +30,7 @@ pub use stats::{StatsManager, Histogram, HyperLogLog};
 pub use volcano::{ExecutorNode, FullScanNode, FilterNode, TextSearchScanNode, LimitNode, TopKNode, BondJoinNode, LateBindingJoinNode, ShadowScanNode};
 pub use flow::{FlowManager, FlowRule, FlowAction};
 pub use phantom_lattice::{PhantomLattice, ShadowRecord};
+pub use leapfrog::{LeapfrogTriejoin, LeapfrogStats, TriangleMatch};
+pub use dbsp::{DifferentialCircuit, ContinuousGraphView, ViewDelta};
+pub use branch::{BranchManager, MergeReport, BranchInfo};
+pub use graph_sat::{GraphSatEngine, PathVerificationResult};

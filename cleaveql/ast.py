@@ -201,6 +201,7 @@ class PeerStmt(ASTNode):
     target_stmt: Optional[ASTNode] = None
     attention: bool = False
     cost: bool = False
+    execution: bool = False
 
 @dataclass
 class FindHowStmt(ASTNode):
@@ -389,4 +390,28 @@ class UndoStmt(ASTNode):
     def __init__(self, show=False, target_id=None):
         self.show = show
         self.target_id = target_id
+
+@dataclass
+class ShapeContinuousViewStmt(ASTNode):
+    name: str = ""
+    edge_label: str = "*"
+    is_recursive: bool = True
+    raw_query: Optional[str] = None
+
+@dataclass
+class ListenViewStmt(ASTNode):
+    view_name: str = ""
+
+@dataclass
+class CleaveBranchStmt(ASTNode):
+    branch_name: str = ""
+
+@dataclass
+class CleaveMergeStmt(ASTNode):
+    branch_name: str = ""
+    conflict_resolution: str = "last_write_wins"
+
+@dataclass
+class CleaveDiscardStmt(ASTNode):
+    branch_name: str = ""
 

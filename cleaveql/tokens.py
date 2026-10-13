@@ -231,6 +231,7 @@ class TokenType(Enum):
     LBRACKET = auto() # [
     RBRACKET = auto() # ]
     COLON = auto()    # :
+    SEMICOLON = auto()# ;
     LPAREN = auto()   # (
     RPAREN = auto()   # )
     STAR = auto()     # *
@@ -267,6 +268,17 @@ class TokenType(Enum):
     WINDOW = auto()
     PIPE = auto()
     THEN = auto()
+    BRANCH = auto()
+    MERGE = auto()
+    DISCARD = auto()
+    CLEAVE = auto()
+    EXISTS = auto()
+    PATH = auto()
+    UNLESS = auto()
+    LEAPFROG = auto()
+    EXECUTION = auto()
+    RESOLUTION = auto()
+    CONFLICT = auto()
 
 KEYWORDS = {
     "expires": TokenType.EXPIRES,
@@ -472,10 +484,19 @@ KEYWORDS = {
     'linear': TokenType.LINEAR,
     'moving_average': TokenType.MOVING_AVERAGE,
     'exponential': TokenType.EXPONENTIAL,
-    'window': TokenType.WINDOW,
     'pipe': TokenType.PIPE,
     'then': TokenType.THEN,
-    'pipe': TokenType.PIPE,
+    'branch': TokenType.BRANCH,
+    'merge': TokenType.MERGE,
+    'discard': TokenType.DISCARD,
+    'cleave': TokenType.CLEAVE,
+    'exists': TokenType.EXISTS,
+    'path': TokenType.PATH,
+    'unless': TokenType.UNLESS,
+    'leapfrog': TokenType.LEAPFROG,
+    'execution': TokenType.EXECUTION,
+    'resolution': TokenType.RESOLUTION,
+    'conflict': TokenType.CONFLICT,
 }
 
 @dataclass

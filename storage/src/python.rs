@@ -76,12 +76,16 @@ impl CleaveDB {
             Catalog::new()
         };
         let phantom_lattice = Arc::new(crate::engine::PhantomLattice::new());
+        let dbsp = Arc::new(crate::engine::DifferentialCircuit::new());
+        let branches = Arc::new(crate::engine::BranchManager::new());
 
         let db = Database {
             catalog,
             shards,
             inverted,
             phantom_lattice,
+            dbsp,
+            branches,
         };
 
         if let Ok(entries) = wal.recover() {
@@ -374,6 +378,202 @@ impl CleaveDB {
         let n = arr.len() as std::os::raw::c_int;
         let sum = unsafe { crate::simd_ffi::cleavedb_sum_avx512(arr.as_ptr(), n) };
         Ok(sum)
+    }
+
+    // =========================================================================
+    // Breakthrough 2: Continuous Graph-DBSP Engine
+    // =========================================================================
+
+    /// Registers a continuous recursive or direct graph view.
+    #[pyo3(signature = (name, edge_label="*", is_recursive=true))]
+    pub fn create_continuous_view(&self, name: &str, edge_label: &str, is_recursive: bool) -> PyResult<String> {
+        self.db.dbsp.register_view(name, edge_label, is_recursive);
+        Ok(format!("Continuous view '{}' registered successfully.", name))
+    }
+
+    /// Pushes a graph difference (+1 for bond creation, -1 for severance).
+    #[pyo3(signature = (src, tgt, label, weight))]
+    pub fn push_edge_delta(&self, src: &str, tgt: &str, label: &str, weight: i64) -> PyResult<String> {
+        let deltas = self.db.dbsp.push_edge_delta(src, tgt, label, weight);
+        serde_json::to_string_pretty(&deltas)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {}", e)))
+    }
+
+    /// Queries the current materialized reachable paths for a given continuous view.
+    pub fn get_continuous_view(&self, name: &str) -> PyResult<String> {
+        match self.db.dbsp.get_view_paths(name) {
+            Some(paths) => {
+                let formatted: Vec<serde_json::Value> = paths.into_iter()
+                    .map(|(s, t)| serde_json::json!({"source": s, "target": t}))
+                    .collect();
+                serde_json::to_string_pretty(&formatted)
+                    .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {}", e)))
+            }
+            None => Err(PyRuntimeError::new_err(format!("Continuous view '{}' not found", name))),
+        }
+    }
+
+    /// Lists all registered continuous views.
+    pub fn list_continuous_views(&self) -> PyResult<String> {
+        let views = self.db.dbsp.list_views();
+        serde_json::to_string_pretty(&views)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {}", e)))
+    }
+
+    // =========================================================================
+    // Breakthrough 3: Worst-Case Optimal Subgraph Intersection (Leapfrog Triejoin)
+    // =========================================================================
+
+    /// Executes Leapfrog Triejoin (LTJ) over a given list of edge pairs [[src, tgt], ...]
+    /// or collects edges directly from _bonds. Returns AGM-optimal triangle matches and stats.
+    #[pyo3(signature = (edges_json=None))]
+    pub fn execute_leapfrog_join(&self, edges_json: Option<&str>) -> PyResult<String> {
+        let mut edges: Vec<(String, String)> = Vec::new();
+
+        if let Some(raw) = edges_json {
+            let parsed: Vec<Vec<String>> = serde_json::from_str(raw)
+                .map_err(|e| PyValueError::new_err(format!("Invalid edges JSON: {}", e)))?;
+            for pair in parsed {
+                if pair.len() >= 2 {
+                    edges.push((pair[0].clone(), pair[1].clone()));
+                }
+            }
+        } else {
+            // Scan live bonds from _bonds bucket
+            let prefix = "_bonds:".as_bytes();
+            for shard in self.db.shards.all_shards() {
+                if let Ok(mut cursor) = crate::btree::cursor::Cursor::new(shard) {
+                    while let Ok(Some((key, value))) = cursor.next() {
+                        if key.starts_with(prefix) {
+                            if let Ok(doc) = Document::from_msgpack(&value) {
+                                if let (Some(s), Some(t)) = (
+                                    doc.body.get("source").and_then(|v| v.as_str()),
+                                    doc.body.get("target").and_then(|v| v.as_str())
+                                ) {
+                                    edges.push((s.to_string(), t.to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let ltj = crate::engine::leapfrog::LeapfrogTriejoin::new(edges);
+        let (triangles, stats) = ltj.find_triangles();
+
+        let out = serde_json::json!({
+            "triangles": triangles,
+            "stats": stats,
+        });
+
+        serde_json::to_string_pretty(&out)
+            .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {}", e)))
+    }
+
+    // =========================================================================
+    // Breakthrough 4: Zero-Copy Speculative Branching & Sandboxed Mutation
+    // =========================================================================
+
+    /// Creates an isolated speculative branch in microseconds.
+    pub fn branch_create(&self, name: &str) -> PyResult<String> {
+        self.db.branches.create_branch(name)
+            .map_err(|e| PyRuntimeError::new_err(format!("branch_create failed: {}", e)))?;
+        Ok(format!("Branch '{}' created.", name))
+    }
+
+    /// Discards a speculative branch instantly in O(1) time.
+    pub fn branch_discard(&self, name: &str) -> PyResult<bool> {
+        Ok(self.db.branches.discard_branch(name))
+    }
+
+    /// Writes a document into a speculative branch without mutating master pages.
+    pub fn branch_pour(&self, branch_name: &str, bucket: &str, doc_id: Option<&str>, json_body: &str) -> PyResult<String> {
+        let body: serde_json::Value = serde_json::from_str(json_body)
+            .map_err(|e| PyValueError::new_err(format!("Invalid JSON: {}", e)))?;
+        let doc = Document::new(bucket, body, doc_id);
+        let gid = doc.gid.clone();
+        self.db.branches.branch_put(branch_name, doc)
+            .map_err(|e| PyRuntimeError::new_err(format!("branch_pour failed: {}", e)))?;
+        Ok(gid)
+    }
+
+    /// Reads a document from a speculative branch (checks branch deltas first, falls back to master).
+    pub fn branch_get(&self, branch_name: &str, gid: &str) -> PyResult<Option<String>> {
+        match self.db.branches.branch_get(branch_name, gid, &self.db) {
+            Ok(Some(doc)) => {
+                let json = serde_json::to_string(&doc.body)
+                    .map_err(|e| PyRuntimeError::new_err(format!("serialize error: {}", e)))?;
+                Ok(Some(json))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(PyRuntimeError::new_err(format!("branch_get failed: {}", e))),
+        }
+    }
+
+    /// Soft-deletes a document inside a speculative branch.
+    pub fn branch_delete(&self, branch_name: &str, gid: &str) -> PyResult<bool> {
+        self.db.branches.branch_delete(branch_name, gid)
+            .map_err(|e| PyRuntimeError::new_err(format!("branch_delete failed: {}", e)))
+    }
+
+    /// Scans a bucket within a branch, overlaying branch mutations on master data.
+    pub fn branch_scan_bucket(&self, branch_name: &str, bucket: &str) -> PyResult<String> {
+        let docs = self.db.branches.branch_scan_bucket(branch_name, bucket, &self.db)
+            .map_err(|e| PyRuntimeError::new_err(format!("branch_scan_bucket failed: {}", e)))?;
+        serde_json::to_string(&docs)
+            .map_err(|e| PyRuntimeError::new_err(format!("serialize error: {}", e)))
+    }
+
+    /// Merges branch mutations back into the master database atomically.
+    #[pyo3(signature = (branch_name, conflict_resolution=None))]
+    pub fn branch_merge(&self, branch_name: &str, conflict_resolution: Option<&str>) -> PyResult<String> {
+        let strat = conflict_resolution.unwrap_or("last_write_wins");
+        let report = self.db.branches.merge_branch(branch_name, &self.db, strat)
+            .map_err(|e| PyRuntimeError::new_err(format!("branch_merge failed: {}", e)))?;
+        serde_json::to_string_pretty(&report)
+            .map_err(|e| PyRuntimeError::new_err(format!("serialize error: {}", e)))
+    }
+
+    /// Lists active speculative branches.
+    pub fn branch_list(&self) -> PyResult<String> {
+        let list = self.db.branches.list_branches();
+        serde_json::to_string_pretty(&list)
+            .map_err(|e| PyRuntimeError::new_err(format!("serialize error: {}", e)))
+    }
+
+    // =========================================================================
+    // Breakthrough 5: Contextual Epistemic Masking & Path-Dependent Invariant Guards
+    // =========================================================================
+
+    /// Checks if adding (new_src -> new_tgt) creates a forbidden directed cycle.
+    pub fn verify_graph_sat_acyclic(&self, edges_json: &str, new_src: &str, new_tgt: &str) -> PyResult<()> {
+        let parsed: Vec<Vec<String>> = serde_json::from_str(edges_json)
+            .map_err(|e| PyValueError::new_err(format!("Invalid edges JSON: {}", e)))?;
+        let edges: Vec<(String, String)> = parsed.into_iter()
+            .filter(|p| p.len() >= 2)
+            .map(|p| (p[0].clone(), p[1].clone()))
+            .collect();
+
+        crate::engine::graph_sat::GraphSatEngine::verify_acyclic(&edges, new_src, new_tgt)
+            .map_err(|err_msg| PyValueError::new_err(err_msg))
+    }
+
+    /// Evaluates epistemic authorization: checks if a valid path connects requester to target.
+    #[pyo3(signature = (edges_json, requester, target, label="*", max_depth=3))]
+    pub fn verify_epistemic_path(&self, edges_json: &str, requester: &str, target: &str, label: &str, max_depth: usize) -> PyResult<String> {
+        let parsed: Vec<Vec<String>> = serde_json::from_str(edges_json)
+            .map_err(|e| PyValueError::new_err(format!("Invalid edges JSON: {}", e)))?;
+        let edges: Vec<(String, String, String)> = parsed.into_iter()
+            .filter(|p| p.len() >= 3)
+            .map(|p| (p[0].clone(), p[1].clone(), p[2].clone()))
+            .collect();
+
+        let res = crate::engine::graph_sat::GraphSatEngine::verify_epistemic_path(
+            &edges, requester, target, label, max_depth
+        );
+        serde_json::to_string_pretty(&res)
+            .map_err(|e| PyRuntimeError::new_err(format!("serialize error: {}", e)))
     }
 }
 

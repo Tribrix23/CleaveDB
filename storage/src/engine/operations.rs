@@ -2,15 +2,19 @@ use crate::error::{StorageError, StorageResult};
 use super::{Catalog, ShardManager, InvertedIndex, Document, derive::derive};
 use super::bucket_bond::Enforcement;
 use super::phantom_lattice::{PhantomLattice, ShadowRecord};
+use super::dbsp::DifferentialCircuit;
+use super::branch::BranchManager;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// High-level Database coordinating shards, catalogs, indexes, and the Phantom Lattice.
+/// High-level Database coordinating shards, catalogs, indexes, Phantom Lattice, DBSP, and Speculative Branches.
 pub struct Database {
     pub catalog: Catalog,
     pub shards: ShardManager,
     pub inverted: InvertedIndex,
     pub phantom_lattice: Arc<PhantomLattice>,
+    pub dbsp: Arc<DifferentialCircuit>,
+    pub branches: Arc<BranchManager>,
 }
 
 impl Database {

@@ -34,9 +34,15 @@ class Parser:
     def parse(self) -> List[Any]:
         statements = []
         while not self.is_at_end():
+            while self.match(TokenType.SEMICOLON):
+                pass
+            if self.is_at_end():
+                break
             stmt = self.statement()
             if stmt:
                 statements.append(stmt)
+            while self.match(TokenType.SEMICOLON):
+                pass
         return statements
 
     def statement(self) -> Any:
@@ -188,6 +194,33 @@ class Parser:
                 return None
                 
             return TriggerStmt(event, bucket, query_template)
+
+        if self.match(TokenType.CLEAVE):
+            if self.match(TokenType.BRANCH):
+                if self.match(TokenType.STRING): branch_name = self.previous().value
+                else: branch_name = self.consume_identifier("Expected branch name after 'CLEAVE BRANCH'")
+                return CleaveBranchStmt(branch_name=str(branch_name))
+            elif self.match(TokenType.MERGE):
+                if self.match(TokenType.STRING): branch_name = self.previous().value
+                else: branch_name = self.consume_identifier("Expected branch name after 'CLEAVE MERGE'")
+                strat = "last_write_wins"
+                if self.match(TokenType.CONFLICT):
+                    self.consume(TokenType.RESOLUTION, "Expected 'RESOLUTION' after 'CONFLICT'")
+                    if self.match(TokenType.STRING): strat = self.previous().value
+                    else: strat = self.consume_identifier("Expected conflict resolution strategy")
+                elif self.peek().lexeme.lower() == "conflict":
+                    self.advance()
+                    if self.peek().lexeme.lower() == "resolution":
+                        self.advance()
+                    if self.match(TokenType.STRING): strat = self.previous().value
+                    else: strat = self.consume_identifier("Expected conflict resolution strategy")
+                return CleaveMergeStmt(branch_name=str(branch_name), conflict_resolution=str(strat))
+            elif self.match(TokenType.DISCARD):
+                if self.match(TokenType.STRING): branch_name = self.previous().value
+                else: branch_name = self.consume_identifier("Expected branch name after 'CLEAVE DISCARD'")
+                return CleaveDiscardStmt(branch_name=str(branch_name))
+            else:
+                raise self.error(self.peek(), "Expected BRANCH, MERGE, or DISCARD after CLEAVE.")
 
         if self.match(TokenType.GUARD):
             return self.guard_stmt()
@@ -768,6 +801,39 @@ class Parser:
             url = self.consume_string("Expected url")
             return ShapeWebhookStmt(name=name, bucket=bucket, action_filter=action_filter, url=url)
             
+        if self.match(TokenType.CONTINUOUS):
+            self.consume(TokenType.VIEW, "Expected 'VIEW' after 'CONTINUOUS'")
+            if self.match(TokenType.STRING): view_name = self.previous().value
+            else: view_name = self.consume_identifier("Expected view name")
+            self.consume(TokenType.AS, "Expected 'AS' after view name")
+            edge_label = "*"
+            is_recursive = True
+            raw_query = ""
+            if self.match(TokenType.LPAREN):
+                depth = 1
+                inner_tokens = []
+                while not self.is_at_end():
+                    if self.check(TokenType.LPAREN):
+                        depth += 1
+                    elif self.check(TokenType.RPAREN):
+                        depth -= 1
+                        if depth == 0:
+                            self.advance()
+                            break
+                    tok = self.advance()
+                    inner_tokens.append(tok.lexeme)
+                raw_query = " ".join(inner_tokens)
+                for tok_str in inner_tokens:
+                    t_clean = tok_str.strip('"').strip("'")
+                    if any(k in t_clean.lower() for k in ("report", "friend", "know", "supervis", "lead", "edge", "bond", "manages")):
+                        edge_label = t_clean.rstrip("*")
+                        if "*" in tok_str:
+                            is_recursive = True
+            elif self.match(TokenType.STRING):
+                raw_query = self.previous().value
+                edge_label = raw_query
+            return ShapeContinuousViewStmt(name=str(view_name), edge_label=edge_label or "*", is_recursive=is_recursive, raw_query=raw_query)
+
         if self.match(TokenType.VIEW):
             view_name = self.consume_string("Expected view name as string.")
             self.consume(TokenType.AS, "Expected 'AS'.")
@@ -1036,19 +1102,39 @@ class Parser:
         return RewindStmt(doc_id, target_time, line=self.previous().line, column=self.previous().column)
         
     def mask_stmt(self) -> MaskStmt:
-        field = self.consume_string("Expected string field name.")
+        fields = []
+        if self.match(TokenType.STRING):
+            fields.append(str(self.previous().value))
+        else:
+            fields.append(self.consume_identifier("Expected field name."))
+        while self.match(TokenType.COMMA):
+            if self.match(TokenType.STRING):
+                fields.append(str(self.previous().value))
+            else:
+                fields.append(self.consume_identifier("Expected field name."))
         self.consume(TokenType.ON, "Expected 'on'.")
         if self.match(TokenType.STRING): bucket = self.previous().value
         else: bucket = self.consume_identifier("Expected bucket name.")
         
-        self.consume(TokenType.IF, "Expected 'if'.")
+        mode = "IF"
+        if self.match(TokenType.UNLESS) or (self.peek().lexeme.upper() == "UNLESS"):
+            if self.previous().type != TokenType.UNLESS:
+                self.advance()
+            mode = "UNLESS"
+        elif self.match(TokenType.IF):
+            mode = "IF"
+        else:
+            self.consume(TokenType.IF, "Expected 'if' or 'unless'.")
         
-        # Build raw condition string for now
+        # Build raw condition tokens
         cond_tokens = []
         while not self.is_at_end() and self.peek().type != TokenType.EOF:
             cond_tokens.append(self.advance())
         
-        return MaskStmt(field=field, bucket=bucket, condition=cond_tokens)
+        stmt = MaskStmt(field=",".join(fields), bucket=bucket, condition=cond_tokens)
+        stmt.mode = mode
+        stmt.fields_list = fields
+        return stmt
 
     def policy_stmt(self):
         if self.check(TokenType.SECURITY):
@@ -1230,6 +1316,14 @@ class Parser:
             if has_paren:
                 self.consume(TokenType.RPAREN, "Expected ')' after target statement in PEER INTO COST.")
             return PeerStmt(cost=True, target_stmt=stmt)
+        elif self.match(TokenType.EXECUTION) or (self.check(TokenType.IDENTIFIER) and self.peek().lexeme.lower() == "execution"):
+            if self.previous().type != TokenType.EXECUTION:
+                self.advance()
+            has_paren = self.match(TokenType.LPAREN)
+            stmt = self.statement()
+            if has_paren:
+                self.consume(TokenType.RPAREN, "Expected ')' after target statement in PEER INTO EXECUTION.")
+            return PeerStmt(execution=True, target_stmt=stmt)
         else:
             return PeerStmt(target_stmt=self.statement())
 
@@ -1431,6 +1525,9 @@ class Parser:
             self.advance()
 
     def set_context_stmt(self):
+        if self.match(TokenType.CONTEXT) or (self.peek().lexeme.upper() == "CONTEXT"):
+            if self.previous().type != TokenType.CONTEXT:
+                self.advance()
         key = self.consume_identifier("Expected context key.")
         self.consume(TokenType.EQ, "Expected '=' after key.")
         value = self.consume_value("Expected value.")
@@ -1526,8 +1623,9 @@ class Parser:
         def parse_node():
             self.consume(TokenType.LPAREN, "Expected '(' to start a node pattern.")
             alias = self.consume_identifier("Expected node alias.")
-            self.consume(TokenType.FROM, "Expected 'from' inside node pattern.")
-            bucket = self.consume_identifier("Expected bucket name.")
+            bucket = ""
+            if self.match(TokenType.FROM):
+                bucket = self.consume_identifier("Expected bucket name.")
             self.consume(TokenType.RPAREN, "Expected ')' to close node pattern.")
             return GraphNode(alias, bucket)
             
@@ -1562,6 +1660,7 @@ class Parser:
         return MatchStmt(nodes, edges, where)
 
     def sever_stmt(self) -> SeverStmt:
+        self.match(TokenType.BOND)
         source_gid = self.consume_string("Expected source document ID.")
         if self.match(TokenType.FROM, TokenType.TO, TokenType.AND):
             pass
@@ -1611,8 +1710,12 @@ class Parser:
         return DropSecurityStmt(name=name, bucket=bucket)
 
     def listen_stmt(self) -> Any:
-        # LISTEN TO <bucket> ["<id>"]
+        # LISTEN TO VIEW "<name>" or LISTEN TO <bucket> ["<id>"]
         self.consume(TokenType.TO, "Expected 'TO' after 'LISTEN'.")
+        if self.match(TokenType.VIEW):
+            if self.match(TokenType.STRING): view_name = self.previous().value
+            else: view_name = self.consume_identifier("Expected view name after 'LISTEN TO VIEW'")
+            return ListenViewStmt(view_name=str(view_name))
         bucket = self.consume(TokenType.IDENTIFIER, "Expected bucket name after 'LISTEN TO'.").lexeme
         target_gid = None
         if self.match(TokenType.STRING):
@@ -1648,10 +1751,28 @@ class Parser:
         
         while True:
             rule = {}
-            # rule field
-            print("BEFORE FIELD PEAK:", self.peek().lexeme, self.peek().type)
+            if self.match(TokenType.NOT) or (self.peek().lexeme.upper() == "NOT"):
+                if self.previous().type != TokenType.NOT:
+                    self.advance()
+                if self.match(TokenType.EXISTS) or (self.peek().lexeme.upper() == "EXISTS"):
+                    if self.previous().type != TokenType.EXISTS:
+                        self.advance()
+                    if self.match(TokenType.PATH) or (self.peek().lexeme.upper() == "PATH"):
+                        if self.previous().type != TokenType.PATH:
+                            self.advance()
+                        path_parts = []
+                        while not self.is_at_end() and self.peek().type != TokenType.COMMA and self.peek().type != TokenType.EOF:
+                            path_parts.append(self.advance().lexeme)
+                        rule["rule_type"] = "GRAPH_SAT"
+                        rule["constraint"] = "NOT_EXISTS_PATH"
+                        rule["path_expr"] = " ".join(path_parts)
+                        rule["field"] = "__path__"
+                        stmt.rules.append(rule)
+                        if self.match(TokenType.COMMA):
+                            continue
+                        else:
+                            break
             rule["field"] = self.consume_identifier("Expected field name in GUARD rule")
-            print("AFTER FIELD PEAK:", self.peek().lexeme, self.peek().type)
 
             
             if self.match(TokenType.IS):

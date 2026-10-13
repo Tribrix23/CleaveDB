@@ -147,6 +147,7 @@ class Lexer:
                 return Token(TokenType.EDGE_END, ']-', start_line, start_column)
             return Token(TokenType.RBRACKET, c, start_line, start_column)
         if c == ':': return Token(TokenType.COLON, c, start_line, start_column)
+        if c == ';': return Token(TokenType.SEMICOLON, c, start_line, start_column)
         if c == '(': return Token(TokenType.LPAREN, c, start_line, start_column)
         if c == ')': return Token(TokenType.RPAREN, c, start_line, start_column)
         if c == '*': return Token(TokenType.STAR, c, start_line, start_column)

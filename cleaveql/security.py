@@ -35,7 +35,7 @@ class PolicyEngine:
             'condition': condition_ast
         })
         
-    def _evaluate_condition(self, condition_tokens, document: dict, context: dict, engine=None) -> bool:
+    def _evaluate_condition(self, condition_tokens, document: dict, context: dict, engine=None, target_gid=None, bucket=None) -> bool:
         if not condition_tokens:
             return True
             
@@ -53,6 +53,43 @@ class PolicyEngine:
             elif op.lower() in ("!=", "is not"):
                 return user_role != target_role
                 
+        # Epistemic Path Checking: EXISTS PATH (context.user)-["attending_physician*"]->(patient)
+        if "path" in expr_str.lower() and "exists" in expr_str.lower() and engine:
+            import json
+            p_match = re.search(r'exists\s+path\s*\(([^)]+)\)\s*-\s*\[\s*"?([^"\]*]+)\*?"?\s*\]\s*->\s*\(([^)]+)\)', expr_str, re.IGNORECASE)
+            if p_match:
+                raw_src = p_match.group(1).replace(" ", "")
+                raw_label = p_match.group(2).strip().strip('"').replace('*', '').strip()
+                raw_tgt = p_match.group(3).replace(" ", "")
+
+                if "context." in raw_src:
+                    ctx_k = raw_src.split("context.")[-1].strip()
+                    requester = str(context.get(ctx_k, ""))
+                else:
+                    requester = str(context.get(raw_src, raw_src))
+
+                if target_gid:
+                    target = target_gid
+                else:
+                    target = document.get("gid") or (f"{bucket}:{document['id']}" if bucket and "id" in document else str(document.get("id", "")))
+
+                raw_eng = getattr(engine, "engine", engine)
+                bonds_data = raw_eng.scan_bucket("_bonds")
+                if bonds_data:
+                    bonds = json.loads(bonds_data)
+                    edges = []
+                    for b_doc in bonds:
+                        b = b_doc.get("body", {})
+                        if b.get("source") and b.get("target"):
+                            edges.append([str(b["source"]), str(b["target"]), str(b.get("label", "*"))])
+                    if hasattr(raw_eng, "verify_epistemic_path"):
+                        try:
+                            res_str = raw_eng.verify_epistemic_path(json.dumps(edges), requester, target, raw_label or "*", 5)
+                            res = json.loads(res_str)
+                            return res.get("authorized", False)
+                        except Exception:
+                            return False
+
         # DSL Bond Traversal: "bonded as \"owner\" to my user_id"
         bond_match = re.search(r'bonded as "?([a-zA-Z0-9_]+)"? to my ([a-zA-Z_]+)', expr_str)
         if bond_match and engine:
@@ -124,17 +161,19 @@ class PolicyEngine:
         return False
 
 
-    def add_mask(self, bucket: str, field: str, condition_ast):
+    def add_mask(self, bucket: str, field: str, condition_ast, mode: str = "IF", fields_list: list = None):
         if not hasattr(self, 'masks'):
             self.masks = {}
         if bucket not in self.masks:
             self.masks[bucket] = []
         self.masks[bucket].append({
             'field': field,
-            'condition': condition_ast
+            'fields_list': fields_list or [field],
+            'condition': condition_ast,
+            'mode': mode,
         })
 
-    def apply_masks(self, bucket: str, document: dict, context: dict, engine=None) -> dict:
+    def apply_masks(self, bucket: str, document: dict, context: dict, engine=None, target_gid: str = None) -> dict:
         if str(context.get("bypass_dls", "false")).lower() == "true":
             return document
         if not hasattr(self, 'masks') or bucket not in self.masks:
@@ -143,11 +182,20 @@ class PolicyEngine:
         import copy
         masked_doc = copy.deepcopy(document)
         for mask in self.masks[bucket]:
-            # If the condition evaluates to True, we APPLY the mask (redact it)
-            if self._evaluate_condition(mask['condition'], masked_doc, context, engine):
-                field = mask['field']
-                if field in masked_doc:
-                    del masked_doc[field]
+            mode = mask.get("mode", "IF")
+            cond = mask.get("condition")
+            cond_eval = self._evaluate_condition(cond, masked_doc, context, engine, target_gid=target_gid, bucket=bucket)
+            # If mode == "IF", true condition means REDACT
+            # If mode == "UNLESS", true condition means ALLOW (false condition means REDACT)
+            should_redact = cond_eval if mode == "IF" else (not cond_eval)
+            if should_redact:
+                fields = mask.get('fields_list') or [mask.get('field')]
+                for field in fields:
+                    if isinstance(field, str):
+                        for f in field.split(","):
+                            f_clean = f.strip()
+                            if f_clean in masked_doc:
+                                del masked_doc[f_clean]
         return masked_doc
 
     def check_read(self, bucket: str, document: dict, context: dict, engine=None) -> bool:
