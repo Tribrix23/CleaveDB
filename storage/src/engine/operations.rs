@@ -59,6 +59,14 @@ impl Database {
                                 status: "latched".to_string(),
                             };
                             self.phantom_lattice.register_shadow_bond(shadow)?;
+                            // Coordinated Handshake Protocol:
+                            // Double-check if target materialized concurrently during registration
+                            if self.get(&bond_gid)?.is_some() {
+                                let snapped = self.phantom_lattice.resolve_latches_for_target(&bond_gid);
+                                for rec in &snapped {
+                                    log::info!("Coordinated Handshake: Late-binding Firm bond '{}' immediately snapped & fused", rec.rel_name);
+                                }
+                            }
                             log::info!("Late-binding Firm bond '{}': latched target '{}' into Phantom Lattice (pending arrival)", bond.name, bond_gid);
                         }
                     }
@@ -76,6 +84,14 @@ impl Database {
                                 status: "latched".to_string(),
                             };
                             self.phantom_lattice.register_shadow_bond(shadow)?;
+                            // Coordinated Handshake Protocol:
+                            // Double-check if target materialized concurrently during registration
+                            if self.get(&bond_gid)?.is_some() {
+                                let snapped = self.phantom_lattice.resolve_latches_for_target(&bond_gid);
+                                for rec in &snapped {
+                                    log::info!("Coordinated Handshake: Late-binding Soft bond '{}' immediately snapped & fused", rec.rel_name);
+                                }
+                            }
                             log::info!("Late-binding Soft bond '{}': latched target '{}' into Phantom Lattice", bond.name, bond_gid);
                         }
                     }

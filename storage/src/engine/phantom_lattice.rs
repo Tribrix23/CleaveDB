@@ -83,16 +83,19 @@ impl PhantomLattice {
     }
 
     /// Register a late-binding shadow bond for an unmaterialized target.
+    /// Invariant: Record MUST be inserted into the concurrent DashMap registry before
+    /// incrementing the LatchFilter counter, ensuring any reader observing a positive
+    /// filter will find the record in the registry.
     pub fn register_shadow_bond(&self, mut record: ShadowRecord) -> StorageResult<()> {
         record.status = "latched".to_string();
         let target_gid = record.target_gid.clone();
 
-        self.filter.increment(&target_gid);
-        self.total_latched.fetch_add(1, Ordering::Relaxed);
-
-        self.latches.entry(target_gid)
+        self.latches.entry(target_gid.clone())
             .or_insert_with(Vec::new)
             .push(record);
+
+        self.filter.increment(&target_gid);
+        self.total_latched.fetch_add(1, Ordering::Relaxed);
 
         Ok(())
     }
