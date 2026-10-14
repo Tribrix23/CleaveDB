@@ -90,10 +90,10 @@ impl PhantomLattice {
         record.status = "latched".to_string();
         let target_gid = record.target_gid.clone();
 
-        self.latches.entry(target_gid.clone())
-            .or_insert_with(Vec::new)
-            .push(record);
-
+        // Publish the counter before releasing the same shard guard that publishes
+        // the record. A resolver/sweeper cannot remove an uncounted record.
+        let mut entry = self.latches.entry(target_gid.clone()).or_insert_with(Vec::new);
+        entry.push(record);
         self.filter.increment(&target_gid);
         self.total_latched.fetch_add(1, Ordering::Relaxed);
 
@@ -111,16 +111,30 @@ impl PhantomLattice {
 
     /// Cleave-Snap: Atomically retrieve and remove all pending shadow records for a materialized target.
     pub fn resolve_latches_for_target(&self, target_gid: &str) -> Vec<ShadowRecord> {
+        self.resolve_with_clock(target_gid, || std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+    }
+
+    fn resolve_with_clock(&self, target_gid: &str, clock: impl FnOnce() -> u64) -> Vec<ShadowRecord> {
         if !self.has_pending_latches(target_gid) {
             return Vec::new();
         }
 
-        if let Some((_, records)) = self.latches.remove(target_gid) {
-            for _ in 0..records.len() {
+        if let dashmap::mapref::entry::Entry::Occupied(entry) = self.latches.entry(target_gid.to_owned()) {
+            let now = clock(); // Decision time is sampled while holding the shard lock.
+            let records = entry.remove();
+            let mut resolved = Vec::new();
+            for mut record in records {
                 self.filter.decrement(target_gid);
+                if record.lease_expiry_ts.is_some_and(|deadline| now >= deadline) {
+                    self.total_expired.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    record.status = "fused".to_owned();
+                    resolved.push(record);
+                }
             }
-            self.total_snapped.fetch_add(records.len() as u64, Ordering::Relaxed);
-            records
+            self.total_snapped.fetch_add(resolved.len() as u64, Ordering::Relaxed);
+            resolved
         } else {
             Vec::new()
         }
@@ -170,7 +184,8 @@ impl PhantomLattice {
         }
 
         for k in empty_keys {
-            self.latches.remove(&k);
+            // Registration may have appended since iter_mut released its guard.
+            self.latches.remove_if(&k, |_, records| records.is_empty());
         }
 
         expired
@@ -186,5 +201,62 @@ impl PhantomLattice {
             "total_snapped_bonds": self.total_snapped.load(Ordering::Relaxed),
             "total_expired_bonds": self.total_expired.load(Ordering::Relaxed),
         })
+    }
+}
+#[cfg(test)]
+mod correctness_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    fn record(id: usize, deadline: Option<u64>) -> ShadowRecord {
+        ShadowRecord { src_gid: format!("source:{id}"), target_gid: "target:1".into(),
+            rel_name: "r".into(), enforcement: Enforcement::Firm, created_at_ts: 0,
+            lease_expiry_ts: deadline, cascade_delete: false, status: "latched".into() }
+    }
+
+    #[test]
+    fn resolves_every_source_and_checks_exact_deadline() {
+        let lattice = PhantomLattice::new();
+        for i in 0..64 { lattice.register_shadow_bond(record(i, Some(100))).unwrap(); }
+        let found = lattice.resolve_with_clock("target:1", || 99);
+        assert_eq!(found.len(), 64);
+        assert!(found.iter().all(|r| r.status == "fused"));
+        assert!(!lattice.filter.might_contain("target:1"));
+        lattice.register_shadow_bond(record(65, Some(100))).unwrap();
+        assert!(lattice.resolve_with_clock("target:1", || 100).is_empty());
+        assert_eq!(lattice.stats()["total_expired_bonds"], 1);
+    }
+
+    #[test]
+    fn concurrent_register_resolve_sweep_conserves_records() {
+        for _ in 0..100 {
+            let lattice = Arc::new(PhantomLattice::new());
+            let barrier = Arc::new(Barrier::new(4));
+            std::thread::scope(|scope| {
+                for worker in 0..2 {
+                    let (lattice, barrier) = (lattice.clone(), barrier.clone());
+                    scope.spawn(move || { barrier.wait(); for i in 0..64 {
+                        lattice.register_shadow_bond(record(worker * 64 + i, Some(100))).unwrap();
+                    }});
+                }
+                let (l, b) = (lattice.clone(), barrier.clone());
+                scope.spawn(move || { b.wait(); for _ in 0..64 { l.resolve_with_clock("target:1", || 99); }});
+                barrier.wait();
+                for _ in 0..64 { lattice.sweep_expired(100); }
+            });
+            lattice.sweep_expired(100);
+            let stats = lattice.stats();
+            assert_eq!(stats["total_snapped_bonds"].as_u64().unwrap() + stats["total_expired_bonds"].as_u64().unwrap(), 128);
+            assert_eq!(stats["active_pending_latches"], 0);
+            assert!(!lattice.filter.might_contain("target:1"));
+        }
+    }
+
+    #[test]
+    fn soft_without_deadline_survives_sweep() {
+        let l = PhantomLattice::new();
+        l.register_shadow_bond(record(0, None)).unwrap();
+        assert!(l.sweep_expired(u64::MAX).is_empty());
+        assert_eq!(l.resolve_with_clock("target:1", || u64::MAX).len(), 1);
     }
 }

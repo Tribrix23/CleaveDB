@@ -1093,23 +1093,9 @@ class Interpreter:
             gid = self.engine.pour(bucket, doc_id, json_str)
             self._push_undo("POUR", gid, old_doc, body)
 
-            # Cleave-Snap Reactive Latching:
-            # Check if any latched bonds were waiting for this target document
-            try:
-                b_data = self._scan_bucket_rls("_bonds")
-                if b_data:
-                    bonds = json.loads(b_data)
-                    for b_doc in bonds:
-                        b = b_doc.get("body", {})
-                        target_key = b.get("target", "")
-                        if (target_key == gid or target_key == f"{bucket}:{doc_id}") and b.get("status") == "latched":
-                            b["status"] = "active"
-                            b["fused_at"] = int(time.time())
-                            b_id = b_doc.get("gid", "").split(":")[-1] if ":" in b_doc.get("gid", "") else b_doc.get("gid", "")
-                            self.engine.pour("_bonds", b_id, json.dumps(b))
-            except Exception:
-                pass
-            
+            # Native Database.put reconciles persisted bonds under its coordination
+            # lock. Do not overwrite that decision with a stale Python scan.
+
             if _evict_algo:
                 self.engine.pour("_lru_tracking", gid.split(":")[-1], str(time.time()))
 
@@ -1382,6 +1368,10 @@ class Interpreter:
                 seen_targets = set()
                 for b_doc in bonds:
                     b = b_doc.get("body", {})
+                    # A persisted terminal decision cannot be undone by a late
+                    # target arrival or a backwards wall-clock adjustment.
+                    if b.get("status") == "expired":
+                        continue
                     # Time Travel & Ephemeral Filter
                     if b.get("created_at") and effective_time < b["created_at"]:
                         continue

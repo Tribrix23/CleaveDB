@@ -9,6 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// High-level Database coordinating shards, catalogs, indexes, Phantom Lattice, DBSP, and Speculative Branches.
 pub struct Database {
+    /// Orders document publication and persisted-bond decisions within this handle.
+    /// This is deliberately a blocking correctness baseline, not a lock-free path.
+    pub bond_gate: parking_lot::Mutex<()>,
     pub catalog: Catalog,
     pub shards: ShardManager,
     pub inverted: InvertedIndex,
@@ -18,12 +21,17 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn put(&self, doc: Document) -> StorageResult<()> {
+    pub fn put(&self, mut doc: Document) -> StorageResult<()> {
+        let _guard = self.bond_gate.lock();
+        if doc.bucket == "_bonds" {
+            self.prepare_bond(&mut doc, Self::bond_now())?;
+        }
         let current_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
+        let mut pending_shadows = Vec::new();
         // 1. Derive indexable fields
         let derivation = derive(&doc.body);
         
@@ -47,7 +55,7 @@ impl Database {
                     Enforcement::Firm => {
                         if !target_exists {
                             // Firm bond: target has not arrived yet — latch into Phantom Lattice with 24-hr default lease
-                            let lease_secs = bond.to_bucket.parse::<u64>().ok().unwrap_or(86400);
+                            let lease_secs = 86400; // Catalog bonds currently expose no lease-duration field.
                             let shadow = ShadowRecord {
                                 src_gid: doc.gid.clone(),
                                 target_gid: bond_gid.clone(),
@@ -58,15 +66,8 @@ impl Database {
                                 cascade_delete: bond.cascade_delete,
                                 status: "latched".to_string(),
                             };
-                            self.phantom_lattice.register_shadow_bond(shadow)?;
-                            // Coordinated Handshake Protocol:
-                            // Double-check if target materialized concurrently during registration
-                            if self.get(&bond_gid)?.is_some() {
-                                let snapped = self.phantom_lattice.resolve_latches_for_target(&bond_gid);
-                                for rec in &snapped {
-                                    log::info!("Coordinated Handshake: Late-binding Firm bond '{}' immediately snapped & fused", rec.rel_name);
-                                }
-                            }
+                            // Publish only after the source document was stored successfully.
+                            pending_shadows.push(shadow);
                             log::info!("Late-binding Firm bond '{}': latched target '{}' into Phantom Lattice (pending arrival)", bond.name, bond_gid);
                         }
                     }
@@ -83,15 +84,8 @@ impl Database {
                                 cascade_delete: bond.cascade_delete,
                                 status: "latched".to_string(),
                             };
-                            self.phantom_lattice.register_shadow_bond(shadow)?;
-                            // Coordinated Handshake Protocol:
-                            // Double-check if target materialized concurrently during registration
-                            if self.get(&bond_gid)?.is_some() {
-                                let snapped = self.phantom_lattice.resolve_latches_for_target(&bond_gid);
-                                for rec in &snapped {
-                                    log::info!("Coordinated Handshake: Late-binding Soft bond '{}' immediately snapped & fused", rec.rel_name);
-                                }
-                            }
+                            // Publish only after the source document was stored successfully.
+                            pending_shadows.push(shadow);
                             log::info!("Late-binding Soft bond '{}': latched target '{}' into Phantom Lattice", bond.name, bond_gid);
                         }
                     }
@@ -106,6 +100,13 @@ impl Database {
         let shard = self.shards.get_shard(&doc.gid);
         let key = doc.gid.as_bytes();
         shard.insert(key, &msgpack)?;
+        for shadow in pending_shadows {
+            let target = shadow.target_gid.clone();
+            self.phantom_lattice.register_shadow_bond(shadow)?;
+            if self.get(&target)?.is_some() {
+                self.phantom_lattice.resolve_latches_for_target(&target);
+            }
+        }
         
         // 5. Cleave-Snap Reactive Latching:
         // Check if other documents were waiting for this document to land!
@@ -123,6 +124,11 @@ impl Database {
         for (term, freq) in derivation.text_terms {
             self.inverted.insert(&term, &doc.gid, freq)?;
         }
+        // The stored bond is authoritative. Process every pending source, and do
+        // not discard pending intent before a successful terminal-state write.
+        if doc.bucket != "_bonds" {
+            self.reconcile_bonds_locked(Some(&doc.gid), Self::bond_now())?;
+        }
         
         Ok(())
     }
@@ -138,6 +144,7 @@ impl Database {
     }
     
     pub fn delete(&self, gid: &str) -> StorageResult<bool> {
+        let _guard = self.bond_gate.lock();
         // 1. Fetch the document first so we can clean up indexes
         let doc = match self.get(gid)? {
             Some(d) => d,
@@ -166,5 +173,132 @@ impl Database {
         // 4. Delete the document from its shard
         let shard = self.shards.get_shard(gid);
         shard.delete(gid.as_bytes())
+    }
+
+    fn bond_now() -> u64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    }
+
+    fn prepare_bond(&self, doc: &mut Document, now: u64) -> StorageResult<()> {
+        let status = doc.body.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "latched" && status != "active" { return Ok(()); }
+        if let Some(old) = self.get(&doc.gid)? {
+            if old.body.get("status").and_then(|v| v.as_str()) == Some("expired") {
+                return Err(StorageError::Corruption("An expired bond ID cannot be reactivated; declare a new bond".into()));
+            }
+        }
+        let source = doc.body.get("source").and_then(|v| v.as_str())
+            .ok_or_else(|| StorageError::Corruption("Bond source is required".into()))?;
+        let target = doc.body.get("target").and_then(|v| v.as_str())
+            .ok_or_else(|| StorageError::Corruption("Bond target is required".into()))?;
+        let source_exists = self.get(source)?.is_some();
+        let target_exists = self.get(target)?.is_some();
+        let expired = doc.body.get("expires_at").and_then(|v| v.as_u64()).is_some_and(|d| now >= d);
+        if doc.body.get("enforcement").and_then(|v| v.as_str()) == Some("strict")
+            && (!source_exists || !target_exists) {
+            return Err(StorageError::Corruption("Strict bond endpoints must exist".into()));
+        }
+        doc.body["status"] = serde_json::json!(if expired { "expired" }
+            else if source_exists && target_exists { "active" } else { "latched" });
+        if doc.body["status"] == "active" { doc.body["fused_at"] = serde_json::json!(now); }
+        Ok(())
+    }
+
+    /// Retryable repair after WAL replay or an interrupted reconciliation.
+    /// Success does not imply a WAL fsync; durability follows the configured WAL.
+    pub fn reconcile_pending_bonds(&self, now: Option<u64>) -> StorageResult<usize> {
+        let _guard = self.bond_gate.lock();
+        self.reconcile_bonds_locked(None, now.unwrap_or_else(Self::bond_now))
+    }
+
+    fn reconcile_bonds_locked(&self, endpoint: Option<&str>, now: u64) -> StorageResult<usize> {
+        let mut pending = Vec::new();
+        for shard in self.shards.all_shards() {
+            let mut cursor = crate::btree::cursor::Cursor::seek(shard, b"_bonds:")?;
+            while let Some((key, value)) = cursor.next()? {
+                if !key.starts_with(b"_bonds:") { break; }
+                let doc = Document::from_msgpack(&value)?;
+                if doc.body.get("status").and_then(|v| v.as_str()) == Some("latched")
+                    && endpoint.map_or(true, |gid| doc.body.get("target").and_then(|v| v.as_str()) == Some(gid)
+                        || doc.body.get("source").and_then(|v| v.as_str()) == Some(gid)) {
+                    pending.push(doc);
+                }
+            }
+        }
+        let mut changed = 0;
+        for mut doc in pending {
+            self.prepare_bond(&mut doc, now)?;
+            if doc.body["status"] != "latched" {
+                let old = self.get(&doc.gid)?.ok_or_else(|| StorageError::Corruption("Pending bond vanished".into()))?;
+                self.shards.get_shard(&doc.gid).insert(doc.gid.as_bytes(), &doc.to_msgpack()?)?;
+                let terms: Vec<String> = derive(&old.body).text_terms.into_keys().collect();
+                self.inverted.delete_doc(&doc.gid, &terms)?;
+                for (term, freq) in derive(&doc.body).text_terms { self.inverted.insert(&term, &doc.gid, freq)?; }
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
+}
+#[cfg(test)]
+mod bond_correctness_tests {
+    use super::*;
+    use crate::{buffer_pool::BufferPool, btree::BTree, wal::{WriteAheadLog, WalConfig, SyncMode}};
+    use serde_json::json;
+
+    fn database(path: &std::path::Path) -> Database {
+        let pool = Arc::new(BufferPool::new(256));
+        let wal = Arc::new(WriteAheadLog::open(WalConfig { dir: path.join("wal"), sync_mode: SyncMode::Async,
+            segment_max_bytes: 64 * 1024 * 1024, flush_interval_ms: 50 }).unwrap());
+        Database { bond_gate: parking_lot::Mutex::new(()), catalog: Catalog::new(),
+            shards: ShardManager::new(4, pool.clone(), wal.clone(), &path.join("shards")).unwrap(),
+            inverted: InvertedIndex::new(BTree::new(pool, wal, "inverted_index".into(), path.join("index.db")).unwrap()),
+            phantom_lattice: Arc::new(PhantomLattice::new()), dbsp: Arc::new(DifferentialCircuit::new()),
+            branches: Arc::new(BranchManager::new()) }
+    }
+    fn bond(id: usize, expiry: Option<u64>) -> Document {
+        Document::new("_bonds", json!({"source":format!("source:{id}"), "target":"target:1", "label":"r",
+            "status":"latched", "enforcement":"firm", "expires_at":expiry}), Some(&id.to_string()))
+    }
+
+    #[test]
+    fn concurrent_declarations_and_target_process_all_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = database(dir.path());
+        for id in 0..16 { db.put(Document::new("source", json!({}), Some(&id.to_string()))).unwrap(); }
+        let barrier = std::sync::Barrier::new(3);
+        std::thread::scope(|s| {
+            s.spawn(|| { barrier.wait(); for id in 0..8 { db.put(bond(id, None)).unwrap(); } });
+            s.spawn(|| { barrier.wait(); for id in 8..16 { db.put(bond(id, None)).unwrap(); } });
+            barrier.wait();
+            db.put(Document::new("target", json!({}), Some("1"))).unwrap();
+        });
+        for id in 0..16 { assert_eq!(db.get(&format!("_bonds:{id}")).unwrap().unwrap().body["status"], "active"); }
+    }
+
+    #[test]
+    fn expiry_is_terminal_and_reconciliation_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = database(dir.path());
+        db.put(Document::new("source", json!({}), Some("0"))).unwrap();
+        db.put(bond(0, Some(1))).unwrap();
+        db.put(Document::new("target", json!({}), Some("1"))).unwrap();
+        assert_eq!(db.get("_bonds:0").unwrap().unwrap().body["status"], "expired");
+        assert!(db.put(bond(0, None)).is_err());
+        assert_eq!(db.reconcile_pending_bonds(None).unwrap(), 0);
+    }
+
+    #[test]
+    fn pending_record_repairs_when_both_endpoints_are_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = database(dir.path());
+        db.put(Document::new("source", json!({}), Some("0"))).unwrap();
+        db.put(Document::new("target", json!({}), Some("1"))).unwrap();
+        // Simulate replay of a durable pending record without its later transition.
+        let doc = bond(0, None);
+        db.shards.get_shard(&doc.gid).insert(doc.gid.as_bytes(), &doc.to_msgpack().unwrap()).unwrap();
+        assert_eq!(db.reconcile_pending_bonds(None).unwrap(), 1);
+        assert_eq!(db.get("_bonds:0").unwrap().unwrap().body["status"], "active");
+        assert_eq!(db.reconcile_pending_bonds(None).unwrap(), 0);
     }
 }

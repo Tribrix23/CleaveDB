@@ -28,7 +28,8 @@ pub struct CleaveDB {
 impl CleaveDB {
     /// Open or create a CleaveDB database at the given directory path.
     #[new]
-    pub fn new(path: &str) -> PyResult<Self> {
+    #[pyo3(signature = (path, sync_writes=false))]
+    pub fn new(path: &str, sync_writes: bool) -> PyResult<Self> {
         let data_dir = PathBuf::from(path);
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| PyRuntimeError::new_err(format!("Cannot create data dir: {}", e)))?;
@@ -44,7 +45,7 @@ impl CleaveDB {
             .map_err(|e| PyRuntimeError::new_err(format!("Cannot create WAL dir: {}", e)))?;
         let wal_config = WalConfig {
             dir: wal_dir,
-            sync_mode: SyncMode::Async,
+            sync_mode: if sync_writes { SyncMode::Sync } else { SyncMode::Async },
             segment_max_bytes: 64 * 1024 * 1024,
             flush_interval_ms: 50,
         };
@@ -80,6 +81,7 @@ impl CleaveDB {
         let branches = Arc::new(crate::engine::BranchManager::new());
 
         let db = Database {
+            bond_gate: parking_lot::Mutex::new(()),
             catalog,
             shards,
             inverted,
@@ -88,29 +90,31 @@ impl CleaveDB {
             branches,
         };
 
-        if let Ok(entries) = wal.recover() {
+        let entries = wal.recover()
+            .map_err(|e| PyRuntimeError::new_err(format!("WAL recovery failed: {}", e)))?;
+        {
             for entry in entries {
                 match entry {
                     crate::wal::WalEntry::Put { tree_name, key, value, .. } => {
                         if tree_name == "inverted_index" {
-                            let _ = db.inverted.tree().insert_unlogged(&key, &value);
+                            db.inverted.tree().insert_unlogged(&key, &value).map_err(|e| PyRuntimeError::new_err(format!("Index replay failed: {}", e)))?;
                         } else if tree_name.starts_with("shard_") {
                             if let Ok(idx) = tree_name.trim_start_matches("shard_").parse::<usize>() {
                                 let all = db.shards.all_shards();
                                 if idx < all.len() {
-                                    let _ = all[idx].insert_unlogged(&key, &value);
+                                    all[idx].insert_unlogged(&key, &value).map_err(|e| PyRuntimeError::new_err(format!("Document replay failed: {}", e)))?;
                                 }
                             }
                         }
                     }
                     crate::wal::WalEntry::Delete { tree_name, key, .. } => {
                         if tree_name == "inverted_index" {
-                            let _ = db.inverted.tree().delete_unlogged(&key);
+                            db.inverted.tree().delete_unlogged(&key).map_err(|e| PyRuntimeError::new_err(format!("Index delete replay failed: {}", e)))?;
                         } else if tree_name.starts_with("shard_") {
                             if let Ok(idx) = tree_name.trim_start_matches("shard_").parse::<usize>() {
                                 let all = db.shards.all_shards();
                                 if idx < all.len() {
-                                    let _ = all[idx].delete_unlogged(&key);
+                                    all[idx].delete_unlogged(&key).map_err(|e| PyRuntimeError::new_err(format!("Document delete replay failed: {}", e)))?;
                                 }
                             }
                         }
@@ -120,45 +124,10 @@ impl CleaveDB {
             }
         }
 
-        // Cold-Start Latch Warmup: Recover persisted latched shadow bonds into in-memory Phantom Lattice
-        let prefix = "_bonds:".as_bytes();
-        for shard in db.shards.all_shards() {
-            if let Ok(mut cursor) = crate::btree::cursor::Cursor::new(shard) {
-                while let Ok(Some((key, value))) = cursor.next() {
-                    if key.starts_with(prefix) {
-                        if let Ok(doc) = Document::from_msgpack(&value) {
-                            if let Some(status) = doc.body.get("status").and_then(|s| s.as_str()) {
-                                if status == "latched" {
-                                    let src = doc.body.get("source").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                                    let tgt = doc.body.get("target").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                                    let rel = doc.body.get("label").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                                    let enf_str = doc.body.get("enforcement").and_then(|s| s.as_str()).unwrap_or("soft");
-                                    let enforcement = match enf_str.to_lowercase().as_str() {
-                                        "strict" => crate::engine::bucket_bond::Enforcement::Strict,
-                                        "firm" => crate::engine::bucket_bond::Enforcement::Firm,
-                                        _ => crate::engine::bucket_bond::Enforcement::Soft,
-                                    };
-                                    let created_at = doc.body.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
-                                    let lease_expiry = doc.body.get("expires_at").and_then(|v| v.as_u64());
-                                    let cascade = doc.body.get("cascade").and_then(|v| v.as_bool()).unwrap_or(false);
-                                    let shadow = crate::engine::phantom_lattice::ShadowRecord {
-                                        src_gid: src,
-                                        target_gid: tgt,
-                                        rel_name: rel,
-                                        enforcement,
-                                        created_at_ts: created_at,
-                                        lease_expiry_ts: lease_expiry,
-                                        cascade_delete: cascade,
-                                        status: "latched".to_string(),
-                                    };
-                                    let _ = db.phantom_lattice.register_shadow_bond(shadow);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Durable _bonds documents are authoritative after replay. Reconcile even
+        // when the target arrived before the crash and will never be poured again.
+        db.reconcile_pending_bonds(None)
+            .map_err(|e| PyRuntimeError::new_err(format!("Bond recovery failed: {}", e)))?;
 
         Ok(Self { db, data_dir })
     }
@@ -289,9 +258,17 @@ impl CleaveDB {
     /// Sweep expired firm bonds whose lease duration has elapsed.
     #[pyo3(signature = (current_ts=None))]
     pub fn sweep_expired_bonds(&self, current_ts: Option<u64>) -> PyResult<String> {
+        self.db.reconcile_pending_bonds(current_ts)
+            .map_err(|e| PyRuntimeError::new_err(format!("Bond reconciliation failed: {}", e)))?;
         let swept = self.db.sweep_expired_bonds(current_ts);
         serde_json::to_string_pretty(&swept)
             .map_err(|e| PyRuntimeError::new_err(format!("Serialization error: {}", e)))
+    }
+
+    /// Retry persisted pending bonds after a partial failure or on demand.
+    pub fn reconcile_pending_bonds(&self) -> PyResult<usize> {
+        self.db.reconcile_pending_bonds(None)
+            .map_err(|e| PyRuntimeError::new_err(format!("Bond reconciliation failed: {}", e)))
     }
 
     /// Telemetry and statistics of the Phantom Lattice.
