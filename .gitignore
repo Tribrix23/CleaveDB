@@ -13,12 +13,25 @@ build/
 release/
 dist/
 *.exe
+*.pdb
+*.ilk
+*.obj
+*.o
+*.a
+*.lib
+*.dll
+*.dylib
+*.so
 *.spec
 *.docx
 
 # Test artifacts and test database directories
 test_*_db/
 test_*/
+pure_benchmark_db/
+*benchmark_db/
+*.log
+wal/
 *_webhook*.py
 ping_server.py
 
@@ -53,3 +66,6 @@ manuscript_*/
 *.docx
 Paper.docx
 Paper.md
+LIVE_EMPIRICAL_EVIDENCE.md
+Phantom_Lattice_Conference_Paper.md
+reproducibility/
