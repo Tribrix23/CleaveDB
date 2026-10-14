@@ -39,3 +39,17 @@ tests/
 testing/
 benchmarks/
 scratch/
+
+# Research Paper, Monograph Generators & Assets
+build_*.py
+generate_*_manuscript*.py
+generate_complete_manuscript.py
+generate_exhaustive_manuscript.py
+render_*.py
+chapters/
+figures/
+manuscript/
+manuscript_*/
+*.docx
+Paper.docx
+Paper.md

@@ -1142,6 +1142,24 @@ class Interpreter:
                 self.engine.delete(f"_ttl:{gid}")
                 self.engine.delete(f"_ttl:{gid.split(':')[-1]}")
 
+            # Clear soft-deleted rubbish tombstones so re-poured document is restored/active
+            clean_b = (
+                bucket[len(f"{t}."):]
+                if t != "cron" and bucket.startswith(f"{t}.")
+                else bucket
+            )
+            plain_doc_id = str(doc_id or gid.split(":")[-1])
+            rubbish_keys_to_clear = [
+                f"{clean_b}:{plain_doc_id}",
+                f"{t}.{clean_b}:{plain_doc_id}",
+                f"{t}.{t}.{clean_b}:{plain_doc_id}",
+                f"{t}.{bucket}:{plain_doc_id}",
+                f"{gid}",
+                f"{t}.{gid}",
+            ]
+            for rk in set(rubbish_keys_to_clear):
+                self.engine.delete(f"_rubbish:{rk}")
+
             # --- Vector Indexing Queue ---
             if self.indexing_queue is not None and isinstance(body, dict):
                 text_content = " ".join(
@@ -1426,9 +1444,27 @@ class Interpreter:
                                 if "user" in self.context
                                 else "cron"
                             )
-                            rubbish_key = f"{tenant}.{doc_gid}" if tenant != "cron" else doc_gid
-                            if self.engine.get(f"_rubbish:{rubbish_key}"):
-                                continue
+                            clean_t_bucket = (
+                                t_bucket[len(f"{tenant}."):]
+                                if tenant != "cron" and t_bucket.startswith(f"{tenant}.")
+                                else t_bucket
+                            )
+                            clean_doc_gid = f"{clean_t_bucket}:{t_id}"
+                            rubbish_key = f"{tenant}.{clean_doc_gid}" if tenant != "cron" else clean_doc_gid
+                            legacy_rubbish_key = f"{tenant}.{tenant}.{clean_doc_gid}" if tenant != "cron" else clean_doc_gid
+                            legacy_rubbish_key2 = f"{tenant}.{doc_gid}" if tenant != "cron" else doc_gid
+                            r_entry_str = (
+                                self.engine.get(f"_rubbish:{rubbish_key}")
+                                or self.engine.get(f"_rubbish:{legacy_rubbish_key}")
+                                or self.engine.get(f"_rubbish:{legacy_rubbish_key2}")
+                            )
+                            if r_entry_str:
+                                try:
+                                    self.engine.delete(f"_rubbish:{rubbish_key}")
+                                    self.engine.delete(f"_rubbish:{legacy_rubbish_key}")
+                                    self.engine.delete(f"_rubbish:{legacy_rubbish_key2}")
+                                except Exception:
+                                    pass
 
                             # Deduplicate: skip if we already returned this target
                             if doc_gid in seen_targets:
@@ -2438,12 +2474,6 @@ class Interpreter:
                 gid = r["gid"]
                 doc_json = self.engine.get(gid)
                 if doc_json:
-                    rubbish_entry = {
-                        "original_bucket": bucket,
-                        "original_id": gid.split(":")[-1],
-                        "deleted_at": time.time(),
-                        "document": json.loads(doc_json),
-                    }
                     tenant = (
                         self.context.get(
                             "tenant_id", self.context.get("user", "").split(".")[0]
@@ -2451,7 +2481,20 @@ class Interpreter:
                         if "user" in self.context
                         else "cron"
                     )
-                    r_gid = f"{tenant}.{gid}" if tenant != "cron" else gid
+                    clean_bucket = (
+                        bucket[len(f"{tenant}."):]
+                        if tenant != "cron" and bucket.startswith(f"{tenant}.")
+                        else bucket
+                    )
+                    plain_id = gid.split(":")[-1]
+                    clean_gid = f"{clean_bucket}:{plain_id}"
+                    rubbish_entry = {
+                        "original_bucket": clean_bucket,
+                        "original_id": plain_id,
+                        "deleted_at": time.time(),
+                        "document": json.loads(doc_json),
+                    }
+                    r_gid = f"{tenant}.{clean_gid}" if tenant != "cron" else clean_gid
                     self.engine.pour("_rubbish", r_gid, json.dumps(rubbish_entry))
                 self.engine.delete(gid)
                 self.engine.delete(f"_ttl:{gid}")
@@ -3975,12 +4018,6 @@ class Interpreter:
                 if not doc_json:
                     continue
 
-                rubbish_entry = {
-                    "original_bucket": bucket,
-                    "original_id": gid.split(":")[-1],
-                    "deleted_at": time.time(),
-                    "body": json.loads(doc_json),
-                }
                 tenant = (
                     self.context.get(
                         "tenant_id", self.context.get("user", "").split(".")[0]
@@ -3988,7 +4025,20 @@ class Interpreter:
                     if "user" in self.context
                     else "cron"
                 )
-                r_gid = f"{tenant}.{gid}" if tenant != "cron" else gid
+                clean_bucket = (
+                    bucket[len(f"{tenant}."):]
+                    if tenant != "cron" and bucket.startswith(f"{tenant}.")
+                    else bucket
+                )
+                plain_id = gid.split(":")[-1]
+                rubbish_entry = {
+                    "original_bucket": clean_bucket,
+                    "original_id": plain_id,
+                    "deleted_at": time.time(),
+                    "body": json.loads(doc_json),
+                }
+                clean_gid = f"{clean_bucket}:{plain_id}"
+                r_gid = f"{tenant}.{clean_gid}" if tenant != "cron" else clean_gid
                 self.engine.pour("_rubbish", r_gid, json.dumps(rubbish_entry))
                 self.engine.delete(gid)
                 self.engine.delete(f"_ttl:{gid}")
@@ -4017,7 +4067,12 @@ class Interpreter:
 
                 for b_doc in bonds:
                     b = b_doc.get("body", {})
-                    if b.get("cascade") and (b.get("source") == unnamespaced_gid):
+                    b_src = str(b.get("source", ""))
+                    b_tgt = str(b.get("target", ""))
+                    b_src_clean = b_src[len(f"{t}."):] if t != "cron" and b_src.startswith(f"{t}.") else b_src
+                    b_tgt_clean = b_tgt[len(f"{t}."):] if t != "cron" and b_tgt.startswith(f"{t}.") else b_tgt
+
+                    if b.get("cascade") and (b_src == unnamespaced_gid or b_src == gid or b_src_clean == unnamespaced_gid):
                         tgt = b.get("target")
                         t_bucket, t_id = (
                             tgt.split(":", 1) if ":" in tgt else (bucket, tgt)
@@ -4025,27 +4080,30 @@ class Interpreter:
                         t_gid = f"{t_bucket}:{t_id}"
                         t_json = self.engine.get(t_gid)
                         if t_json:
+                            clean_t_bucket = (
+                                t_bucket[len(f"{t}."):]
+                                if t != "cron" and t_bucket.startswith(f"{t}.")
+                                else t_bucket
+                            )
+                            clean_t_gid = f"{clean_t_bucket}:{t_id}"
                             rubbish_entry = {
-                                "original_bucket": t_bucket,
+                                "original_bucket": clean_t_bucket,
                                 "original_id": t_id,
                                 "deleted_at": time.time(),
                                 "body": json.loads(t_json),
                             }
-                            tenant = (
-                                self.context.get(
-                                    "tenant_id",
-                                    self.context.get("user", "").split(".")[0],
-                                )
-                                if "user" in self.context
-                                else "cron"
-                            )
-                            r_t_gid = f"{tenant}.{t_gid}" if tenant != "cron" else t_gid
+                            r_t_gid = f"{t}.{clean_t_gid}" if t != "cron" else clean_t_gid
                             self.engine.pour(
                                 "_rubbish", r_t_gid, json.dumps(rubbish_entry)
                             )
                             self.engine.delete(t_gid)
                     # Automatically detach bond connected to drained doc
-                    if b.get("source") == unnamespaced_gid or b.get("target") == unnamespaced_gid:
+                    if (
+                        b_src in (gid, unnamespaced_gid)
+                        or b_tgt in (gid, unnamespaced_gid)
+                        or b_src_clean == unnamespaced_gid
+                        or b_tgt_clean == unnamespaced_gid
+                    ):
                         self.engine.delete(b_doc["gid"])
 
                 # Detach links connected to drained doc
@@ -4053,7 +4111,16 @@ class Interpreter:
                 links = json.loads(l_data) if l_data else []
                 for l_doc in links:
                     l = l_doc.get("body", {})
-                    if l.get("source") == unnamespaced_gid or l.get("target") == unnamespaced_gid:
+                    l_src = str(l.get("source", ""))
+                    l_tgt = str(l.get("target", ""))
+                    l_src_clean = l_src[len(f"{t}."):] if t != "cron" and l_src.startswith(f"{t}.") else l_src
+                    l_tgt_clean = l_tgt[len(f"{t}."):] if t != "cron" and l_tgt.startswith(f"{t}.") else l_tgt
+                    if (
+                        l_src in (gid, unnamespaced_gid)
+                        or l_tgt in (gid, unnamespaced_gid)
+                        or l_src_clean == unnamespaced_gid
+                        or l_tgt_clean == unnamespaced_gid
+                    ):
                         self.engine.delete(l_doc["gid"])
 
             if doc_id:
@@ -4073,19 +4140,60 @@ class Interpreter:
             r_data = self._scan_bucket_rls("_rubbish")
             rubbish = json.loads(r_data) if r_data else []
             count = 0
+            tenant = (
+                self.context.get(
+                    "tenant_id", self.context.get("user", "").split(".")[0]
+                )
+                if "user" in self.context
+                else "cron"
+            )
+
             for r in rubbish:
-                r_gid = r["gid"]
-                # If specific doc, check if gid matches. If everything, do all.
-                if everything or (
-                    doc_id and (r_gid == doc_id or r_gid.endswith(f":{doc_id}"))
-                ):
+                r_gid = r.get("gid", "")
+                r_id = r_gid.split(":", 1)[1] if ":" in r_gid else r_gid
+                rb = r.get("body", {})
+                if not isinstance(rb, dict):
+                    try:
+                        rb = json.loads(self.engine.get(r_gid) or "{}")
+                    except Exception:
+                        rb = {}
+                orig_bucket = rb.get("original_bucket", "")
+                orig_id = str(rb.get("original_id", ""))
+                clean_orig_gid = f"{orig_bucket}:{orig_id}" if orig_bucket and orig_id else ""
+
+                matched = False
+                if everything:
+                    matched = True
+                elif doc_id:
+                    target_id = str(doc_id).strip()
+                    if target_id.startswith("_rubbish:"):
+                        target_id = target_id.split(":", 1)[1]
+                    clean_target_id = target_id[len(f"{tenant}."):] if tenant != "cron" and target_id.startswith(f"{tenant}.") else target_id
+
+                    if (
+                        target_id in (r_gid, r_id, clean_orig_gid, orig_id)
+                        or clean_target_id in (clean_orig_gid, orig_id)
+                        or r_gid == f"_rubbish:{target_id}"
+                        or r_gid == f"_rubbish:{tenant}.{target_id}"
+                        or r_gid == f"_rubbish:{tenant}.{tenant}.{target_id}"
+                        or r_id.endswith(f":{target_id}")
+                        or r_id.endswith(f".{target_id}")
+                        or (orig_id and orig_id == target_id)
+                        or (clean_orig_gid and clean_orig_gid == target_id)
+                    ):
+                        matched = True
+
+                if matched:
                     doc_json = self.engine.get(r_gid)
                     if doc_json:
-                        rb = json.loads(doc_json)
+                        rb_data = json.loads(doc_json)
+                        target_bucket = rb_data.get("original_bucket", orig_bucket)
+                        target_id_val = rb_data.get("original_id", orig_id)
+                        payload = rb_data.get("document", rb_data.get("body", {}))
                         self.engine.pour(
-                            rb["original_bucket"],
-                            rb["original_id"],
-                            json.dumps(rb.get("body", rb.get("document", {}))),
+                            target_bucket,
+                            target_id_val,
+                            json.dumps(payload),
                         )
                         self.engine.delete(r_gid)
                         count += 1
@@ -4098,11 +4206,50 @@ class Interpreter:
             r_data = self._scan_bucket_rls("_rubbish")
             rubbish = json.loads(r_data) if r_data else []
             count = 0
+            tenant = (
+                self.context.get(
+                    "tenant_id", self.context.get("user", "").split(".")[0]
+                )
+                if "user" in self.context
+                else "cron"
+            )
+
             for r in rubbish:
-                r_gid = r["gid"]
-                if everything or (
-                    doc_id and (r_gid == doc_id or r_gid.endswith(f":{doc_id}"))
-                ):
+                r_gid = r.get("gid", "")
+                r_id = r_gid.split(":", 1)[1] if ":" in r_gid else r_gid
+                rb = r.get("body", {})
+                if not isinstance(rb, dict):
+                    try:
+                        rb = json.loads(self.engine.get(r_gid) or "{}")
+                    except Exception:
+                        rb = {}
+                orig_bucket = rb.get("original_bucket", "")
+                orig_id = str(rb.get("original_id", ""))
+                clean_orig_gid = f"{orig_bucket}:{orig_id}" if orig_bucket and orig_id else ""
+
+                matched = False
+                if everything:
+                    matched = True
+                elif doc_id:
+                    target_id = str(doc_id).strip()
+                    if target_id.startswith("_rubbish:"):
+                        target_id = target_id.split(":", 1)[1]
+                    clean_target_id = target_id[len(f"{tenant}."):] if tenant != "cron" and target_id.startswith(f"{tenant}.") else target_id
+
+                    if (
+                        target_id in (r_gid, r_id, clean_orig_gid, orig_id)
+                        or clean_target_id in (clean_orig_gid, orig_id)
+                        or r_gid == f"_rubbish:{target_id}"
+                        or r_gid == f"_rubbish:{tenant}.{target_id}"
+                        or r_gid == f"_rubbish:{tenant}.{tenant}.{target_id}"
+                        or r_id.endswith(f":{target_id}")
+                        or r_id.endswith(f".{target_id}")
+                        or (orig_id and orig_id == target_id)
+                        or (clean_orig_gid and clean_orig_gid == target_id)
+                    ):
+                        matched = True
+
+                if matched:
                     self.engine.delete(r_gid)
                     count += 1
             return {"status": "ok", "message": f"Incinerated {count} documents."}

@@ -758,34 +758,95 @@ class Parser:
         return ChangeStmt(bucket=bucket, doc_id=doc_id, assignments=updates)
 
     def drain_stmt(self) -> Any:
-        bucket = self.consume_identifier("Expected bucket name.")
+        self.match(TokenType.FROM)
+        
+        if self.is_at_end():
+            raise self.error(self.peek(), "Expected bucket name or document ID (e.g. 'users:david' or 'users').")
+            
+        token = self.advance()
+        first_val = token.value if token.type == TokenType.STRING else token.lexeme
+        
+        if ":" in first_val:
+            parts = first_val.split(":", 1)
+            bucket = parts[0]
+            doc_id = parts[1]
+            self._validate_bucket_mutation(bucket)
+            return DrainStmt(bucket=bucket, doc_id=doc_id)
+            
+        bucket = first_val
         self._validate_bucket_mutation(bucket)
         
+        if self.match(TokenType.COLON):
+            if not self.is_at_end():
+                t = self.advance()
+                doc_id = t.value if t.type == TokenType.STRING else t.lexeme
+                return DrainStmt(bucket=bucket, doc_id=str(doc_id))
+            else:
+                raise self.error(self.peek(), "Expected document ID after ':'.")
+                
         if self.match(TokenType.WHERE):
             where = self._parse_where()
             return DrainStmt(bucket=bucket, where=where)
         elif self.match(TokenType.BEFORE):
             datetime_val = self.consume(TokenType.STRING, "Expected datetime string.").value
             return DrainStmt(bucket=bucket, before=datetime_val)
-        else:
+        elif not self.is_at_end() and self.peek().type not in (TokenType.EOF, TokenType.SEMICOLON):
             doc_id = self.consume_doc_id("Expected document ID.")
-            return DrainStmt(bucket=bucket, doc_id=doc_id)
+            return DrainStmt(bucket=bucket, doc_id=str(doc_id))
+        else:
+            return DrainStmt(bucket=bucket)
 
     def salvage_stmt(self) -> Any:
         if self.match(TokenType.EVERYTHING):
-            if self.match(TokenType.FROM): self.consume_identifier("ignore _rubbish")
+            if self.match(TokenType.FROM):
+                self.consume_identifier("ignore _rubbish")
             return SalvageStmt(everything=True)
-        doc_id = self.consume_doc_id("Expected document ID to salvage.")
-        if self.match(TokenType.FROM): self.consume_identifier("ignore _rubbish")
-        return SalvageStmt(doc_id=doc_id)
+            
+        if self.is_at_end():
+            raise self.error(self.peek(), "Expected document ID or EVERYTHING to salvage.")
+            
+        token = self.advance()
+        doc_id = token.value if token.type == TokenType.STRING else token.lexeme
+        
+        if self.match(TokenType.COLON):
+            if not self.is_at_end():
+                t = self.advance()
+                sub_id = t.value if t.type == TokenType.STRING else t.lexeme
+                doc_id = f"{doc_id}:{sub_id}"
+        elif not self.is_at_end() and self.peek().type in (TokenType.IDENTIFIER, TokenType.STRING) and self.peek().lexeme.lower() != "from":
+            t = self.advance()
+            sub_id = t.value if t.type == TokenType.STRING else t.lexeme
+            doc_id = f"{doc_id}:{sub_id}"
+            
+        if self.match(TokenType.FROM):
+            self.consume_identifier("ignore _rubbish")
+        return SalvageStmt(doc_id=str(doc_id))
         
     def incinerate_stmt(self) -> Any:
         if self.match(TokenType.EVERYTHING):
-            if self.match(TokenType.FROM): self.consume_identifier("ignore _rubbish")
+            if self.match(TokenType.FROM):
+                self.consume_identifier("ignore _rubbish")
             return IncinerateStmt(everything=True)
-        doc_id = self.consume_doc_id("Expected document ID to incinerate.")
-        if self.match(TokenType.FROM): self.consume_identifier("ignore _rubbish")
-        return IncinerateStmt(doc_id=doc_id)
+            
+        if self.is_at_end():
+            raise self.error(self.peek(), "Expected document ID or EVERYTHING to incinerate.")
+            
+        token = self.advance()
+        doc_id = token.value if token.type == TokenType.STRING else token.lexeme
+        
+        if self.match(TokenType.COLON):
+            if not self.is_at_end():
+                t = self.advance()
+                sub_id = t.value if t.type == TokenType.STRING else t.lexeme
+                doc_id = f"{doc_id}:{sub_id}"
+        elif not self.is_at_end() and self.peek().type in (TokenType.IDENTIFIER, TokenType.STRING) and self.peek().lexeme.lower() != "from":
+            t = self.advance()
+            sub_id = t.value if t.type == TokenType.STRING else t.lexeme
+            doc_id = f"{doc_id}:{sub_id}"
+            
+        if self.match(TokenType.FROM):
+            self.consume_identifier("ignore _rubbish")
+        return IncinerateStmt(doc_id=str(doc_id))
 
     def shape_stmt(self) -> Any:
         if self.match(TokenType.WEBHOOK):
