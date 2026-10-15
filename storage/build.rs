@@ -13,7 +13,7 @@ fn main() {
         .file("../simd/src/matmul.cpp")
         .file("../simd/src/attention.cpp")
         .include("../simd/include")
-        .flag_if_supported("/arch:AVX512") // MSVC
+        .flag_if_supported("/arch:AVX2") // MSVC
         .flag_if_supported("/O2")
         .flag_if_supported("/std:c++17")
         .flag_if_supported("-mavx512f")

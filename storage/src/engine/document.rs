@@ -82,7 +82,7 @@ mod tests {
         let body = json!({ "name": "CleaveDB", "version": 3 });
         let doc = Document::new("projects", body.clone(), Some("doc_123"));
         
-        assert_eq!(doc.gid, "doc_123");
+        assert_eq!(doc.gid, "projects:doc_123");
         assert_eq!(doc.bucket, "projects");
         assert_eq!(doc.body, body);
         assert!(doc.created_at > 0);
@@ -105,7 +105,8 @@ mod tests {
         let doc2 = Document::new("test_bucket", body.clone(), None);
         
         assert_eq!(doc1.gid, doc2.gid, "Generated GIDs should be deterministic");
-        assert_eq!(doc1.gid.len(), 16, "Generated GID should be 16 characters long");
+        assert!(doc1.gid.starts_with("test_bucket:"));
+        assert_eq!(doc1.gid.split(':').nth(1).unwrap().len(), 16, "Generated GID hash should be 16 characters long");
     }
 
     #[test]

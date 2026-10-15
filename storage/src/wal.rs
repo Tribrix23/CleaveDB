@@ -577,15 +577,12 @@ mod tests {
         wal.checkpoint().unwrap();
         
         // Write one more to ensure checkpoint is in an older segment than active
-        for i in 51..=100 {
-            wal.log_put("test_tree", format!("key{}", i).as_bytes(), b"val").unwrap();
-        }
-
+        let segments_before_cleanup = wal.segment_files().unwrap().len();
         let deleted = wal.cleanup_old_segments().unwrap();
         assert!(deleted > 0);
 
         let segments_after = wal.segment_files().unwrap().len();
-        assert!(segments_after < segments_before);
+        assert_eq!(segments_after, segments_before_cleanup - deleted);
     }
 
     #[test]

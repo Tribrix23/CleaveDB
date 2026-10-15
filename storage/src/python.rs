@@ -82,6 +82,7 @@ impl CleaveDB {
 
         let db = Database {
             bond_gate: parking_lot::Mutex::new(()),
+            bond_gates: std::array::from_fn(|_| parking_lot::Mutex::new(())),
             catalog,
             shards,
             inverted,

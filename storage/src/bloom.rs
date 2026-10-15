@@ -36,18 +36,33 @@ impl BloomFilter {
         self.bits[h3 / 8] |= 1 << (h3 % 8);
     }
 
-    /// Probes the bloom filter for a batch of hashes using AVX2.
+    /// Probes the bloom filter for a batch of hashes using AVX2 when supported, falling back to scalar.
     pub fn probe_batch(&self, hashes: &[u32]) -> Vec<bool> {
-        let mut results = vec![0u8; hashes.len()];
-        unsafe {
-            bloom_probe_avx2(
-                self.bits.as_ptr(),
-                hashes.as_ptr(),
-                hashes.len(),
-                results.as_mut_ptr(),
-            );
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx2") {
+                let mut results = vec![0u8; hashes.len()];
+                unsafe {
+                    bloom_probe_avx2(
+                        self.bits.as_ptr(),
+                        hashes.as_ptr(),
+                        hashes.len(),
+                        results.as_mut_ptr(),
+                    );
+                }
+                return results.into_iter().map(|b| b != 0).collect();
+            }
         }
-        results.into_iter().map(|b| b != 0).collect()
+        let mask = (self.num_bits - 1) as u32;
+        hashes.iter().map(|&hash| {
+            let h1 = (hash & mask) as usize;
+            let h2 = ((hash >> 10) & mask) as usize;
+            let h3 = ((hash >> 20) & mask) as usize;
+            let b1 = (self.bits[h1 / 8] & (1 << (h1 % 8))) != 0;
+            let b2 = (self.bits[h2 / 8] & (1 << (h2 % 8))) != 0;
+            let b3 = (self.bits[h3 / 8] & (1 << (h3 % 8))) != 0;
+            b1 && b2 && b3
+        }).collect()
     }
 }
 

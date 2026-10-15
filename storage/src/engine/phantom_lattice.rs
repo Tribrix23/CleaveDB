@@ -8,6 +8,8 @@ use std::sync::Arc;
 /// A ShadowRecord represents a late-binding bond whose target document has not yet arrived.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ShadowRecord {
+    #[serde(default)]
+    pub bond_gid: Option<String>,
     pub src_gid: String,
     pub target_gid: String,
     pub rel_name: String,
@@ -209,7 +211,7 @@ mod correctness_tests {
     use std::sync::{Arc, Barrier};
 
     fn record(id: usize, deadline: Option<u64>) -> ShadowRecord {
-        ShadowRecord { src_gid: format!("source:{id}"), target_gid: "target:1".into(),
+        ShadowRecord { bond_gid: None, src_gid: format!("source:{id}"), target_gid: "target:1".into(),
             rel_name: "r".into(), enforcement: Enforcement::Firm, created_at_ts: 0,
             lease_expiry_ts: deadline, cascade_delete: false, status: "latched".into() }
     }
